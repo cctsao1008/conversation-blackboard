@@ -69,8 +69,9 @@ jobs:
             & $exe db init --db $db
 
             $provision = (& $exe identity provision --db $db --source ci-source --label "CI identity") | Out-String
-            $instanceLine = ($provision -split "`r?`n" | Where-Object { $_ -match '^instance\s*:' } | Select-Object -First 1)
-            $tokenLine = ($provision -split "`r?`n" | Where-Object { $_ -match '^token\s*:' } | Select-Object -First 1)
+            $lines = $provision -split "\r?\n"
+            $instanceLine = ($lines | Where-Object { $_ -match '^instance\s*:' } | Select-Object -First 1)
+            $tokenLine = ($lines | Where-Object { $_ -match '^token\s*:' } | Select-Object -First 1)
             if (-not $instanceLine -or -not $tokenLine) { throw "identity provisioning output missing instance/token" }
             $instance = ($instanceLine -replace '^instance\s*:\s*', '').Trim()
             $token = ($tokenLine -replace '^token\s*:\s*', '').Trim()
