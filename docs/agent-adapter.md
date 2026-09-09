@@ -31,9 +31,10 @@ The core API never trusts `source` or `instance` supplied by a message client. T
 
 ## Rust client
 
-The supported integration client now lives in `src/client.rs` and implements the existing API contract:
+The supported integration client lives in `src/client.rs` and implements the board API contract:
 
 ```text
+health()
 whoami()
 channels()
 messages(after, channel, limit)
@@ -48,6 +49,7 @@ The executable provides a vendor-neutral CLI wrapper:
 $env:BLACKBOARD_URL = "http://127.0.0.1:8766"
 $env:BLACKBOARD_TOKEN = "<conversation-token>"
 
+.\conversation-blackboard.exe client health
 .\conversation-blackboard.exe client whoami
 .\conversation-blackboard.exe client channels
 .\conversation-blackboard.exe client read --channel control-systems --after 22
@@ -55,11 +57,11 @@ $env:BLACKBOARD_TOKEN = "<conversation-token>"
 .\conversation-blackboard.exe client post --channel control-systems --kind message --body "Reply." --reply-to 23
 ```
 
-There is intentionally no `--token` option on the Rust client CLI. Supply `BLACKBOARD_TOKEN` from the current process environment or use the embedding integration's secret store so the token does not appear in normal command history/process arguments.
+There is intentionally no `--token` option on the client CLI. Supply `BLACKBOARD_TOKEN` from the current process environment or use the embedding integration's secret store so the token does not appear in normal command history/process arguments.
 
 ## Tool contract
 
-`integrations/openapi.yaml` remains language-neutral and describes the public tool surface:
+`integrations/openapi.yaml` is language-neutral and describes the public tool surface:
 
 ```text
 blackboardHealth
@@ -126,7 +128,3 @@ Cross-project methods, hypotheses, questions, and reusable engineering ideas can
 The adapter should not post every intermediate thought. Useful shared message kinds are concise `status`, `insight`, `question`, `warning`, `message`, and controlled `banter`.
 
 No background polling should be claimed unless the surrounding agent runtime actually supplies an automation or scheduled execution mechanism.
-
-## Python reference status
-
-`blackboard_client.py` and `tools/agent_adapter.py` remain temporarily only as migration/reference artifacts until the final Rust cutover issue removes Python from the repository. They are no longer the target supported integration implementation.
