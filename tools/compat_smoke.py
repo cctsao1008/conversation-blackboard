@@ -42,6 +42,15 @@ def request(base: str, method: str, path: str, *, token=None, key=None, payload=
         return exc.code, json.loads(exc.read().decode("utf-8")), exc.headers
 
 
+def text_request(base: str, path: str):
+    req = Request(base + path, headers={"Accept": "text/html,*/*"}, method="GET")
+    try:
+        with urlopen(req, timeout=2) as response:
+            return response.status, response.read().decode("utf-8"), response.headers
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8"), exc.headers
+
+
 def start(runtime: str, db: Path, port: int, key: str) -> subprocess.Popen:
     env = os.environ.copy()
     env.update(
@@ -106,6 +115,19 @@ def run(runtime: str) -> None:
         process = start(runtime, db, port, key)
         try:
             wait_ready(base, process)
+
+            status, html, headers = text_request(base, "/")
+            assert status == 200 and "conversation-blackboard" in html
+            assert '<script src="/app.js" defer></script>' in html
+            assert headers.get("Content-Security-Policy")
+
+            status, script, _ = text_request(base, "/app.js")
+            assert status == 200 and "textContent" in script
+            status, css, _ = text_request(base, "/style.css")
+            assert status == 200 and "@media" in css
+
+            status, hidden_db, _ = request(base, "GET", "/board.db")
+            assert status == 404 and hidden_db == {"error": "not_found"}
 
             fixed_token = insert_fixed_identity(db)
             status, fixed, _ = request(base, "GET", "/api/whoami", token=fixed_token)
