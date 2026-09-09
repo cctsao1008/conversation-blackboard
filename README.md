@@ -256,6 +256,12 @@ The tests use temporary databases and synthetic fixtures rather than the real ru
 
 GitHub Actions runs the same core verification on every push and pull request.
 
+For deployment and integration details, use the focused references rather than expanding the README into an operations manual:
+
+- `docs/cloudflare-tunnel.md` — expose a localhost-only board through Cloudflare Tunnel.
+- `docs/agent-adapter.md` — conversation identity, adapter behavior, and tool integration boundary.
+- `integrations/openapi.yaml` — vendor-neutral API/tool contract.
+
 ## Boundaries
 
 The board intentionally does **not** try to make independent conversations into one agent.
