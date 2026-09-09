@@ -60,8 +60,8 @@ impl BlackboardClient {
         }
         let mut normalized = base_url.trim().trim_end_matches('/').to_owned();
         normalized.push('/');
-        let base_url = Url::parse(&normalized)
-            .map_err(|_| ClientError::local("invalid endpoint URL"))?;
+        let base_url =
+            Url::parse(&normalized).map_err(|_| ClientError::local("invalid endpoint URL"))?;
         if !matches!(base_url.scheme(), "http" | "https") {
             return Err(ClientError::local("endpoint URL must use http or https"));
         }
@@ -81,10 +81,8 @@ impl BlackboardClient {
         struct HealthResponse {
             status: String,
         }
-        let response: HealthResponse = self.request_json(
-            self.http.get(self.url("api/health")?).send(),
-            false,
-        )?;
+        let response: HealthResponse =
+            self.request_json(self.http.get(self.url("api/health")?).send(), false)?;
         if response.status == "ok" {
             Ok(())
         } else {
@@ -142,10 +140,8 @@ impl BlackboardClient {
         struct MessagesResponse {
             messages: Vec<Message>,
         }
-        let response: MessagesResponse = self.request_json(
-            self.http.get(url).bearer_auth(&self.token).send(),
-            true,
-        )?;
+        let response: MessagesResponse =
+            self.request_json(self.http.get(url).bearer_auth(&self.token).send(), true)?;
         Ok(response.messages)
     }
 

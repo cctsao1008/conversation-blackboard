@@ -69,7 +69,10 @@ pub fn app(state: AppState) -> Router {
 }
 
 async fn index() -> Response {
-    static_response("text/html; charset=utf-8", include_str!("../web/index.html"))
+    static_response(
+        "text/html; charset=utf-8",
+        include_str!("../web/index.html"),
+    )
 }
 
 async fn app_js() -> Response {
@@ -88,10 +91,7 @@ async fn health(State(state): State<AppState>) -> Result<Response, ApiError> {
     Ok(json_response(StatusCode::OK, json!({"status": "ok"})))
 }
 
-async fn whoami(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
+async fn whoami(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let identity = require_identity(&state, &headers).await?;
     Ok(json_response(
         StatusCode::OK,
@@ -140,22 +140,13 @@ async fn messages(
     })
     .await?;
 
-    Ok(json_response(
-        StatusCode::OK,
-        json!({"messages": rows}),
-    ))
+    Ok(json_response(StatusCode::OK, json!({"messages": rows})))
 }
 
-async fn channels(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
+async fn channels(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let _identity = require_identity(&state, &headers).await?;
     let rows = with_db(&state, db::list_channels).await?;
-    Ok(json_response(
-        StatusCode::OK,
-        json!({"channels": rows}),
-    ))
+    Ok(json_response(StatusCode::OK, json!({"channels": rows})))
 }
 
 async fn register(
@@ -281,21 +272,11 @@ async fn post_message(
     }
 
     let row = with_db(&state, move |conn| {
-        db::append_message(
-            conn,
-            &identity,
-            &channel,
-            &kind,
-            &message_body,
-            reply_to,
-        )
+        db::append_message(conn, &identity, &channel, &kind, &message_body, reply_to)
     })
     .await?;
 
-    Ok(json_response(
-        StatusCode::CREATED,
-        json!({"message": row}),
-    ))
+    Ok(json_response(StatusCode::CREATED, json!({"message": row})))
 }
 
 async fn not_found() -> Response {
@@ -317,10 +298,7 @@ async fn read_json_object(request: Request<Body>) -> Result<Map<String, Value>, 
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_json"))
 }
 
-async fn require_identity(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Identity, ApiError> {
+async fn require_identity(state: &AppState, headers: &HeaderMap) -> Result<Identity, ApiError> {
     let token = bearer_token(headers).ok_or_else(ApiError::unauthorized)?;
     let identity = with_db(state, move |conn| identity::resolve_identity(conn, &token)).await?;
     identity.ok_or_else(ApiError::unauthorized)
@@ -348,7 +326,9 @@ fn first_query_values(uri: &Uri) -> HashMap<String, String> {
             if value.is_empty() {
                 continue;
             }
-            values.entry(key.into_owned()).or_insert_with(|| value.into_owned());
+            values
+                .entry(key.into_owned())
+                .or_insert_with(|| value.into_owned());
         }
     }
     values
@@ -381,24 +361,21 @@ where
 
 fn json_response(status: StatusCode, value: Value) -> Response {
     let mut response = (status, Json(value)).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     add_common_security_headers(response.headers_mut());
     response
 }
 
 fn static_response(content_type: &'static str, body: &'static str) -> Response {
     let mut response = (StatusCode::OK, body).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type),
-    );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response.headers_mut().insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(

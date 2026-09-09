@@ -134,7 +134,12 @@ pub fn dispatch_identity(command: IdentityCommand) -> DynResult {
             require_file(&path, "database")?;
             let conn = db::connect(&path)?;
             let (identity, token) = identity::register_identity(&conn, &source, label.as_deref())?;
-            print_identity_token(&identity.source, &identity.instance, identity.label.as_deref(), &token);
+            print_identity_token(
+                &identity.source,
+                &identity.instance,
+                identity.label.as_deref(),
+                &token,
+            );
             Ok(())
         }
         IdentityCommand::Rotate { db: path, instance } => {
@@ -145,7 +150,12 @@ pub fn dispatch_identity(command: IdentityCommand) -> DynResult {
                     .ok_or_else(|| format!("unknown instance: {id}"))?;
                 let token = identity::rotate_token(&conn, &id)?
                     .ok_or_else(|| format!("unknown instance: {id}"))?;
-                print_identity_token(&record.source, &record.instance, record.label.as_deref(), &token);
+                print_identity_token(
+                    &record.source,
+                    &record.instance,
+                    record.label.as_deref(),
+                    &token,
+                );
             }
             Ok(())
         }
@@ -203,7 +213,11 @@ fn backup_database(source: &Path, output: &Path) -> DynResult {
 fn restore_database(backup: &Path, target: &Path, force: bool) -> DynResult {
     require_file(backup, "backup")?;
     if target.exists() && !force {
-        return Err(format!("target exists: {} (use --force to overwrite)", target.display()).into());
+        return Err(format!(
+            "target exists: {} (use --force to overwrite)",
+            target.display()
+        )
+        .into());
     }
     if !integrity_ok(backup)? {
         return Err("backup integrity check failed".into());
@@ -324,7 +338,11 @@ fn verify_endpoint(args: VerifyEndpointArgs) -> DynResult {
         args.after,
         args.channel.as_deref().unwrap_or("*")
     );
-    if let Some(latest) = list.last().and_then(|message| message.get("id")).and_then(Value::as_i64) {
+    if let Some(latest) = list
+        .last()
+        .and_then(|message| message.get("id"))
+        .and_then(Value::as_i64)
+    {
         println!("latest_id={latest}");
     }
     Ok(())
@@ -401,7 +419,8 @@ mod tests {
 
         db::initialize(&source_path).unwrap();
         let conn = db::connect(&source_path).unwrap();
-        let (identity_record, token) = identity::register_identity(&conn, "test-source", Some("test")).unwrap();
+        let (identity_record, token) =
+            identity::register_identity(&conn, "test-source", Some("test")).unwrap();
         let message = db::append_message(
             &conn,
             &Identity {

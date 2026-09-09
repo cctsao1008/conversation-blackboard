@@ -76,11 +76,9 @@ pub fn dispatch(command: ServiceCommand) -> Result<(), Box<dyn std::error::Error
         ServiceCommand::Stop => stop(),
         ServiceCommand::Restart => restart(),
         ServiceCommand::Status => status(),
-        ServiceCommand::Run { db, host, port } => run_dispatcher(RuntimeConfig::from_env_with_overrides(
-            Some(host),
-            Some(port),
-            Some(db),
-        )),
+        ServiceCommand::Run { db, host, port } => run_dispatcher(
+            RuntimeConfig::from_env_with_overrides(Some(host), Some(port), Some(db)),
+        ),
     }
 }
 
@@ -150,7 +148,11 @@ fn install(
 
     println!("Installed {SERVICE_NAME} (automatic start).");
     println!("Database: {}", info.launch_arguments[3].to_string_lossy());
-    println!("Origin: http://{}:{}", info.launch_arguments[5].to_string_lossy(), port);
+    println!(
+        "Origin: http://{}:{}",
+        info.launch_arguments[5].to_string_lossy(),
+        port
+    );
     println!("Registration remains disabled unless BLACKBOARD_REGISTRATION_KEY is available to the service process.");
     Ok(())
 }
@@ -249,9 +251,7 @@ fn wait_for_state(
     }
 }
 
-fn run_dispatcher(
-    config: RuntimeConfig,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run_dispatcher(config: RuntimeConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     SERVICE_CONFIG
         .set(config)
         .map_err(|_| "service runtime configuration already initialized")?;
