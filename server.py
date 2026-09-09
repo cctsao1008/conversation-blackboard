@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -33,35 +35,37 @@ def _row_dict(row) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "conversation-blackboard/0"
-
-    def log_message(self, fmt: str, *args) -> None:
-        # Keep normal request logs, but never include Authorization header values.
-        super().log_message(fmt, *args)
+    server_version = "conversation-blackboard"
+    sys_version = ""
 
     def _json(self, status: int, payload: dict) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
-    def _read_json(self) -> dict | None:
+    def _read_json(self) -> tuple[dict | None, str | None]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
-            return None
+            return None, "invalid_json"
 
-        if length <= 0 or length > MAX_BODY_BYTES:
-            return None
+        if length <= 0:
+            return None, "invalid_json"
+        if length > MAX_BODY_BYTES:
+            return None, "request_too_large"
 
         try:
             value = json.loads(self.rfile.read(length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return None
+            return None, "invalid_json"
 
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None, "invalid_json"
+        return value, None
 
     def _identity(self) -> Identity | None:
         token = _bearer_token(self.headers.get("Authorization"))
@@ -81,8 +85,25 @@ class Handler(BaseHTTPRequestHandler):
         return identity
 
     def do_GET(self) -> None:
+        try:
+            self._do_GET()
+        except sqlite3.Error:
+            self._json(503, {"error": "database_unavailable"})
+        except Exception:
+            self._json(500, {"error": "internal_error"})
+
+    def _do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/api/health":
+            conn = connect(DB_PATH)
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
+                conn.close()
+            self._json(200, {"status": "ok"})
+            return
 
         if path == "/api/whoami":
             identity = self._require_identity()
@@ -146,19 +167,31 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:
+        try:
+            self._do_POST()
+        except sqlite3.Error:
+            self._json(503, {"error": "database_unavailable"})
+        except Exception:
+            self._json(500, {"error": "internal_error"})
+
+    def _do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 
         if path == "/api/register":
             registration_key = os.environ.get("BLACKBOARD_REGISTRATION_KEY")
             supplied_key = self.headers.get("X-Registration-Key")
-            if not registration_key or supplied_key != registration_key:
+            if (
+                not registration_key
+                or supplied_key is None
+                or not hmac.compare_digest(supplied_key, registration_key)
+            ):
                 self._json(401, {"error": "unauthorized"})
                 return
 
-            body = self._read_json()
-            if body is None:
-                self._json(400, {"error": "invalid_json"})
+            body, error = self._read_json()
+            if error:
+                self._json(413 if error == "request_too_large" else 400, {"error": error})
                 return
 
             source = body.get("source")
@@ -166,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(source, str):
                 self._json(400, {"error": "invalid_source"})
                 return
-            if label is not None and not isinstance(label, str):
+            if label is not None and (not isinstance(label, str) or len(label) > 256):
                 self._json(400, {"error": "invalid_label"})
                 return
 
@@ -174,8 +207,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 try:
                     identity, token = register_identity(conn, source, label=label)
-                except ValueError as exc:
-                    self._json(400, {"error": "invalid_source", "detail": str(exc)})
+                except ValueError:
+                    self._json(400, {"error": "invalid_registration"})
                     return
             finally:
                 conn.close()
@@ -196,9 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             if identity is None:
                 return
 
-            body = self._read_json()
-            if body is None:
-                self._json(400, {"error": "invalid_json"})
+            body, error = self._read_json()
+            if error:
+                self._json(413 if error == "request_too_large" else 400, {"error": error})
                 return
 
             if "source" in body or "instance" in body:
@@ -219,7 +252,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(message_body, str) or not message_body.strip():
                 self._json(400, {"error": "invalid_body"})
                 return
-            if reply_to is not None and (not isinstance(reply_to, int) or reply_to <= 0):
+            if len(message_body.encode("utf-8")) > MAX_BODY_BYTES:
+                self._json(413, {"error": "request_too_large"})
+                return
+            if reply_to is not None and (
+                isinstance(reply_to, bool)
+                or not isinstance(reply_to, int)
+                or reply_to <= 0
+            ):
                 self._json(400, {"error": "invalid_reply_to"})
                 return
 
@@ -255,7 +295,6 @@ def main() -> None:
     initialize(DB_PATH)
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"conversation-blackboard listening on http://{HOST}:{PORT}")
-    print(f"database: {DB_PATH}")
     httpd.serve_forever()
 
 
