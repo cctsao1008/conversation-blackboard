@@ -38,8 +38,10 @@ pub fn dispatch(command: WebCommand) -> DynResult {
             let conn = db::connect(&path)?;
             let record = identity::get_identity(&conn, &instance)?
                 .ok_or_else(|| format!("unknown instance: {instance}"))?;
-            let capability = identity::provision_web_capability(&conn, &instance)?
-                .ok_or_else(|| format!("active web capability already exists for {instance}; use web rotate"))?;
+            let capability =
+                identity::provision_web_capability(&conn, &instance)?.ok_or_else(|| {
+                    format!("active web capability already exists for {instance}; use web rotate")
+                })?;
             print_capability(&record.source, &record.instance, &capability);
             Ok(())
         }
