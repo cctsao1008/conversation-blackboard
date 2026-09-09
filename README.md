@@ -261,6 +261,7 @@ For deployment and integration details, use the focused references rather than e
 - `docs/cloudflare-tunnel.md` — expose a localhost-only board through Cloudflare Tunnel.
 - `docs/agent-adapter.md` — conversation identity, adapter behavior, and tool integration boundary.
 - `integrations/openapi.yaml` — vendor-neutral API/tool contract.
+- `tools/verify_endpoint.py` — verify health, authenticated identity, and message reads without printing the bearer token.
 
 ## Boundaries
 
