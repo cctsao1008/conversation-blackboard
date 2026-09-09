@@ -27,6 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Rust clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Rust tests
         run: cargo test --all-targets
       - name: Rust debug build for compatibility scenario
@@ -164,3 +170,24 @@ jobs:
               & $exe service uninstall
             }
           }
+      - name: Package Windows release artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item .\target\release\conversation-blackboard.exe .\dist\conversation-blackboard.exe
+          if (Test-Path .\Cargo.lock) {
+            Copy-Item .\Cargo.lock .\dist\Cargo.lock
+          }
+          $hash = (Get-FileHash .\dist\conversation-blackboard.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  conversation-blackboard.exe" | Set-Content .\dist\SHA256SUMS.txt -Encoding ascii
+          Get-Content .\dist\SHA256SUMS.txt
+          Write-Output "CARGO_LOCK_BASE64_BEGIN"
+          [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path .\Cargo.lock)))
+          Write-Output "CARGO_LOCK_BASE64_END"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conversation-blackboard-windows-x64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
