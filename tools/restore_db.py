@@ -20,6 +20,8 @@ def restore_database(
     backup_path = Path(backup_path)
     target_path = Path(target_path)
 
+    if not backup_path.is_file():
+        raise FileNotFoundError(backup_path)
     if target_path.exists() and not force:
         raise FileExistsError(f"target exists: {target_path}")
 
