@@ -2,10 +2,12 @@
 
 use std::{
     ffi::OsString,
-    path::PathBuf,
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Subcommand;
@@ -259,7 +261,9 @@ fn run_dispatcher(
 
 fn service_main(_arguments: Vec<OsString>) {
     if let Err(error) = run_service() {
-        eprintln!("{SERVICE_NAME} service error: {error}");
+        if let Some(config) = SERVICE_CONFIG.get() {
+            append_service_log(&config.db_path, &format!("service error: {error}"));
+        }
     }
 }
 
@@ -268,6 +272,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .get()
         .cloned()
         .ok_or("service runtime configuration missing")?;
+    append_service_log(&config.db_path, "service starting");
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
@@ -298,7 +303,9 @@ fn run_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         wait_hint: Duration::default(),
         process_id: None,
     })?;
+    append_service_log(&config.db_path, "service running");
 
+    let db_path = config.db_path.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -307,8 +314,10 @@ fn run_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }));
 
     let exit_code = if result.is_ok() {
+        append_service_log(&db_path, "service stopped cleanly");
         ServiceExitCode::NO_ERROR
     } else {
+        append_service_log(&db_path, "service runtime exited with error");
         ServiceExitCode::ServiceSpecific(1)
     };
     status_handle.set_service_status(ServiceStatus {
@@ -322,4 +331,18 @@ fn run_service() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     })?;
 
     result
+}
+
+fn append_service_log(db_path: &Path, message: &str) {
+    let log_path = db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("conversation-blackboard.log");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = writeln!(file, "{timestamp} {message}");
+    }
 }
