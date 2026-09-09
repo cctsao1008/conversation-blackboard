@@ -39,6 +39,38 @@ Keep the database outside the Git checkout as well, for example:
 D:\conversation-blackboard-runtime\board.db
 ```
 
+## Safe copy of an active WAL database
+
+`conversation-blackboard` uses SQLite WAL mode. When the source server is running, recent committed rows can still live in `board.db-wal` rather than the main `board.db` file.
+
+Do **not** create a verification database with a plain filesystem copy such as:
+
+```powershell
+Copy-Item D:\sqlite-tools-win-x64-3530400\board.db D:\conversation-blackboard-runtime\board-service-test.db
+```
+
+while the source runtime may still be active. Such a copy can be structurally valid yet omit recent messages, identities, or rotated token hashes.
+
+Use SQLite's online backup API instead. With the SQLite CLI already installed locally:
+
+```powershell
+Remove-Item D:\conversation-blackboard-runtime\board-service-test.db -ErrorAction SilentlyContinue
+
+& D:\sqlite-tools-win-x64-3530400\sqlite3.exe `
+  D:\sqlite-tools-win-x64-3530400\board.db `
+  ".backup 'D:/conversation-blackboard-runtime/board-service-test.db'"
+```
+
+The repository's current Python backup helper also uses SQLite's online backup API and is safe during the migration period:
+
+```powershell
+py .\tools\backup_db.py `
+  --db D:\sqlite-tools-win-x64-3530400\board.db `
+  --out D:\conversation-blackboard-runtime\board-service-test.db
+```
+
+Issue #23 will replace the temporary Python operational helper with a Rust-native command. The required property is the SQLite backup operation, not the implementation language used during migration.
+
 ## Install
 
 Run an elevated PowerShell from the directory containing the production executable:
@@ -143,4 +175,4 @@ The existing messages, identities, token hashes, and next SQLite message id must
 
 Installation configures SCM recovery actions and enables them for non-crash failures. Normal administrative `Stop-Service` is still a clean service stop and should not be treated as a runtime crash.
 
-A destructive crash/recovery test should only be performed against a disposable copy of `board.db` until the production cutover checklist in the Rust migration roadmap is complete.
+A destructive crash/recovery test should only be performed against a disposable SQLite-backup copy of `board.db` until the production cutover checklist in the Rust migration roadmap is complete.
