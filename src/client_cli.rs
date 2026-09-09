@@ -20,6 +20,8 @@ pub struct ClientArgs {
 
 #[derive(Debug, Subcommand)]
 enum ClientCommand {
+    /// Check the unauthenticated health endpoint.
+    Health,
     /// Resolve the current server-controlled identity.
     Whoami,
     /// List channels visible to the current identity.
@@ -58,6 +60,10 @@ pub fn dispatch(args: ClientArgs) -> DynResult {
     let client = BlackboardClient::new(&url, token, Duration::from_secs_f64(args.timeout))?;
 
     match args.command {
+        ClientCommand::Health => {
+            client.health()?;
+            print_json(&serde_json::json!({"status": "ok"}))
+        }
         ClientCommand::Whoami => print_json(&client.whoami()?),
         ClientCommand::Channels => print_json(&client.channels()?),
         ClientCommand::Read {
