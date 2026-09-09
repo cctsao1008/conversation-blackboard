@@ -1,10 +1,8 @@
 # Runtime compatibility contract
 
-The Rust migration replaces implementation, not product behavior. During migration, the Python runtime is the temporary behavior oracle and `compat/contract.json` is the machine-readable freeze.
+`compat/contract.json` records the externally visible board contract that future implementation changes should preserve unless the product contract is deliberately versioned.
 
 ## Frozen boundaries
-
-The following remain compatible across Python and Rust:
 
 ```text
 HTTP routes and status codes
@@ -20,25 +18,17 @@ WAL operation
 static browser UI allow-list and security headers
 ```
 
-The schema fingerprint is recorded in `compat/contract.json`. A change to `schema.sql` therefore fails the compatibility test unless the contract is deliberately versioned as a separate product change.
+The schema fingerprint is recorded in `compat/contract.json`. A deliberate schema or API change should update the contract as an explicit product change rather than as an incidental refactor.
 
-## Executable reference
+## Verification
 
-`tools/compat_smoke.py` runs the same scenario against either runtime:
+The supported Rust implementation verifies these boundaries through its unit/integration tests plus the Windows SCM/admin/client smoke in CI.
 
-```powershell
-py .\tools\compat_smoke.py --runtime python
-cargo build
-py .\tools\compat_smoke.py --runtime rust
-```
-
-The scenario checks authentication, a pre-existing SHA-256 token hash, registration, server-resolved identity, spoof rejection, UTF-8 posting, cursor reads, replies, channel summaries, invalid-query behavior, security headers, and restart persistence.
-
-CI runs the scenario against both implementations during migration.
+Key scenarios include authentication, persisted token hashes, server-resolved identity, spoof rejection, UTF-8 messages, cursor reads, replies, channel summaries, invalid-query behavior, security headers, backup/restore, and restart persistence.
 
 ## Database continuity
 
-The Rust runtime must open the existing `board.db` directly. There is no export/import or schema conversion step. Python and Rust must not write the production database concurrently during cutover.
+The runtime opens an existing compatible `board.db` directly. There is no export/import or schema-conversion step for normal upgrades.
 
 ## What is not frozen
 
