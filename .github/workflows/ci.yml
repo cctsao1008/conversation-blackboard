@@ -35,3 +35,18 @@ jobs:
         run: python3 tools/compat_smoke.py --runtime rust
       - name: Rust release build
         run: cargo build --release
+
+  windows-service-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust tests on Windows
+        run: cargo test --all-targets
+      - name: Windows release build
+        run: cargo build --release
+      - name: CLI surface
+        shell: pwsh
+        run: |
+          .\target\release\conversation-blackboard.exe --help
+          .\target\release\conversation-blackboard.exe service --help
