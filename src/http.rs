@@ -87,7 +87,7 @@ async fn style_css() -> Response {
 }
 
 async fn health(State(state): State<AppState>) -> Result<Response, ApiError> {
-    with_db(&state, |conn| db::health(conn)).await?;
+    with_db(&state, db::health).await?;
     Ok(json_response(StatusCode::OK, json!({"status": "ok"})))
 }
 
