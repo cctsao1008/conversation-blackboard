@@ -41,6 +41,24 @@ pub fn resolve_identity(conn: &Connection, token: &str) -> Result<Option<Identit
     .optional()
 }
 
+pub fn resolve_web_capability(conn: &Connection, capability: &str) -> Result<Option<Identity>> {
+    if capability.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT i.source, i.instance, i.label\n         FROM web_capabilities AS w\n         JOIN identities AS i ON i.instance = w.instance\n         WHERE w.capability_hash = ?1\n         LIMIT 1",
+        [hash_token(capability)],
+        |row| {
+            Ok(Identity {
+                source: row.get(0)?,
+                instance: row.get(1)?,
+                label: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
 pub fn get_identity(conn: &Connection, instance: &str) -> Result<Option<Identity>> {
     conn.query_row(
         "SELECT source, instance, label FROM identities WHERE instance = ?1 LIMIT 1",
@@ -128,6 +146,52 @@ pub fn revoke_token(conn: &Connection, instance: &str) -> Result<bool> {
     Ok(changed == 1)
 }
 
+pub fn provision_web_capability(conn: &Connection, instance: &str) -> Result<Option<String>> {
+    if get_identity(conn, instance)?.is_none() {
+        return Ok(None);
+    }
+
+    let existing = conn
+        .query_row(
+            "SELECT capability_hash FROM web_capabilities WHERE instance = ?1",
+            [instance],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+
+    if matches!(existing, Some(Some(_))) {
+        return Ok(None);
+    }
+
+    let capability = new_web_capability();
+    conn.execute(
+        "INSERT INTO web_capabilities (instance, capability_hash)\n         VALUES (?1, ?2)\n         ON CONFLICT(instance) DO UPDATE SET\n             capability_hash = excluded.capability_hash,\n             updated_at = unixepoch()",
+        params![instance, hash_token(&capability)],
+    )?;
+    Ok(Some(capability))
+}
+
+pub fn rotate_web_capability(conn: &Connection, instance: &str) -> Result<Option<String>> {
+    if get_identity(conn, instance)?.is_none() {
+        return Ok(None);
+    }
+
+    let capability = new_web_capability();
+    conn.execute(
+        "INSERT INTO web_capabilities (instance, capability_hash)\n         VALUES (?1, ?2)\n         ON CONFLICT(instance) DO UPDATE SET\n             capability_hash = excluded.capability_hash,\n             updated_at = unixepoch()",
+        params![instance, hash_token(&capability)],
+    )?;
+    Ok(Some(capability))
+}
+
+pub fn revoke_web_capability(conn: &Connection, instance: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE web_capabilities\n         SET capability_hash = NULL, updated_at = unixepoch()\n         WHERE instance = ?1 AND capability_hash IS NOT NULL",
+        [instance],
+    )?;
+    Ok(changed == 1)
+}
+
 fn new_instance_id() -> String {
     let mut bytes = [0_u8; 6];
     OsRng.fill_bytes(&mut bytes);
@@ -143,6 +207,12 @@ fn new_token() -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn new_web_capability() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    format!("wc_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 #[cfg(test)]
@@ -185,5 +255,44 @@ mod tests {
         assert!(resolve_identity(&conn, &rotated).unwrap().is_none());
         assert!(rotate_token(&conn, "missing-instance").unwrap().is_none());
         assert!(!revoke_token(&conn, "missing-instance").unwrap());
+    }
+
+    #[test]
+    fn web_capability_is_independent_and_rotatable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        let (record, bearer) = register_identity(&conn, "single", Some("single")).unwrap();
+
+        let capability = provision_web_capability(&conn, &record.instance)
+            .unwrap()
+            .unwrap();
+        assert!(capability.starts_with("wc_"));
+        assert_eq!(
+            resolve_web_capability(&conn, &capability)
+                .unwrap()
+                .unwrap()
+                .instance,
+            record.instance
+        );
+        assert!(resolve_identity(&conn, &capability).unwrap().is_none());
+        assert!(resolve_web_capability(&conn, &bearer).unwrap().is_none());
+
+        let rotated = rotate_web_capability(&conn, &record.instance)
+            .unwrap()
+            .unwrap();
+        assert!(resolve_web_capability(&conn, &capability).unwrap().is_none());
+        assert_eq!(
+            resolve_web_capability(&conn, &rotated)
+                .unwrap()
+                .unwrap()
+                .instance,
+            record.instance
+        );
+
+        assert!(revoke_web_capability(&conn, &record.instance).unwrap());
+        assert!(resolve_web_capability(&conn, &rotated).unwrap().is_none());
+        assert!(resolve_identity(&conn, &bearer).unwrap().is_some());
     }
 }
