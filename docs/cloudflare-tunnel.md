@@ -16,18 +16,20 @@ Cloudflare Tunnel
 http://127.0.0.1:8766
     |
     v
-conversation-blackboard -> SQLite
+conversation-blackboard.exe -> SQLite
 ```
 
 ## 1. Keep the origin local
 
-Start the board with its default localhost bind:
+Install or run the board on loopback only:
 
 ```powershell
-$env:BLACKBOARD_HOST = "127.0.0.1"
-$env:BLACKBOARD_PORT = "8766"
-$env:BLACKBOARD_DB = "D:\conversation-blackboard-runtime\board.db"
-py .\server.py
+.\conversation-blackboard.exe service install `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --host 127.0.0.1 `
+  --port 8766
+
+Start-Service ConversationBlackboard
 ```
 
 Check it locally:
@@ -36,29 +38,25 @@ Check it locally:
 Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-Do not bind the backend to `0.0.0.0` for the tunnel deployment.
+Do not bind the backend to `0.0.0.0` for tunnel deployment.
 
-## 2. Create a named tunnel in Cloudflare
+## 2. Reuse or configure the Cloudflare tunnel
 
-In the Cloudflare dashboard, create a named Tunnel for the Windows host. A stable name such as this is sufficient:
-
-```text
-conversation-blackboard
-```
-
-For the Windows connector, Cloudflare provides a service-install command containing the tunnel token. Run the generated command in an Administrator terminal on the machine hosting the board.
-
-Conceptually it is:
+If `cloudflared` is already installed as a Windows service for another local hostname, inspect the existing service and tunnel configuration before installing another service:
 
 ```powershell
-cloudflared.exe service install <TUNNEL_TOKEN>
+Get-Service cloudflared -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Service -Filter "Name='cloudflared'" |
+  Select-Object Name,State,StartMode,PathName
 ```
 
-`<TUNNEL_TOKEN>` is a secret. Do not put it in Git, screenshots, board messages, or shell scripts committed to the repository.
+Prefer reusing the existing named tunnel when appropriate and add an ingress/public-hostname mapping for the board.
+
+If no tunnel exists, create a named Cloudflare Tunnel and install the connector according to Cloudflare's generated command. Treat the tunnel token as a secret.
 
 ## 3. Publish the hostname
 
-Configure the tunnel public hostname:
+Configure the public hostname:
 
 ```text
 Hostname: board.cafefeed.idv.tw
@@ -69,7 +67,7 @@ The external path is HTTPS through Cloudflare while the local origin remains pla
 
 ## 4. Verify the live path
 
-First check the public health endpoint:
+First check public health:
 
 ```powershell
 Invoke-RestMethod https://board.cafefeed.idv.tw/api/health
@@ -81,42 +79,32 @@ Expected:
 {"status":"ok"}
 ```
 
-Then verify health, authenticated identity, and message reads in one command. Keep the bearer token in an environment variable so it is not placed in the URL or normal command history:
+Then verify authenticated identity and message reads using the Rust executable:
 
 ```powershell
 $env:BLACKBOARD_URL = "https://board.cafefeed.idv.tw"
 $env:BLACKBOARD_TOKEN = "<conversation-token>"
 
-py .\tools\verify_endpoint.py `
+.\conversation-blackboard.exe verify endpoint `
   --expect-source rotary `
   --expect-instance legacy-rotary `
   --channel control-systems `
-  --after 22
-```
-
-A successful run prints only non-secret verification data:
-
-```text
-PASS: health
-PASS: whoami source=rotary instance=legacy-rotary ...
-PASS: messages ...
+  --after 0
 ```
 
 The same token should resolve to the same identity when `BLACKBOARD_URL` is switched back to `http://127.0.0.1:8766`.
 
-## 5. Reboot / service check
+## 5. Reboot and service checks
 
-Run `cloudflared` as a Windows service so the connector can return after reboot.
-
-Useful checks from an Administrator terminal:
+Both the board service and tunnel connector should recover after reboot:
 
 ```powershell
-sc.exe query cloudflared
-sc.exe start cloudflared
-sc.exe stop cloudflared
+Get-Service ConversationBlackboard
+Get-Service cloudflared -ErrorAction SilentlyContinue
+Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-The blackboard process itself must also be started after reboot. Keep that process-management choice separate from the tunnel; a Windows service or scheduled task can be added later if continuous unattended board uptime becomes a real requirement.
+Use `Restart-Service` for controlled lifecycle tests. Keep the board and tunnel as separate Windows services.
 
 ## Security boundary
 
