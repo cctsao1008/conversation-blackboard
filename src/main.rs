@@ -1,4 +1,6 @@
 mod admin;
+mod client;
+mod client_cli;
 mod db;
 mod http;
 mod identity;
@@ -39,6 +41,8 @@ enum Command {
         #[command(subcommand)]
         command: admin::VerifyCommand,
     },
+    /// Use the vendor-neutral Rust client/adapter against a board.
+    Client(client_cli::ClientArgs),
     /// Install or control the native Windows service.
     #[cfg(windows)]
     Service {
@@ -65,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Db { command }) => admin::dispatch_db(command),
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
+        Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
         Some(Command::Service { command }) => windows_service::dispatch(command),
     }
