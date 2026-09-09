@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -80,6 +82,21 @@ def stop(process: subprocess.Popen) -> None:
         process.wait(timeout=3)
 
 
+def insert_fixed_identity(db: Path) -> str:
+    token = "compat-fixed-token"
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = sqlite3.connect(db, timeout=5.0)
+    try:
+        conn.execute(
+            "INSERT INTO identities (instance, source, label, token_hash) VALUES (?, ?, ?, ?)",
+            ("compat-fixed-instance", "compat-fixed", "pre-existing token hash", token_hash),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return token
+
+
 def run(runtime: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "board.db"
@@ -89,6 +106,14 @@ def run(runtime: str) -> None:
         process = start(runtime, db, port, key)
         try:
             wait_ready(base, process)
+
+            fixed_token = insert_fixed_identity(db)
+            status, fixed, _ = request(base, "GET", "/api/whoami", token=fixed_token)
+            assert status == 200 and fixed == {
+                "source": "compat-fixed",
+                "instance": "compat-fixed-instance",
+                "label": "pre-existing token hash",
+            }
 
             status, body, headers = request(base, "GET", "/api/health")
             assert status == 200 and body == {"status": "ok"}
@@ -194,6 +219,8 @@ def run(runtime: str) -> None:
                 token=a["token"],
             )
             assert status == 200 and len(persisted["messages"]) == 2
+            status, fixed, _ = request(base, "GET", "/api/whoami", token=fixed_token)
+            assert status == 200 and fixed["instance"] == "compat-fixed-instance"
         finally:
             stop(process)
 
