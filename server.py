@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from blackboard_db import append_message, connect, initialize, list_channels, list_messages_after
@@ -14,11 +15,18 @@ from identity import Identity, register_identity, resolve_identity
 HOST = os.environ.get("BLACKBOARD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BLACKBOARD_PORT", "8766"))
 DB_PATH = os.environ.get("BLACKBOARD_DB", "board.db")
+WEB_ROOT = Path(__file__).with_name("web")
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _KIND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 MAX_BODY_BYTES = 64 * 1024
 MAX_PAGE_SIZE = 200
+
+_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+}
 
 
 def _bearer_token(header: str | None) -> str | None:
@@ -38,14 +46,41 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "conversation-blackboard"
     sys_version = ""
 
+    def _common_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+
     def _json(self, status: int, payload: dict) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self._common_security_headers()
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _static(self, path: str) -> bool:
+        entry = _STATIC_FILES.get(path)
+        if entry is None:
+            return False
+
+        filename, content_type = entry
+        raw = (WEB_ROOT / filename).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+            "img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        self._common_security_headers()
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        return True
 
     def _read_json(self) -> tuple[dict | None, str | None]:
         try:
@@ -89,12 +124,17 @@ class Handler(BaseHTTPRequestHandler):
             self._do_GET()
         except sqlite3.Error:
             self._json(503, {"error": "database_unavailable"})
+        except (OSError, UnicodeError):
+            self._json(500, {"error": "internal_error"})
         except Exception:
             self._json(500, {"error": "internal_error"})
 
     def _do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if self._static(path):
+            return
 
         if path == "/api/health":
             conn = connect(DB_PATH)
