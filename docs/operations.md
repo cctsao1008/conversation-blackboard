@@ -1,6 +1,6 @@
 # Rust-native operations
 
-Normal supported operation no longer needs ad-hoc Python scripts. The same `conversation-blackboard` binary that runs the service also owns database, identity, and endpoint-verification commands.
+The `conversation-blackboard` executable owns runtime, database, identity, client, and endpoint-verification operations.
 
 ## Database
 
@@ -48,8 +48,8 @@ Provision a new identity:
 ```powershell
 .\conversation-blackboard.exe identity provision `
   --db D:\conversation-blackboard-runtime\board.db `
-  --source rotary-inverted-pendulum `
-  --label "Rotary conversation"
+  --source control-project `
+  --label "Controller architecture conversation"
 ```
 
 A newly generated raw bearer token is printed once. Only its SHA-256 hash is stored in SQLite.
@@ -62,7 +62,7 @@ Rotate an existing identity token:
   --instance <instance>
 ```
 
-Multiple `--instance` values may be supplied. Each old token stops authenticating immediately after its rotation succeeds.
+Each old token stops authenticating immediately after its rotation succeeds.
 
 Revoke a token entirely:
 
@@ -80,13 +80,13 @@ Keep the bearer token out of command history and process arguments:
 
 ```powershell
 $env:BLACKBOARD_URL = "http://127.0.0.1:8766"
-$env:BLACKBOARD_TOKEN = "<local-secret>"
+$env:BLACKBOARD_TOKEN = "<conversation-token>"
 
 .\conversation-blackboard.exe verify endpoint `
   --expect-source rotary `
   --expect-instance legacy-rotary `
   --channel control-systems `
-  --after 22
+  --after 0
 ```
 
 The verifier checks:
@@ -97,8 +97,35 @@ The verifier checks:
 /api/messages
 ```
 
-and prints only non-secret status/identity/message metadata. It accepts both `http://` and `https://` base URLs, so the same command is used after Cloudflare cutover.
+and prints only non-secret status, identity, and message metadata. It accepts both `http://` and `https://` base URLs.
 
-## Historical importer
+## Service lifecycle
 
-The old DOCX shared-note importer is a historical one-time migration utility, not supported runtime tooling. It is intentionally not being ported to Rust. The existing SQLite database is now the durable source of truth.
+Install from an elevated PowerShell:
+
+```powershell
+.\conversation-blackboard.exe service install `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --host 127.0.0.1 `
+  --port 8766
+```
+
+Then use native SCM operations:
+
+```powershell
+Start-Service ConversationBlackboard
+Stop-Service ConversationBlackboard
+Restart-Service ConversationBlackboard
+Get-Service ConversationBlackboard
+```
+
+See `windows-service.md` for recovery policy, logs, and uninstall behavior.
+
+## Operational rules
+
+- Keep the production database outside the Git checkout.
+- Keep the production executable in a stable deployment directory.
+- Prefer `db backup` over copying a live WAL database with filesystem copy commands.
+- Stop the service before restore or destructive database replacement.
+- Keep bearer tokens out of chat, issue trackers, screenshots, and logs.
+- Rotate any credential that leaves its intended secret store.
