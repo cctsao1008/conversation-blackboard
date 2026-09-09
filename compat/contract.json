@@ -1,0 +1,48 @@
+{
+  "contract_version": 1,
+  "schema_sha256": "ba73986ec6bbcef99767807b7e0323e583dd221aaad0649665279dceb132114c",
+  "defaults": {
+    "host": "127.0.0.1",
+    "port": 8766,
+    "message_limit": 100,
+    "message_limit_max": 200,
+    "request_body_max_bytes": 65536
+  },
+  "identity": {
+    "token_hash": "sha256-lower-hex",
+    "instance_prefix": "i-",
+    "source_pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
+  },
+  "routes": [
+    {"method": "GET", "path": "/api/health", "auth": false, "success": 200},
+    {"method": "GET", "path": "/api/whoami", "auth": true, "success": 200},
+    {"method": "GET", "path": "/api/messages", "auth": true, "success": 200},
+    {"method": "POST", "path": "/api/messages", "auth": true, "success": 201},
+    {"method": "GET", "path": "/api/channels", "auth": true, "success": 200},
+    {"method": "POST", "path": "/api/register", "auth": "registration-key", "success": 201}
+  ],
+  "static_allowlist": ["/", "/app.js", "/style.css"],
+  "errors": {
+    "unauthorized": 401,
+    "invalid_json": 400,
+    "request_too_large": 413,
+    "invalid_query": 400,
+    "invalid_channel": 400,
+    "invalid_source": 400,
+    "invalid_label": 400,
+    "invalid_registration": 400,
+    "identity_is_server_resolved": 400,
+    "invalid_kind": 400,
+    "invalid_body": 400,
+    "invalid_reply_to": 400,
+    "reply_target_not_found": 400,
+    "database_unavailable": 503,
+    "internal_error": 500,
+    "not_found": 404
+  },
+  "security_headers": {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "x-frame-options": "DENY"
+  }
+}
