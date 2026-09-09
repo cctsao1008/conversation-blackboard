@@ -41,6 +41,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Rust tests on Windows
         run: cargo test --all-targets
       - name: Windows release build
@@ -50,3 +53,65 @@ jobs:
         run: |
           .\target\release\conversation-blackboard.exe --help
           .\target\release\conversation-blackboard.exe service --help
+      - name: Native SCM lifecycle smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = (Resolve-Path ".\target\release\conversation-blackboard.exe").Path
+          $runtime = Join-Path $env:RUNNER_TEMP "conversation-blackboard-service-ci"
+          $db = Join-Path $runtime "board.db"
+          $port = 18766
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+
+          try {
+            & $exe service install --db $db --host 127.0.0.1 --port $port
+
+            $svc = Get-Service ConversationBlackboard
+            if ($svc.Status -ne "Stopped") { throw "service should be stopped immediately after install" }
+
+            $wmi = Get-CimInstance Win32_Service -Filter "Name='ConversationBlackboard'"
+            if ($wmi.StartMode -ne "Auto") { throw "service startup mode is not Automatic" }
+
+            Start-Service ConversationBlackboard
+            $deadline = (Get-Date).AddSeconds(20)
+            do {
+              try {
+                $health = Invoke-RestMethod "http://127.0.0.1:$port/api/health" -TimeoutSec 2
+                if ($health.status -eq "ok") { break }
+              } catch {}
+              Start-Sleep -Milliseconds 250
+            } while ((Get-Date) -lt $deadline)
+            if ($health.status -ne "ok") { throw "service health check did not become ready" }
+
+            Restart-Service ConversationBlackboard
+            $deadline = (Get-Date).AddSeconds(20)
+            $health = $null
+            do {
+              try {
+                $health = Invoke-RestMethod "http://127.0.0.1:$port/api/health" -TimeoutSec 2
+                if ($health.status -eq "ok") { break }
+              } catch {}
+              Start-Sleep -Milliseconds 250
+            } while ((Get-Date) -lt $deadline)
+            if ($health.status -ne "ok") { throw "service health check did not recover after restart" }
+
+            Stop-Service ConversationBlackboard
+            (Get-Service ConversationBlackboard).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+
+            python -c "import sqlite3; c=sqlite3.connect(r'$db'); print(c.execute('pragma integrity_check').fetchone()[0]); assert c.execute('pragma integrity_check').fetchone()[0] == 'ok'"
+
+            $log = Join-Path $runtime "conversation-blackboard.log"
+            if (-not (Test-Path $log)) { throw "service lifecycle log was not created" }
+            Get-Content $log
+
+            sc.exe qfailure ConversationBlackboard
+          }
+          finally {
+            $existing = Get-Service ConversationBlackboard -ErrorAction SilentlyContinue
+            if ($existing) {
+              if ($existing.Status -ne "Stopped") {
+                Stop-Service ConversationBlackboard -Force -ErrorAction SilentlyContinue
+              }
+              & $exe service uninstall
+            }
+          }
