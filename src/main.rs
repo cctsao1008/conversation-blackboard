@@ -2,37 +2,61 @@ mod db;
 mod http;
 mod identity;
 mod model;
+mod runtime;
+#[cfg(windows)]
+mod windows_service;
 
-use std::{env, net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
-use http::AppState;
+use clap::{Args, Parser, Subcommand};
+use runtime::RuntimeConfig;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let host = env::var("BLACKBOARD_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
-    let port = env::var("BLACKBOARD_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(8766);
-    let db_path = PathBuf::from(env::var("BLACKBOARD_DB").unwrap_or_else(|_| "board.db".to_owned()));
-    let registration_key = env::var("BLACKBOARD_REGISTRATION_KEY").ok();
-
-    db::initialize(&db_path)?;
-
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let state = AppState {
-        db_path,
-        registration_key,
-    };
-
-    println!("conversation-blackboard listening on http://{addr}");
-    axum::serve(listener, http::app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
+#[derive(Debug, Parser)]
+#[command(name = "conversation-blackboard")]
+#[command(about = "Persistent blackboard for independent conversations")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the HTTP server interactively.
+    Run(RunArgs),
+    /// Install or control the native Windows service.
+    #[cfg(windows)]
+    Service {
+        #[command(subcommand)]
+        command: windows_service::ServiceCommand,
+    },
+}
+
+#[derive(Debug, Default, Args)]
+struct RunArgs {
+    #[arg(long)]
+    host: Option<String>,
+    #[arg(long)]
+    port: Option<u16>,
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cli = Cli::parse();
+    match cli.command {
+        None => run_interactive(RunArgs::default()),
+        Some(Command::Run(args)) => run_interactive(args),
+        #[cfg(windows)]
+        Some(Command::Service { command }) => windows_service::dispatch(command),
+    }
+}
+
+fn run_interactive(args: RunArgs) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = RuntimeConfig::from_env_with_overrides(args.host, args.port, args.db);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(runtime::run_server(config, async {
+        let _ = tokio::signal::ctrl_c().await;
+    }))
 }
