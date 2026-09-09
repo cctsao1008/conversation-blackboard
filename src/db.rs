@@ -131,7 +131,9 @@ pub fn append_navigation_message(
 
     if let Some(target) = reply_to {
         let exists = tx
-            .query_row("SELECT 1 FROM messages WHERE id = ?1", [target], |_| Ok(1_i64))
+            .query_row("SELECT 1 FROM messages WHERE id = ?1", [target], |_| {
+                Ok(1_i64)
+            })
             .optional()?
             .is_some();
         if !exists {
