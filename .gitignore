@@ -1,0 +1,32 @@
+# Runtime SQLite databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets / local credentials
+.env
+.env.*
+*.token
+*.secret
+secrets/
+runtime/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test/runtime artifacts
+.coverage
+.pytest_cache/
+tmp/
+backups/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
