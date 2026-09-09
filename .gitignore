@@ -13,7 +13,10 @@
 secrets/
 runtime/
 
-# Python
+# Rust
+target/
+
+# Python reference implementation (temporary during Rust migration)
 __pycache__/
 *.py[cod]
 .venv/
