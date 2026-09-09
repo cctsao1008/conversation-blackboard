@@ -234,6 +234,35 @@ def main() -> None:
             )
             assert adapter_reply["source"] == "project-b"
             assert adapter_reply["instance"] == who_b["instance"]
+
+            verify_env = os.environ.copy()
+            verify_env["BLACKBOARD_URL"] = base
+            verify_env["BLACKBOARD_TOKEN"] = a["token"]
+            verifier = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "verify_endpoint.py"),
+                    "--expect-source",
+                    who_a["source"],
+                    "--expect-instance",
+                    who_a["instance"],
+                    "--channel",
+                    "e2e",
+                    "--after",
+                    "0",
+                ],
+                cwd=ROOT,
+                env=verify_env,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            assert verifier.returncode == 0, verifier.stderr
+            assert "PASS: health" in verifier.stdout
+            assert "PASS: whoami" in verifier.stdout
+            assert "PASS: messages" in verifier.stdout
+            assert a["token"] not in verifier.stdout
+            assert a["token"] not in verifier.stderr
         finally:
             _stop(server)
 
@@ -270,6 +299,7 @@ def main() -> None:
 
         print("PASS: browser assets/security headers + health/auth/messages/cursor/reply/UTF-8/provenance/restart")
         print("PASS: vendor-neutral adapter with two concurrent identities")
+        print("PASS: endpoint verifier keeps credentials out of output")
         print(f"message ids: {first_id}, {second_id}")
 
 
