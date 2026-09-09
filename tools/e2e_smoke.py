@@ -22,7 +22,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _request(base: str, method: str, path: str, *, token=None, key=None, payload=None):
+def _request(base: str, method: str, path: str, *, token=None, key=None, payload=None, raw=None):
     headers = {"Accept": "application/json"}
     data = None
     if token:
@@ -32,10 +32,17 @@ def _request(base: str, method: str, path: str, *, token=None, key=None, payload
     if payload is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    elif raw is not None:
+        headers["Content-Type"] = "application/json"
+        data = raw
 
     request = Request(base + path, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=2) as response:
-        return response.status, json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=2) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        payload = json.loads(exc.read().decode("utf-8"))
+        return exc.code, payload
 
 
 def _start_server(db_path: Path, port: int, registration_key: str):
@@ -59,10 +66,8 @@ def _wait_ready(base: str, process: subprocess.Popen) -> None:
         if process.poll() is not None:
             raise RuntimeError("server exited before becoming ready")
         try:
-            # 401 proves the HTTP server is alive without requiring a token.
-            _request(base, "GET", "/api/whoami")
-        except HTTPError as exc:
-            if exc.code == 401:
+            status, _ = _request(base, "GET", "/api/whoami")
+            if status == 401:
                 return
         except URLError:
             pass
@@ -90,6 +95,18 @@ def main() -> None:
         try:
             _wait_ready(base, server)
 
+            status, _ = _request(base, "GET", "/api/messages")
+            assert status == 401
+
+            status, error = _request(
+                base,
+                "POST",
+                "/api/register",
+                key=registration_key,
+                raw=b"{broken-json",
+            )
+            assert status == 400 and error["error"] == "invalid_json"
+
             _, a = _request(
                 base,
                 "POST",
@@ -109,6 +126,19 @@ def main() -> None:
             _, who_b = _request(base, "GET", "/api/whoami", token=b["token"])
             assert who_a["instance"] != who_b["instance"]
 
+            status, spoof = _request(
+                base,
+                "POST",
+                "/api/messages",
+                token=a["token"],
+                payload={
+                    "channel": "e2e",
+                    "body": "spoof attempt",
+                    "source": "project-b",
+                },
+            )
+            assert status == 400 and spoof["error"] == "identity_is_server_resolved"
+
             _, first = _request(
                 base,
                 "POST",
@@ -125,10 +155,15 @@ def main() -> None:
             _, seen = _request(
                 base,
                 "GET",
-                f"/api/messages?after=0&channel=e2e",
+                "/api/messages?after=0&channel=e2e",
                 token=b["token"],
             )
             assert [m["id"] for m in seen["messages"]] == [first_id]
+            assert seen["messages"][0]["body"].endswith("UTF-8 測試")
+
+            _, channels = _request(base, "GET", "/api/channels", token=b["token"])
+            assert channels["channels"][0]["channel"] == "e2e"
+            assert channels["channels"][0]["message_count"] == 1
 
             _, second = _request(
                 base,
@@ -144,10 +179,17 @@ def main() -> None:
             )
             second_id = second["message"]["id"]
             assert second_id == first_id + 1
+
+            _, cursor = _request(
+                base,
+                "GET",
+                f"/api/messages?after={first_id}",
+                token=a["token"],
+            )
+            assert [m["id"] for m in cursor["messages"]] == [second_id]
         finally:
             _stop(server)
 
-        # Restart the backend against the same DB and verify persistence.
         server = _start_server(db_path, port, registration_key)
         try:
             _wait_ready(base, server)
@@ -161,7 +203,6 @@ def main() -> None:
         finally:
             _stop(server)
 
-        # Direct DB verification proves server-resolved provenance and reply storage.
         conn = sqlite3.connect(db_path)
         try:
             rows = conn.execute(
@@ -180,9 +221,10 @@ def main() -> None:
         assert rows[1][2] == who_b["instance"]
         assert rows[1][5] == first_id
 
-        print("PASS: two identities exchanged persistent messages through the HTTP API")
+        print("PASS: authenticated whoami/messages/channels/register API")
+        print("PASS: two identities exchanged persistent messages")
         print(f"message ids: {first_id}, {second_id}")
-        print("PASS: restart persistence, cursor/channel read, reply relation, UTF-8, provenance")
+        print("PASS: restart persistence, cursor/channel reads, reply, UTF-8, provenance, error handling")
 
 
 if __name__ == "__main__":
