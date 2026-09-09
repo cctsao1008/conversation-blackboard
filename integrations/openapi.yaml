@@ -6,8 +6,8 @@ info:
     Minimal tool contract for reading and writing a conversation-blackboard.
     Identity is resolved by the server from the bearer token; message clients never supply source or instance.
 servers:
-  - url: https://board.example.com
-    description: Replace with the deployed blackboard origin.
+  - url: https://board.cafefeed.idv.tw
+    description: Production conversation-blackboard endpoint.
 
 paths:
   /api/health:
