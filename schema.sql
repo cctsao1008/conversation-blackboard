@@ -22,3 +22,19 @@ CREATE TABLE IF NOT EXISTS identities (
     token_hash  TEXT UNIQUE,
     created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE IF NOT EXISTS web_capabilities (
+    instance         TEXT PRIMARY KEY,
+    capability_hash  TEXT UNIQUE,
+    created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at       INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE IF NOT EXISTS navigation_writes (
+    instance      TEXT NOT NULL,
+    nonce         TEXT NOT NULL,
+    request_hash  TEXT NOT NULL,
+    message_id    INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (instance, nonce)
+);
