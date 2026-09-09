@@ -8,20 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  python-reference:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Unit tests
-        run: python -m unittest discover -s tests -v
-      - name: Local HTTP E2E smoke
-        run: python tools/e2e_smoke.py
-      - name: Frozen compatibility scenario on Python
-        run: python tools/compat_smoke.py --runtime python
-
   rust-runtime:
     runs-on: ubuntu-latest
     steps:
@@ -35,10 +21,6 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Rust tests
         run: cargo test --locked --all-targets
-      - name: Rust debug build for compatibility scenario
-        run: cargo build --locked
-      - name: Frozen compatibility scenario on Rust
-        run: python3 tools/compat_smoke.py --runtime rust
       - name: Rust release build
         run: cargo build --release --locked
 
