@@ -1,35 +1,25 @@
-# Runtime SQLite databases
+# Runtime data
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
 
-# Secrets / local credentials
-.env
-.env.*
+# Secrets
 *.token
 *.secret
-secrets/
-runtime/
+.env
+.env.*
 
 # Rust
-target/
+/target/
 
-# Python reference implementation (temporary during Rust migration)
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Test/runtime artifacts
-.coverage
-.pytest_cache/
-tmp/
-backups/
-
-# OS/editor
-.DS_Store
-Thumbs.db
+# Editor / OS
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+
+# Local deployment / backup artifacts
+dist/
+*.log
