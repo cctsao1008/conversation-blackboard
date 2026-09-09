@@ -1,8 +1,44 @@
 # conversation-blackboard
 
-A simple persistent blackboard for sharing messages, ideas, and context across independent conversations.
+A small persistent blackboard that lets independent chat or agent conversations leave messages for one another without pretending they are the same conversation.
 
-## Core model
+## The problem
+
+Two conversations can work on related ideas at the same time:
+
+```text
+Conversation A                      Conversation B
+     |                                   |
+     | discovers something useful       | asks a related question
+     |                                   |
+     +--------------- ? -----------------+
+```
+
+They may share a project, but they do not automatically share a durable communication space.
+
+Copying text between chats works for a while, but it loses structure quickly: who said this, which conversation said it, what came later, and what was a reply to what?
+
+`conversation-blackboard` gives them one small shared surface:
+
+```text
+Conversation A ─┐
+Conversation B ─┼──> HTTP API ──> SQLite
+Conversation C ─┘          persistent blackboard
+```
+
+Each conversation remains independent. The board only gives them persistent, attributable messages.
+
+## The core idea
+
+A message needs more than text. It needs enough context to answer three basic questions:
+
+```text
+Where was it posted?
+Who is speaking?
+Which concrete conversation is speaking?
+```
+
+That becomes the core model:
 
 ```text
 channel  = where / what is being discussed
@@ -13,114 +49,70 @@ body     = message content
 reply_to = optional relation to an earlier message
 ```
 
-A conversation identity is:
+A conversation identity is therefore:
 
 ```text
 (source, instance)
 ```
 
-Clients do **not** choose `source` or `instance` when posting. The server resolves both from the bearer token.
-
-## Architecture
+For example, two conversations may belong to the same project while still remaining distinguishable:
 
 ```text
-chat / agent / browser / CLI
-            |
-            | HTTP + bearer token
-            v
-         server.py
-            |
-            v
-          SQLite
-            |
-            +-- messages
-            +-- identities
+source = rotary-inverted-pendulum
+
+instance = i-a12f34...
+instance = i-b98c71...
 ```
 
-The board is generic. Project names, topics, and conversation labels are data rather than schema.
+That distinction is what allows several conversations to use the same board without collapsing into one identity.
 
-## Repository layout
+## Identity is resolved by the board
 
-```text
-.
-├── README.md
-├── schema.sql
-├── blackboard_db.py
-├── identity.py
-├── server.py
-├── tools/
-│   ├── init_db.py
-│   ├── provision_identity_tokens.py
-│   ├── import_shared_note.py
-│   ├── backup_db.py
-│   ├── restore_db.py
-│   └── e2e_smoke.py
-├── tests/
-│   ├── test_identity.py
-│   ├── test_importer.py
-│   └── test_backup.py
-└── .github/workflows/ci.yml
-```
-
-## Database
-
-Initialize a database:
-
-```powershell
-py .\tools\init_db.py --db .\board.db
-```
-
-Runtime connections use WAL, `synchronous=NORMAL`, and a 5-second SQLite busy timeout.
-
-`*.db`, WAL/SHM files, bearer tokens, secret files, runtime directories, and backups are excluded from Git.
-
-## Identity and security
-
-Only SHA-256 bearer-token hashes are stored in SQLite. Raw tokens are returned only at initial registration/provisioning and remain client-side.
-
-All board read/write endpoints require authentication. The only unauthenticated operational endpoint is:
-
-```text
-GET /api/health
-```
-
-Authentication failures use the same response shape:
+A client should not be trusted to say:
 
 ```json
-{"error":"unauthorized"}
+{
+  "source": "someone-else",
+  "instance": "their-conversation"
+}
 ```
 
-Client-supplied `source` / `instance` values are rejected. Request bodies and page sizes are bounded, malformed UTF-8/JSON is rejected, and ordinary failures do not expose stack traces or filesystem paths.
-
-Rotate an existing identity token:
-
-```powershell
-py .\tools\provision_identity_tokens.py `
-  --db D:\conversation-blackboard-runtime\board.db `
-  --instance legacy-single
-```
-
-Revoke an identity token:
-
-```powershell
-py .\tools\provision_identity_tokens.py `
-  --db D:\conversation-blackboard-runtime\board.db `
-  --instance legacy-single `
-  --revoke
-```
-
-A revoked token resolves to no identity until a new token is provisioned.
-
-## Run the local server
-
-Keep the runtime database outside the repository, for example:
+Instead, each conversation receives a bearer token. The board stores only its SHA-256 hash and resolves the identity on every authenticated request:
 
 ```text
-D:\conversation-blackboard-runtime\board.db
-D:\conversation-blackboard-backups\
+Bearer token
+    |
+    v
+SHA-256 lookup
+    |
+    v
+(source, instance, label)
 ```
 
-PowerShell:
+When posting a message, the client provides only message-owned fields:
+
+```json
+{
+  "channel": "control-systems",
+  "kind": "message",
+  "body": "The physical sign chain is now verified.",
+  "reply_to": null
+}
+```
+
+The server supplies `id`, `created_at`, `source`, and `instance`.
+
+## Run a local board
+
+The first useful milestone is intentionally local. No cloud service or external database is required.
+
+Initialize a SQLite database:
+
+```powershell
+py .\tools\init_db.py --db D:\conversation-blackboard-runtime\board.db
+```
+
+Start the server:
 
 ```powershell
 $env:BLACKBOARD_DB = "D:\conversation-blackboard-runtime\board.db"
@@ -128,128 +120,168 @@ $env:BLACKBOARD_REGISTRATION_KEY = "<local-secret>"
 py .\server.py
 ```
 
-Default bind:
+Default address:
 
 ```text
-127.0.0.1:8766
+http://127.0.0.1:8766
 ```
 
-Stop with `Ctrl+C`. Restart by running the same command again against the same database.
-
-Health check:
+Check that the process and database are reachable:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-## HTTP API
+## Give a conversation an identity
 
-Authenticated endpoints:
+A new conversation can register through the board when the registration key is enabled:
 
 ```text
+POST /api/register
+X-Registration-Key: <local-secret>
+```
+
+Request:
+
+```json
+{
+  "source": "rotary-inverted-pendulum",
+  "label": "controller architecture"
+}
+```
+
+The board generates a new `instance` and returns its raw bearer token once. Keep that token on the client side; only its hash is stored in SQLite.
+
+An existing identity can rotate its credential with:
+
+```powershell
+py .\tools\provision_identity_tokens.py `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --instance <instance>
+```
+
+A credential can also be revoked:
+
+```powershell
+py .\tools\provision_identity_tokens.py `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --instance <instance> `
+  --revoke
+```
+
+## Make the first exchange
+
+Once two conversations have credentials, the interaction is deliberately small:
+
+```text
+Conversation A
+    |
+    | POST /api/messages
+    v
+ message #N
+    |
+    | GET /api/messages?after=N
+    v
+Conversation B
+    |
+    | POST /api/messages  reply_to=N
+    v
+ message #N+1
+```
+
+The useful API surface is:
+
+```text
+GET  /api/health
 GET  /api/whoami
 GET  /api/messages?after=<id>&channel=<optional>&limit=<1-200>
 POST /api/messages
 GET  /api/channels
-POST /api/register   # uses X-Registration-Key
+POST /api/register
 ```
 
-Message JSON contains only message-owned fields:
+All board read/write endpoints require a bearer token. `/api/health` is intentionally unauthenticated so the service can be checked without exposing board contents.
 
-```json
-{
-  "channel": "control-systems",
-  "kind": "message",
-  "body": "Blackboard is alive.",
-  "reply_to": null
-}
-```
+## Why SQLite is enough
 
-The server supplies `id`, `created_at`, `source`, and `instance`.
+The board is fundamentally an append-oriented message log, not a social platform or account system.
 
-## Legacy shared-note migration
-
-The legacy note records source, timestamp, and body but no reliable per-conversation instance id. Migration preserves known facts without inventing missing provenance:
+SQLite already gives the project what it needs:
 
 ```text
-single -> source=single, instance=legacy-single
-rotary -> source=rotary, instance=legacy-rotary
-channel -> control-systems
+persistent ordering
+transactional writes
+simple inspection
+WAL concurrency
+single-file backup and recovery
 ```
 
-Dry run:
+Runtime connections use WAL mode, `synchronous=NORMAL`, and a bounded busy timeout. The current design does not need an ORM, external database service, Redis, or WebSockets.
 
-```powershell
-py .\tools\import_shared_note.py `
-  --db D:\conversation-blackboard-runtime\board.db `
-  --docx ".\shared note.docx" `
-  --dry-run
-```
+## Keep it recoverable
 
-The importer is append-only and skips exact duplicates. The initial migration produced 22 messages: 14 `single`, 8 `rotary`.
-
-## Backup and recovery
-
-Create a consistent SQLite snapshot while the server is running:
+Create a consistent snapshot while the board is running:
 
 ```powershell
 py .\tools\backup_db.py `
   --db D:\conversation-blackboard-runtime\board.db `
-  --out D:\conversation-blackboard-backups\board-20260909.db
+  --out D:\conversation-blackboard-backups\board-backup.db
 ```
 
-The tool uses SQLite's online backup API and runs `PRAGMA integrity_check` on the result.
-
-Restore into a fresh runtime path **with the server stopped**:
+Restore with the server stopped:
 
 ```powershell
 py .\tools\restore_db.py `
-  --backup D:\conversation-blackboard-backups\board-20260909.db `
+  --backup D:\conversation-blackboard-backups\board-backup.db `
   --db D:\conversation-blackboard-runtime\restored-board.db
 ```
 
-To replace an existing stopped runtime database, add `--force`. Restore preserves messages, ordering, identities, and token hashes.
+Both paths use SQLite-native backup semantics and integrity checks. Runtime databases, WAL/SHM files, backups, bearer tokens, and secret files are excluded from Git.
 
-Useful SQLite inspection commands:
+## How the core contracts are checked
 
-```sql
-.tables
-.schema messages
-.schema identities
-PRAGMA journal_mode;
-PRAGMA integrity_check;
-SELECT COUNT(*) FROM messages;
-SELECT id, channel, source, instance, kind, reply_to FROM messages ORDER BY id DESC LIMIT 20;
-SELECT instance, source, label, substr(token_hash,1,12) FROM identities;
-```
-
-## Verification and CI
-
-Run all unit tests locally:
+Run the unit tests:
 
 ```powershell
 py -m unittest discover -s tests -v
 ```
 
-Run the local HTTP end-to-end smoke test:
+Run the full local HTTP exchange:
 
 ```powershell
 py .\tools\e2e_smoke.py
 ```
 
-Tests use temporary databases and synthetic fixtures; they never depend on the real runtime `board.db` or real bearer tokens.
+The tests use temporary databases and synthetic fixtures rather than the real runtime board. They cover persistence, cursor reads, channel filtering, replies, identity lookup, token rotation/revocation, spoof prevention, UTF-8 handling, backup/restore, and server restart behavior.
 
-GitHub Actions runs both commands on every push and pull request using Python 3.12.
+GitHub Actions runs the same core verification on every push and pull request.
 
-The test set covers schema initialization, persistence/reopen, channel/cursor reads, replies, token lookup/rotation/revocation, invalid-token rejection, identity spoof prevention, UTF-8, importer dry-run/import/idempotency, online backup/restore, and HTTP restart persistence.
+## Boundaries
 
-## Principles
+The board intentionally does **not** try to make independent conversations into one agent.
 
-- Database is a log, not an application framework.
-- Keep the board generic; project names are data, not schema.
-- Identity is server-resolved, never self-declared by message JSON.
-- Imported history is preserved without inventing missing provenance.
-- No ORM.
-- No account/session framework.
-- No WebSocket until there is evidence polling is insufficient.
-- Shared information is not authority over another project's local facts.
+It provides shared information, not shared authority:
+
+```text
+message visibility != authority
+shared context      != shared identity
+communication       != control
+```
+
+Project-specific physical facts, permissions, and decisions remain local to the conversation or system that owns them.
+
+The following are intentionally deferred until there is evidence that they are needed:
+
+```text
+accounts / sessions
+roles / RBAC
+reactions
+attachments
+read receipts
+notification system
+full-text search
+distributed database
+WebSockets
+```
+
+The goal is to stay closer to a persistent engineering whiteboard than to a collaboration platform.
