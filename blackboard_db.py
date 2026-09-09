@@ -65,3 +65,38 @@ def list_messages_after(
         """,
         (channel, after_id, limit),
     ).fetchall()
+
+
+def append_message(
+    conn: sqlite3.Connection,
+    identity,
+    *,
+    channel: str,
+    kind: str,
+    body: str,
+    reply_to: int | None = None,
+) -> sqlite3.Row:
+    cur = conn.execute(
+        """
+        INSERT INTO messages (channel, source, instance, kind, body, reply_to)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            channel,
+            identity.source,
+            identity.instance,
+            kind,
+            body,
+            reply_to,
+        ),
+    )
+    conn.commit()
+
+    return conn.execute(
+        """
+        SELECT id, created_at, channel, source, instance, kind, body, reply_to
+        FROM messages
+        WHERE id = ?
+        """,
+        (cur.lastrowid,),
+    ).fetchone()
