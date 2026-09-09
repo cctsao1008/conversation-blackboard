@@ -1,182 +1,162 @@
-# Native Windows service
+# Windows service
 
-The production Rust runtime is designed to be owned by Windows Service Control Manager (SCM), not by an open PowerShell window.
+`conversation-blackboard.exe` supports native Windows Service Control Manager lifecycle operations.
 
-```text
-Windows SCM
-    |
-    v
-ConversationBlackboard
-    |
-    v
-conversation-blackboard.exe
-    |
-    +-- HTTP 127.0.0.1:8766
-    +-- SQLite board.db
-    +-- embedded browser UI
-```
-
-The service implementation uses the native Windows service APIs through the Rust `windows-service` crate. Interactive `run` mode remains available for development.
-
-## Build
-
-```powershell
-git pull
-cargo build --release
-```
-
-The executable is:
+## Service identity
 
 ```text
-target\release\conversation-blackboard.exe
+Service name : ConversationBlackboard
+Display name : Conversation Blackboard
+Startup      : Automatic
+Process      : Own process
 ```
 
-For a production installation, place that executable in a stable application directory before installing the service. Do not make the service depend on a temporary build directory that may be deleted.
+The service runs the same Rust HTTP/SQLite runtime as interactive mode.
 
-Keep the database outside the Git checkout as well, for example:
+## Stable executable path
+
+Install the service from a stable deployment location rather than a Cargo build directory. Example:
+
+```text
+D:\conversation-blackboard\bin\conversation-blackboard.exe
+```
+
+The database should also live outside the Git checkout, for example:
 
 ```text
 D:\conversation-blackboard-runtime\board.db
 ```
 
-## Safe copy of an active WAL database
-
-`conversation-blackboard` uses SQLite WAL mode. When the source server is running, recent committed rows can still live in `board.db-wal` rather than the main `board.db` file.
-
-Do **not** create a verification database with a plain filesystem copy such as:
-
-```powershell
-Copy-Item D:\sqlite-tools-win-x64-3530400\board.db D:\conversation-blackboard-runtime\board-service-test.db
-```
-
-while the source runtime may still be active. Such a copy can be structurally valid yet omit recent messages, identities, or rotated token hashes.
-
-Use SQLite's online backup API instead. With the SQLite CLI already installed locally:
-
-```powershell
-Remove-Item D:\conversation-blackboard-runtime\board-service-test.db -ErrorAction SilentlyContinue
-
-& D:\sqlite-tools-win-x64-3530400\sqlite3.exe `
-  D:\sqlite-tools-win-x64-3530400\board.db `
-  ".backup 'D:/conversation-blackboard-runtime/board-service-test.db'"
-```
-
-The repository's current Python backup helper also uses SQLite's online backup API and is safe during the migration period:
-
-```powershell
-py .\tools\backup_db.py `
-  --db D:\sqlite-tools-win-x64-3530400\board.db `
-  --out D:\conversation-blackboard-runtime\board-service-test.db
-```
-
-Issue #23 will replace the temporary Python operational helper with a Rust-native command. The required property is the SQLite backup operation, not the implementation language used during migration.
-
-If an existing bearer token works against the source runtime but not against a plain copied database, treat that as evidence that the filesystem copy missed WAL-resident state. Recreate the verification DB with an online backup before investigating auth code.
-
-Bearer tokens are credentials. Keep them local; if a raw token is pasted into chat, an issue, a log, or another non-secret channel, rotate it before production use.
-
 ## Install
 
-Run an elevated PowerShell from the directory containing the production executable:
+Run from an elevated PowerShell:
 
 ```powershell
-.\conversation-blackboard.exe service install `
+$bb = "D:\conversation-blackboard\bin\conversation-blackboard.exe"
+
+& $bb service install `
   --db D:\conversation-blackboard-runtime\board.db `
   --host 127.0.0.1 `
   --port 8766
 ```
 
-Installation configures:
+Installation registers the service but does not need to start it immediately.
 
-```text
-Service name:     ConversationBlackboard
-Display name:     Conversation Blackboard
-Account:          LocalSystem
-Startup:          Automatic
-Origin:           127.0.0.1:8766
-Failure recovery: restart after 5 s, 15 s, then 30 s
-```
+## Lifecycle
 
-Only non-secret runtime values are placed in the SCM command line. Bearer tokens and the registration key are never service arguments.
-
-`/api/register` remains disabled unless `BLACKBOARD_REGISTRATION_KEY` is available to the service process. Existing bearer-token identities do not require that key for normal read/write use.
-
-## Control
-
-Normal Windows commands work:
+Use either native PowerShell SCM commands:
 
 ```powershell
-Get-Service ConversationBlackboard
 Start-Service ConversationBlackboard
 Stop-Service ConversationBlackboard
 Restart-Service ConversationBlackboard
+Get-Service ConversationBlackboard
 ```
 
-The executable also exposes equivalent commands:
+or the executable wrapper:
 
 ```powershell
-.\conversation-blackboard.exe service status
-.\conversation-blackboard.exe service start
-.\conversation-blackboard.exe service stop
-.\conversation-blackboard.exe service restart
-.\conversation-blackboard.exe service uninstall
+& $bb service start
+& $bb service stop
+& $bb service restart
+& $bb service status
 ```
 
-Install/uninstall require an elevated terminal. Start/stop permissions follow normal Windows service ACLs.
+The service accepts SCM Stop and Shutdown controls and maps them to graceful runtime shutdown before the process exits.
 
-## Graceful stop
+## Health verification
 
-SCM `Stop` and Windows `Shutdown` controls signal the Axum/Tokio graceful-shutdown path. The HTTP listener exits before the service reports `Stopped`; SQLite connections are request-scoped, so no long-lived connection is abandoned by normal service stop/restart.
+```powershell
+Invoke-RestMethod http://127.0.0.1:8766/api/health
+```
 
-The database continues to use the existing WAL + busy-timeout contract.
+Authenticated verification can use the built-in verifier:
 
-## Service log
+```powershell
+$env:BLACKBOARD_URL = "http://127.0.0.1:8766"
+$env:BLACKBOARD_TOKEN = "<conversation-token>"
 
-Lifecycle-only service logging is written beside the configured database:
+& $bb verify endpoint `
+  --expect-source <source> `
+  --expect-instance <instance>
+```
+
+## Recovery policy
+
+The service configures SCM recovery actions for unexpected process failures:
 
 ```text
-D:\conversation-blackboard-runtime\conversation-blackboard.log
+first failure   -> restart after 5 seconds
+second failure  -> restart after 15 seconds
+third failure   -> restart after 30 seconds
+failure counter -> reset after 24 hours
 ```
 
-The service log records start/running/clean-stop/runtime-error events and does not log Authorization headers, bearer tokens, registration keys, request bodies, or board messages.
+Failure actions are configured for non-crash failures as well.
 
-## Verification
-
-After install:
+Inspect them with:
 
 ```powershell
+sc.exe qfailure ConversationBlackboard
+```
+
+## Logging
+
+Lifecycle/runtime errors are written beside the database as:
+
+```text
+conversation-blackboard.log
+```
+
+The log is intentionally narrow. It must not contain bearer tokens, registration secrets, or message bodies.
+
+## Registration key
+
+Ordinary bearer-authenticated board reads/writes do not need a registration key.
+
+If `/api/register` is enabled, `BLACKBOARD_REGISTRATION_KEY` must be available in the service process environment. Do not place the registration key in service command-line arguments.
+
+## Database integrity around service operations
+
+For explicit maintenance:
+
+```powershell
+Stop-Service ConversationBlackboard
+
+& $bb db integrity `
+  --db D:\conversation-blackboard-runtime\board.db
+
 Start-Service ConversationBlackboard
-Get-Service ConversationBlackboard
-Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-Expected service state and HTTP result:
+Expected integrity result:
 
 ```text
-Status : Running
-{"status":"ok"}
+ok
 ```
 
-Then verify an existing identity using a token kept only in the current PowerShell session:
+Use `db backup` for a live SQLite-aware snapshot instead of copying only `board.db` while WAL mode is active.
+
+## Uninstall
+
+Stop the service first, then remove the SCM registration:
 
 ```powershell
-$token = Read-Host "Bearer token"
-$headers = @{ Authorization = "Bearer $token" }
-Invoke-RestMethod http://127.0.0.1:8766/api/whoami -Headers $headers
+Stop-Service ConversationBlackboard -ErrorAction SilentlyContinue
+& $bb service uninstall
 ```
 
-Finally verify restart persistence:
+Uninstall removes only the service registration. It does not delete the executable, database, backups, or logs.
+
+If Windows reports error 1060, the service is already absent.
+
+## Reboot behavior
+
+Because startup is Automatic, the service should return after Windows reboot. Verify with:
 
 ```powershell
-Restart-Service ConversationBlackboard
-Invoke-RestMethod http://127.0.0.1:8766/api/health
 Get-Service ConversationBlackboard
+Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-The existing messages, identities, token hashes, and next SQLite message id must remain unchanged across service restart.
-
-## Failure recovery
-
-Installation configures SCM recovery actions and enables them for non-crash failures. Normal administrative `Stop-Service` is still a clean service stop and should not be treated as a runtime crash.
-
-A destructive crash/recovery test should only be performed against a disposable SQLite-backup copy of `board.db` until the production cutover checklist in the Rust migration roadmap is complete.
+Expected service state is `Running` with health `ok`.
