@@ -71,6 +71,8 @@ py .\tools\backup_db.py `
 
 Issue #23 will replace the temporary Python operational helper with a Rust-native command. The required property is the SQLite backup operation, not the implementation language used during migration.
 
+If an existing bearer token works against the source runtime but not against a plain copied database, treat that as evidence that the filesystem copy missed WAL-resident state. Recreate the verification DB with an online backup before investigating auth code.
+
 ## Install
 
 Run an elevated PowerShell from the directory containing the production executable:
