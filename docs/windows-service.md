@@ -73,6 +73,8 @@ Issue #23 will replace the temporary Python operational helper with a Rust-nativ
 
 If an existing bearer token works against the source runtime but not against a plain copied database, treat that as evidence that the filesystem copy missed WAL-resident state. Recreate the verification DB with an online backup before investigating auth code.
 
+Bearer tokens are credentials. Keep them local; if a raw token is pasted into chat, an issue, a log, or another non-secret channel, rotate it before production use.
+
 ## Install
 
 Run an elevated PowerShell from the directory containing the production executable:
