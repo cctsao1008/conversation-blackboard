@@ -41,9 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Rust tests on Windows
         run: cargo test --all-targets
       - name: Windows release build
@@ -52,18 +49,33 @@ jobs:
         shell: pwsh
         run: |
           .\target\release\conversation-blackboard.exe --help
+          .\target\release\conversation-blackboard.exe db --help
+          .\target\release\conversation-blackboard.exe identity --help
+          .\target\release\conversation-blackboard.exe verify --help
           .\target\release\conversation-blackboard.exe service --help
-      - name: Native SCM lifecycle smoke
+      - name: Native SCM and Rust operations smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $exe = (Resolve-Path ".\target\release\conversation-blackboard.exe").Path
           $runtime = Join-Path $env:RUNNER_TEMP "conversation-blackboard-service-ci"
           $db = Join-Path $runtime "board.db"
+          $backup = Join-Path $runtime "board-backup.db"
+          $restored = Join-Path $runtime "board-restored.db"
           $port = 18766
           New-Item -ItemType Directory -Force $runtime | Out-Null
 
           try {
+            & $exe db init --db $db
+
+            $provision = (& $exe identity provision --db $db --source ci-source --label "CI identity") | Out-String
+            $instanceLine = ($provision -split "`r?`n" | Where-Object { $_ -match '^instance\s*:' } | Select-Object -First 1)
+            $tokenLine = ($provision -split "`r?`n" | Where-Object { $_ -match '^token\s*:' } | Select-Object -First 1)
+            if (-not $instanceLine -or -not $tokenLine) { throw "identity provisioning output missing instance/token" }
+            $instance = ($instanceLine -replace '^instance\s*:\s*', '').Trim()
+            $token = ($tokenLine -replace '^token\s*:\s*', '').Trim()
+            if (-not $instance -or -not $token) { throw "identity provisioning returned empty instance/token" }
+
             & $exe service install --db $db --host 127.0.0.1 --port $port
 
             $svc = Get-Service ConversationBlackboard
@@ -83,6 +95,13 @@ jobs:
             } while ((Get-Date) -lt $deadline)
             if ($health.status -ne "ok") { throw "service health check did not become ready" }
 
+            $env:BLACKBOARD_URL = "http://127.0.0.1:$port"
+            $env:BLACKBOARD_TOKEN = $token
+            & $exe verify endpoint --expect-source ci-source --expect-instance $instance
+
+            & $exe db backup --db $db --out $backup
+            & $exe db integrity --db $backup
+
             Restart-Service ConversationBlackboard
             $deadline = (Get-Date).AddSeconds(20)
             $health = $null
@@ -95,10 +114,18 @@ jobs:
             } while ((Get-Date) -lt $deadline)
             if ($health.status -ne "ok") { throw "service health check did not recover after restart" }
 
+            & $exe verify endpoint --expect-source ci-source --expect-instance $instance
+
             Stop-Service ConversationBlackboard
             (Get-Service ConversationBlackboard).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
 
-            python -c "import sqlite3; c=sqlite3.connect(r'$db'); print(c.execute('pragma integrity_check').fetchone()[0]); assert c.execute('pragma integrity_check').fetchone()[0] == 'ok'"
+            & $exe db integrity --db $db
+            & $exe db restore --backup $backup --db $restored
+            & $exe db integrity --db $restored
+
+            $rotation = (& $exe identity rotate --db $restored --instance $instance) | Out-String
+            if ($rotation -notmatch 'token\s*:') { throw "identity rotation did not issue a token" }
+            & $exe identity revoke --db $restored --instance $instance
 
             $log = Join-Path $runtime "conversation-blackboard.log"
             if (-not (Test-Path $log)) { throw "service lifecycle log was not created" }
@@ -107,6 +134,8 @@ jobs:
             sc.exe qfailure ConversationBlackboard
           }
           finally {
+            Remove-Item Env:BLACKBOARD_TOKEN -ErrorAction SilentlyContinue
+            Remove-Item Env:BLACKBOARD_URL -ErrorAction SilentlyContinue
             $existing = Get-Service ConversationBlackboard -ErrorAction SilentlyContinue
             if ($existing) {
               if ($existing.Status -ne "Stopped") {
