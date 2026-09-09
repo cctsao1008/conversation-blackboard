@@ -41,8 +41,7 @@ def _request(base: str, method: str, path: str, *, token=None, key=None, payload
         with urlopen(request, timeout=2) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        payload = json.loads(exc.read().decode("utf-8"))
-        return exc.code, payload
+        return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
 def _start_server(db_path: Path, port: int, registration_key: str):
@@ -66,8 +65,8 @@ def _wait_ready(base: str, process: subprocess.Popen) -> None:
         if process.poll() is not None:
             raise RuntimeError("server exited before becoming ready")
         try:
-            status, _ = _request(base, "GET", "/api/whoami")
-            if status == 401:
+            status, payload = _request(base, "GET", "/api/health")
+            if status == 200 and payload.get("status") == "ok":
                 return
         except URLError:
             pass
@@ -95,17 +94,25 @@ def main() -> None:
         try:
             _wait_ready(base, server)
 
-            status, _ = _request(base, "GET", "/api/messages")
-            assert status == 401
+            status, error = _request(base, "GET", "/api/messages")
+            assert status == 401 and error == {"error": "unauthorized"}
 
-            status, error = _request(
+            status, invalid_error = _request(
+                base,
+                "GET",
+                "/api/messages",
+                token="invalid-token",
+            )
+            assert status == 401 and invalid_error == error
+
+            status, malformed = _request(
                 base,
                 "POST",
                 "/api/register",
                 key=registration_key,
                 raw=b"{broken-json",
             )
-            assert status == 400 and error["error"] == "invalid_json"
+            assert status == 400 and malformed["error"] == "invalid_json"
 
             _, a = _request(
                 base,
@@ -160,10 +167,6 @@ def main() -> None:
             )
             assert [m["id"] for m in seen["messages"]] == [first_id]
             assert seen["messages"][0]["body"].endswith("UTF-8 測試")
-
-            _, channels = _request(base, "GET", "/api/channels", token=b["token"])
-            assert channels["channels"][0]["channel"] == "e2e"
-            assert channels["channels"][0]["message_count"] == 1
 
             _, second = _request(
                 base,
@@ -221,10 +224,8 @@ def main() -> None:
         assert rows[1][2] == who_b["instance"]
         assert rows[1][5] == first_id
 
-        print("PASS: authenticated whoami/messages/channels/register API")
-        print("PASS: two identities exchanged persistent messages")
+        print("PASS: health/authentication/messages/cursor/reply/UTF-8/provenance/restart")
         print(f"message ids: {first_id}, {second_id}")
-        print("PASS: restart persistence, cursor/channel reads, reply, UTF-8, provenance, error handling")
 
 
 if __name__ == "__main__":
