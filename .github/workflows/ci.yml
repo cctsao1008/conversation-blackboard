@@ -52,8 +52,9 @@ jobs:
           .\target\release\conversation-blackboard.exe db --help
           .\target\release\conversation-blackboard.exe identity --help
           .\target\release\conversation-blackboard.exe verify --help
+          .\target\release\conversation-blackboard.exe client --help
           .\target\release\conversation-blackboard.exe service --help
-      - name: Native SCM and Rust operations smoke
+      - name: Native SCM, operations, and two-identity client smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -65,23 +66,29 @@ jobs:
           $port = 18766
           New-Item -ItemType Directory -Force $runtime | Out-Null
 
-          try {
-            & $exe db init --db $db
-
-            $provision = (& $exe identity provision --db $db --source ci-source --label "CI identity") | Out-String
-            $lines = $provision -split "\r?\n"
+          function Provision-Identity([string]$source, [string]$label) {
+            $output = (& $exe identity provision --db $db --source $source --label $label) | Out-String
+            $lines = $output -split "\r?\n"
             $instanceLine = ($lines | Where-Object { $_ -match '^instance\s*:' } | Select-Object -First 1)
             $tokenLine = ($lines | Where-Object { $_ -match '^token\s*:' } | Select-Object -First 1)
             if (-not $instanceLine -or -not $tokenLine) { throw "identity provisioning output missing instance/token" }
-            $instance = ($instanceLine -replace '^instance\s*:\s*', '').Trim()
-            $token = ($tokenLine -replace '^token\s*:\s*', '').Trim()
-            if (-not $instance -or -not $token) { throw "identity provisioning returned empty instance/token" }
+            [pscustomobject]@{
+              Instance = ($instanceLine -replace '^instance\s*:\s*', '').Trim()
+              Token = ($tokenLine -replace '^token\s*:\s*', '').Trim()
+            }
+          }
+
+          try {
+            & $exe db init --db $db
+            $a = Provision-Identity "ci-source-a" "CI identity A"
+            $b = Provision-Identity "ci-source-b" "CI identity B"
+            if (-not $a.Instance -or -not $a.Token -or -not $b.Instance -or -not $b.Token) {
+              throw "identity provisioning returned empty values"
+            }
 
             & $exe service install --db $db --host 127.0.0.1 --port $port
-
             $svc = Get-Service ConversationBlackboard
             if ($svc.Status -ne "Stopped") { throw "service should be stopped immediately after install" }
-
             $wmi = Get-CimInstance Win32_Service -Filter "Name='ConversationBlackboard'"
             if ($wmi.StartMode -ne "Auto") { throw "service startup mode is not Automatic" }
 
@@ -97,8 +104,23 @@ jobs:
             if ($health.status -ne "ok") { throw "service health check did not become ready" }
 
             $env:BLACKBOARD_URL = "http://127.0.0.1:$port"
-            $env:BLACKBOARD_TOKEN = $token
-            & $exe verify endpoint --expect-source ci-source --expect-instance $instance
+            $env:BLACKBOARD_TOKEN = $a.Token
+            & $exe verify endpoint --expect-source ci-source-a --expect-instance $a.Instance
+            $whoA = (& $exe client whoami | Out-String) | ConvertFrom-Json
+            if ($whoA.instance -ne $a.Instance) { throw "client A identity mismatch" }
+            $messageA = (& $exe client post --channel ci-exchange --body "from A" | Out-String) | ConvertFrom-Json
+
+            $env:BLACKBOARD_TOKEN = $b.Token
+            $whoB = (& $exe client whoami | Out-String) | ConvertFrom-Json
+            if ($whoB.instance -ne $b.Instance) { throw "client B identity mismatch" }
+            $readB = (& $exe client read --after 0 --channel ci-exchange | Out-String) | ConvertFrom-Json
+            if ($readB.Count -ne 1 -or $readB[0].instance -ne $a.Instance) { throw "client B did not observe client A message" }
+            $messageB = (& $exe client post --channel ci-exchange --body "reply from B" --reply-to $messageA.id | Out-String) | ConvertFrom-Json
+            if ($messageB.reply_to -ne $messageA.id -or $messageB.instance -ne $b.Instance) { throw "client B reply provenance mismatch" }
+
+            $env:BLACKBOARD_TOKEN = $a.Token
+            $readA = (& $exe client read --after $messageA.id --channel ci-exchange | Out-String) | ConvertFrom-Json
+            if ($readA.Count -ne 1 -or $readA[0].instance -ne $b.Instance) { throw "client A did not observe client B reply" }
 
             & $exe db backup --db $db --out $backup
             & $exe db integrity --db $backup
@@ -114,24 +136,21 @@ jobs:
               Start-Sleep -Milliseconds 250
             } while ((Get-Date) -lt $deadline)
             if ($health.status -ne "ok") { throw "service health check did not recover after restart" }
-
-            & $exe verify endpoint --expect-source ci-source --expect-instance $instance
+            & $exe verify endpoint --expect-source ci-source-a --expect-instance $a.Instance --channel ci-exchange
 
             Stop-Service ConversationBlackboard
             (Get-Service ConversationBlackboard).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
-
             & $exe db integrity --db $db
             & $exe db restore --backup $backup --db $restored
             & $exe db integrity --db $restored
 
-            $rotation = (& $exe identity rotate --db $restored --instance $instance) | Out-String
+            $rotation = (& $exe identity rotate --db $restored --instance $a.Instance) | Out-String
             if ($rotation -notmatch 'token\s*:') { throw "identity rotation did not issue a token" }
-            & $exe identity revoke --db $restored --instance $instance
+            & $exe identity revoke --db $restored --instance $a.Instance
 
             $log = Join-Path $runtime "conversation-blackboard.log"
             if (-not (Test-Path $log)) { throw "service lifecycle log was not created" }
             Get-Content $log
-
             sc.exe qfailure ConversationBlackboard
           }
           finally {
