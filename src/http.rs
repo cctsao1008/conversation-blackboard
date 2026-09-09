@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf, sync::OnceLock};
 
 use axum::{
     body::{to_bytes, Body},
-    extract::State,
+    extract::{Path, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -59,6 +59,8 @@ pub fn app(state: AppState) -> Router {
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
+        .route("/r/{channel}", get(navigation_read))
+        .route("/w/{capability}", get(navigation_write))
         .route("/api/health", get(health))
         .route("/api/whoami", get(whoami))
         .route("/api/messages", get(messages).post(post_message))
@@ -86,6 +88,143 @@ async fn style_css() -> Response {
     static_response("text/css; charset=utf-8", include_str!("../web/style.css"))
 }
 
+async fn navigation_read(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    uri: Uri,
+) -> Result<Response, ApiError> {
+    if !name_re().is_match(&channel) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_channel"));
+    }
+
+    let params = first_query_values(&uri);
+    let after = parse_after(&params)?;
+    let limit = parse_limit(&params, 50)?;
+    let query_channel = channel.clone();
+    let rows = with_db(&state, move |conn| {
+        db::list_messages_after(conn, after, Some(&query_channel), limit)
+    })
+    .await?;
+
+    let latest_id = rows.last().map(|row| row.id).unwrap_or(after);
+    let mut body = format!(
+        "conversation-blackboard read\nchannel: {channel}\nafter: {after}\ncount: {}\nlatest_id: {latest_id}\n",
+        rows.len()
+    );
+    for row in rows {
+        body.push_str("\n");
+        body.push_str(
+            &serde_json::to_string(&row)
+                .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?,
+        );
+        body.push('\n');
+    }
+
+    Ok(navigation_text_response(StatusCode::OK, body))
+}
+
+async fn navigation_write(
+    State(state): State<AppState>,
+    Path(capability): Path<String>,
+    uri: Uri,
+) -> Result<Response, ApiError> {
+    if capability.len() > 128 || !capability.starts_with("wc_") {
+        return Err(ApiError::unauthorized());
+    }
+
+    let identity = with_db(&state, move |conn| {
+        identity::resolve_web_capability(conn, &capability)
+    })
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
+
+    let params = first_query_values(&uri);
+    let channel = params
+        .get("channel")
+        .filter(|value| name_re().is_match(value))
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_channel"))?;
+    let kind = match params.get("kind") {
+        None => "message".to_owned(),
+        Some(value) if kind_re().is_match(value) => value.clone(),
+        _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_kind")),
+    };
+    let message_body = params
+        .get("body")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_body"))?;
+    if message_body.len() > MAX_BODY_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request_too_large",
+        ));
+    }
+    let nonce = params
+        .get("nonce")
+        .filter(|value| nonce_re().is_match(value))
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_nonce"))?;
+    let reply_to = parse_reply_to(&params)?;
+
+    let request_hash = identity::hash_token(
+        &json!({
+            "channel": channel,
+            "kind": kind,
+            "body": message_body,
+            "reply_to": reply_to,
+        })
+        .to_string(),
+    );
+
+    let write_identity = identity.clone();
+    let write_channel = channel.clone();
+    let write_kind = kind.clone();
+    let write_body = message_body.clone();
+    let write_nonce = nonce.clone();
+    let result = with_db(&state, move |conn| {
+        db::append_navigation_message(
+            conn,
+            &write_identity,
+            &write_channel,
+            &write_kind,
+            &write_body,
+            reply_to,
+            &write_nonce,
+            &request_hash,
+        )
+    })
+    .await?;
+
+    let (status, persisted, idempotent) = match result {
+        db::NavigationAppendResult::Created(message) => ("created", message, false),
+        db::NavigationAppendResult::Existing(message) => ("existing", message, true),
+        db::NavigationAppendResult::NonceConflict => {
+            return Ok(navigation_text_response(
+                StatusCode::CONFLICT,
+                "conversation-blackboard write\nstatus: error\nerror: nonce_conflict\n".to_owned(),
+            ));
+        }
+        db::NavigationAppendResult::ReplyTargetNotFound => {
+            return Ok(navigation_text_response(
+                StatusCode::BAD_REQUEST,
+                "conversation-blackboard write\nstatus: error\nerror: reply_target_not_found\n"
+                    .to_owned(),
+            ));
+        }
+    };
+
+    let reply = persisted
+        .reply_to
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+    let body = format!(
+        "conversation-blackboard write\nstatus: {status}\nidempotent: {idempotent}\nid: {}\nsource: {}\ninstance: {}\nchannel: {}\nkind: {}\nreply_to: {reply}\n",
+        persisted.id, persisted.source, persisted.instance, persisted.channel, persisted.kind
+    );
+    Ok(navigation_text_response(StatusCode::OK, body))
+}
+
 async fn health(State(state): State<AppState>) -> Result<Response, ApiError> {
     with_db(&state, db::health).await?;
     Ok(json_response(StatusCode::OK, json!({"status": "ok"})))
@@ -111,22 +250,8 @@ async fn messages(
     let _identity = require_identity(&state, &headers).await?;
     let params = first_query_values(&uri);
 
-    let after = params
-        .get("after")
-        .map(String::as_str)
-        .unwrap_or("0")
-        .parse::<i64>()
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
-    let limit = params
-        .get("limit")
-        .map(String::as_str)
-        .unwrap_or("100")
-        .parse::<usize>()
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
-
-    if after < 0 || !(1..=MAX_PAGE_SIZE).contains(&limit) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"));
-    }
+    let after = parse_after(&params)?;
+    let limit = parse_limit(&params, 100)?;
 
     let channel = params.get("channel").cloned();
     if let Some(value) = &channel {
@@ -334,6 +459,44 @@ fn first_query_values(uri: &Uri) -> HashMap<String, String> {
     values
 }
 
+fn parse_after(params: &HashMap<String, String>) -> Result<i64, ApiError> {
+    let after = params
+        .get("after")
+        .map(String::as_str)
+        .unwrap_or("0")
+        .parse::<i64>()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
+    if after < 0 {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"));
+    }
+    Ok(after)
+}
+
+fn parse_limit(params: &HashMap<String, String>, default: usize) -> Result<usize, ApiError> {
+    let limit = params
+        .get("limit")
+        .map(String::as_str)
+        .unwrap_or_else(|| if default == 50 { "50" } else { "100" })
+        .parse::<usize>()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
+    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"));
+    }
+    Ok(limit)
+}
+
+fn parse_reply_to(params: &HashMap<String, String>) -> Result<Option<i64>, ApiError> {
+    match params.get("reply_to") {
+        None => Ok(None),
+        Some(value) => value
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id > 0)
+            .map(Some)
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_reply_to")),
+    }
+}
+
 fn name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$").unwrap())
@@ -342,6 +505,11 @@ fn name_re() -> &'static Regex {
 fn kind_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$").unwrap())
+}
+
+fn nonce_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$").unwrap())
 }
 
 async fn with_db<T, F>(state: &AppState, operation: F) -> Result<T, ApiError>
@@ -364,6 +532,23 @@ fn json_response(status: StatusCode, value: Value) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    add_common_security_headers(response.headers_mut());
+    response
+}
+
+fn navigation_text_response(status: StatusCode, body: String) -> Response {
+    let mut response = (status, body).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("noindex, nofollow"),
+    );
     add_common_security_headers(response.headers_mut());
     response
 }
