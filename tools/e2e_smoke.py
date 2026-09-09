@@ -14,6 +14,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from blackboard_client import BlackboardClient  # noqa: E402
 
 
 def _free_port() -> int:
@@ -207,6 +210,30 @@ def main() -> None:
                 token=a["token"],
             )
             assert [m["id"] for m in cursor["messages"]] == [second_id]
+
+            client_a = BlackboardClient(base, a["token"])
+            client_b = BlackboardClient(base, b["token"])
+            assert client_a.whoami().instance == who_a["instance"]
+            assert client_b.whoami().instance == who_b["instance"]
+
+            adapter_first = client_a.post(
+                channel="adapter-e2e",
+                kind="insight",
+                body="adapter message from A",
+            )
+            adapter_seen = client_b.messages(
+                after=0,
+                channel="adapter-e2e",
+            )
+            assert [m["id"] for m in adapter_seen] == [adapter_first["id"]]
+
+            adapter_reply = client_b.post(
+                channel="adapter-e2e",
+                body="adapter reply from B",
+                reply_to=adapter_first["id"],
+            )
+            assert adapter_reply["source"] == "project-b"
+            assert adapter_reply["instance"] == who_b["instance"]
         finally:
             _stop(server)
 
@@ -242,6 +269,7 @@ def main() -> None:
         assert rows[1][5] == first_id
 
         print("PASS: browser assets/security headers + health/auth/messages/cursor/reply/UTF-8/provenance/restart")
+        print("PASS: vendor-neutral adapter with two concurrent identities")
         print(f"message ids: {first_id}, {second_id}")
 
 
