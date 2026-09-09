@@ -40,19 +40,13 @@ Do not bind the backend to `0.0.0.0` for the tunnel deployment.
 
 ## 2. Create a named tunnel in Cloudflare
 
-In the Cloudflare dashboard:
-
-```text
-Networking -> Tunnels -> Create Tunnel
-```
-
-Use a stable name such as:
+In the Cloudflare dashboard, create a named Tunnel for the Windows host. A stable name such as this is sufficient:
 
 ```text
 conversation-blackboard
 ```
 
-For the Windows connector, Cloudflare provides a service-install command containing the tunnel token. Run that command in an Administrator terminal on the machine hosting the board.
+For the Windows connector, Cloudflare provides a service-install command containing the tunnel token. Run the generated command in an Administrator terminal on the machine hosting the board.
 
 Conceptually it is:
 
@@ -73,9 +67,9 @@ Service:  http://127.0.0.1:8766
 
 The external path is HTTPS through Cloudflare while the local origin remains plain HTTP on loopback.
 
-## 4. Verify
+## 4. Verify the live path
 
-Unauthenticated health check:
+First check the public health endpoint:
 
 ```powershell
 Invoke-RestMethod https://board.cafefeed.idv.tw/api/health
@@ -87,19 +81,32 @@ Expected:
 {"status":"ok"}
 ```
 
-Then verify authentication through the same public path without placing the token in a URL:
+Then verify health, authenticated identity, and message reads in one command. Keep the bearer token in an environment variable so it is not placed in the URL or normal command history:
 
 ```powershell
 $env:BLACKBOARD_URL = "https://board.cafefeed.idv.tw"
 $env:BLACKBOARD_TOKEN = "<conversation-token>"
-py .\tools\agent_adapter.py whoami
+
+py .\tools\verify_endpoint.py `
+  --expect-source rotary `
+  --expect-instance legacy-rotary `
+  --channel control-systems `
+  --after 22
 ```
 
-The resolved identity must match the same token when the client points to `http://127.0.0.1:8766`.
+A successful run prints only non-secret verification data:
+
+```text
+PASS: health
+PASS: whoami source=rotary instance=legacy-rotary ...
+PASS: messages ...
+```
+
+The same token should resolve to the same identity when `BLACKBOARD_URL` is switched back to `http://127.0.0.1:8766`.
 
 ## 5. Reboot / service check
 
-Cloudflare recommends running `cloudflared` as a Windows service so the connector returns after reboot.
+Run `cloudflared` as a Windows service so the connector can return after reboot.
 
 Useful checks from an Administrator terminal:
 
