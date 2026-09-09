@@ -41,6 +41,21 @@ pub fn resolve_identity(conn: &Connection, token: &str) -> Result<Option<Identit
     .optional()
 }
 
+pub fn get_identity(conn: &Connection, instance: &str) -> Result<Option<Identity>> {
+    conn.query_row(
+        "SELECT source, instance, label FROM identities WHERE instance = ?1 LIMIT 1",
+        [instance],
+        |row| {
+            Ok(Identity {
+                source: row.get(0)?,
+                instance: row.get(1)?,
+                label: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
 pub fn validate_source(source: &str) -> Option<String> {
     let source = source.trim();
     if source_re().is_match(source) {
@@ -92,6 +107,27 @@ pub fn register_identity(
     }
 }
 
+pub fn rotate_token(conn: &Connection, instance: &str) -> Result<Option<String>> {
+    let token = new_token();
+    let changed = conn.execute(
+        "UPDATE identities SET token_hash = ?1 WHERE instance = ?2",
+        params![hash_token(&token), instance],
+    )?;
+    if changed == 1 {
+        Ok(Some(token))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn revoke_token(conn: &Connection, instance: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE identities SET token_hash = NULL WHERE instance = ?1",
+        [instance],
+    )?;
+    Ok(changed == 1)
+}
+
 fn new_instance_id() -> String {
     let mut bytes = [0_u8; 6];
     OsRng.fill_bytes(&mut bytes);
@@ -112,6 +148,8 @@ fn new_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
+    use tempfile::tempdir;
 
     #[test]
     fn sha256_matches_python_contract() {
@@ -125,5 +163,27 @@ mod tests {
     fn source_contract_matches_reference() {
         assert!(validate_source("rotary-inverted-pendulum").is_some());
         assert!(validate_source(" bad source ").is_none());
+    }
+
+    #[test]
+    fn rotate_and_revoke_match_reference_semantics() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        let (identity, original) = register_identity(&conn, "test-source", Some("test")).unwrap();
+        assert!(resolve_identity(&conn, &original).unwrap().is_some());
+
+        let rotated = rotate_token(&conn, &identity.instance).unwrap().unwrap();
+        assert!(resolve_identity(&conn, &original).unwrap().is_none());
+        assert_eq!(
+            resolve_identity(&conn, &rotated).unwrap().unwrap().instance,
+            identity.instance
+        );
+
+        assert!(revoke_token(&conn, &identity.instance).unwrap());
+        assert!(resolve_identity(&conn, &rotated).unwrap().is_none());
+        assert!(rotate_token(&conn, "missing-instance").unwrap().is_none());
+        assert!(!revoke_token(&conn, "missing-instance").unwrap());
     }
 }
