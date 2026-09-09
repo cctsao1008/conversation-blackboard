@@ -1,3 +1,4 @@
+mod admin;
 mod db;
 mod http;
 mod identity;
@@ -23,6 +24,21 @@ struct Cli {
 enum Command {
     /// Run the HTTP server interactively.
     Run(RunArgs),
+    /// Database initialization, integrity, backup, and restore operations.
+    Db {
+        #[command(subcommand)]
+        command: admin::DbCommand,
+    },
+    /// Provision, rotate, or revoke conversation identities.
+    Identity {
+        #[command(subcommand)]
+        command: admin::IdentityCommand,
+    },
+    /// Verify a local or public blackboard endpoint.
+    Verify {
+        #[command(subcommand)]
+        command: admin::VerifyCommand,
+    },
     /// Install or control the native Windows service.
     #[cfg(windows)]
     Service {
@@ -46,6 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match cli.command {
         None => run_interactive(RunArgs::default()),
         Some(Command::Run(args)) => run_interactive(args),
+        Some(Command::Db { command }) => admin::dispatch_db(command),
+        Some(Command::Identity { command }) => admin::dispatch_identity(command),
+        Some(Command::Verify { command }) => admin::dispatch_verify(command),
         #[cfg(windows)]
         Some(Command::Service { command }) => windows_service::dispatch(command),
     }
