@@ -47,9 +47,7 @@ def resolve_identity(conn: sqlite3.Connection, token: str) -> Identity | None:
 def _validate_source(source: str) -> str:
     source = source.strip()
     if not _SOURCE_RE.fullmatch(source):
-        raise ValueError(
-            "source must be 1-128 characters using letters, digits, '.', '_', ':', '/', or '-'"
-        )
+        raise ValueError("invalid source")
     return source
 
 
@@ -69,6 +67,8 @@ def register_identity(
 ) -> tuple[Identity, str]:
     source = _validate_source(source)
     label = label.strip() if isinstance(label, str) and label.strip() else None
+    if label is not None and len(label) > 256:
+        raise ValueError("invalid label")
 
     while True:
         instance = _new_instance_id()
@@ -104,3 +104,20 @@ def rotate_token(conn: sqlite3.Connection, instance: str) -> str:
 
     conn.commit()
     return token
+
+
+def revoke_token(conn: sqlite3.Connection, instance: str) -> None:
+    cur = conn.execute(
+        """
+        UPDATE identities
+        SET token_hash = NULL
+        WHERE instance = ?
+        """,
+        (instance,),
+    )
+
+    if cur.rowcount != 1:
+        conn.rollback()
+        raise KeyError(instance)
+
+    conn.commit()
