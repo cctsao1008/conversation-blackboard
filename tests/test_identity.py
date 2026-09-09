@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from blackboard_db import connect, initialize, list_channels, list_messages_after
+from blackboard_db import append_message, connect, initialize, list_channels, list_messages_after
 from identity import hash_token, register_identity, resolve_identity, rotate_token
 
 
@@ -92,6 +92,22 @@ class CoreContractTests(unittest.TestCase):
             new_token = rotate_token(conn, identity.instance)
             self.assertIsNone(resolve_identity(conn, token))
             self.assertEqual(identity, resolve_identity(conn, new_token))
+        finally:
+            conn.close()
+
+    def test_append_uses_resolved_identity(self) -> None:
+        conn = connect(self.db_path)
+        try:
+            identity, _ = register_identity(conn, "single-wheel-platform")
+            row = append_message(
+                conn,
+                identity,
+                channel="control-systems",
+                kind="insight",
+                body="identity provenance test",
+            )
+            self.assertEqual(identity.source, row["source"])
+            self.assertEqual(identity.instance, row["instance"])
         finally:
             conn.close()
 
