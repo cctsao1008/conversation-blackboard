@@ -282,7 +282,9 @@ mod tests {
         let rotated = rotate_web_capability(&conn, &record.instance)
             .unwrap()
             .unwrap();
-        assert!(resolve_web_capability(&conn, &capability).unwrap().is_none());
+        assert!(resolve_web_capability(&conn, &capability)
+            .unwrap()
+            .is_none());
         assert_eq!(
             resolve_web_capability(&conn, &rotated)
                 .unwrap()
