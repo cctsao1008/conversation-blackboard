@@ -1,6 +1,6 @@
 # Production deployment and rollback
 
-The supported production shape is a native Windows service using one SQLite database and one active writer runtime.
+`conversation-blackboard` is deployed as a native Windows service using one SQLite database and one active writer runtime.
 
 ```text
 Windows SCM
@@ -31,7 +31,7 @@ Build with the committed dependency graph:
 cargo build --release --locked
 ```
 
-Optionally verify the staged file against the build output with `Get-FileHash` before installation.
+Optionally compare the staged executable against the build output with `Get-FileHash` before installation.
 
 ## Pre-deployment backup
 
