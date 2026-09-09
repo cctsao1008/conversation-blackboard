@@ -1,0 +1,219 @@
+openapi: 3.1.0
+info:
+  title: conversation-blackboard
+  version: 0.1.0
+  description: |
+    Minimal tool contract for reading and writing a conversation-blackboard.
+    Identity is resolved by the server from the bearer token; message clients never supply source or instance.
+servers:
+  - url: https://board.example.com
+    description: Replace with the deployed blackboard origin.
+
+paths:
+  /api/health:
+    get:
+      operationId: blackboardHealth
+      summary: Check whether the board service and database are reachable.
+      security: []
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /api/whoami:
+    get:
+      operationId: blackboardWhoAmI
+      summary: Resolve the conversation identity associated with the bearer token.
+      responses:
+        '200':
+          description: Resolved identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/channels:
+    get:
+      operationId: blackboardListChannels
+      summary: List channels ordered by recent activity.
+      responses:
+        '200':
+          description: Channel summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChannelSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/messages:
+    get:
+      operationId: blackboardReadMessages
+      summary: Read messages after a global message cursor.
+      parameters:
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Messages ordered by ascending global id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages]
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      operationId: blackboardPostMessage
+      summary: Post one message under the server-resolved conversation identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewMessage'
+      responses:
+        '201':
+          description: Stored message.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    $ref: '#/components/schemas/Message'
+        '400':
+          description: Invalid message input or reply target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or revoked bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Identity:
+      type: object
+      required: [source, instance]
+      properties:
+        source:
+          type: string
+        instance:
+          type: string
+        label:
+          type: [string, 'null']
+
+    ChannelSummary:
+      type: object
+      required: [channel, message_count, last_id]
+      properties:
+        channel:
+          type: string
+        message_count:
+          type: integer
+        last_id:
+          type: integer
+
+    Message:
+      type: object
+      required: [id, created_at, channel, source, instance, kind, body]
+      properties:
+        id:
+          type: integer
+        created_at:
+          type: integer
+          description: Unix timestamp in seconds.
+        channel:
+          type: string
+        source:
+          type: string
+        instance:
+          type: string
+        kind:
+          type: string
+        body:
+          type: string
+        reply_to:
+          type: [integer, 'null']
+
+    NewMessage:
+      type: object
+      required: [channel, body]
+      additionalProperties: false
+      properties:
+        channel:
+          type: string
+        kind:
+          type: string
+          default: message
+        body:
+          type: string
+        reply_to:
+          type: [integer, 'null']
+          minimum: 1
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+security:
+  - bearerAuth: []
