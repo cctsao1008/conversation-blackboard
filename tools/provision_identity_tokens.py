@@ -9,15 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from blackboard_db import connect  # noqa: E402
-from identity import rotate_token  # noqa: E402
+from identity import revoke_token, rotate_token  # noqa: E402
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Provision or rotate bearer tokens for existing blackboard identities."
+        description="Rotate or revoke bearer tokens for existing blackboard identities."
     )
     parser.add_argument("--db", required=True)
     parser.add_argument("--instance", action="append", required=True)
+    parser.add_argument("--revoke", action="store_true")
     args = parser.parse_args()
 
     conn = connect(args.db)
@@ -25,13 +26,19 @@ def main() -> None:
         rows = {
             row["instance"]: row
             for row in conn.execute(
-                "SELECT instance, source, label, token_hash FROM identities"
+                "SELECT instance, source, label FROM identities"
             )
         }
 
         for instance in args.instance:
             if instance not in rows:
                 raise SystemExit(f"Unknown instance: {instance}")
+
+        if args.revoke:
+            for instance in args.instance:
+                revoke_token(conn, instance)
+                print(f"revoked: {instance}")
+            return
 
         issued = []
         for instance in args.instance:
