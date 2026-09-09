@@ -6,6 +6,7 @@ mod http;
 mod identity;
 mod model;
 mod runtime;
+mod web_admin;
 #[cfg(windows)]
 mod windows_service;
 
@@ -35,6 +36,11 @@ enum Command {
     Identity {
         #[command(subcommand)]
         command: admin::IdentityCommand,
+    },
+    /// Provision, rotate, or revoke web-navigation capabilities.
+    Web {
+        #[command(subcommand)]
+        command: web_admin::WebCommand,
     },
     /// Verify a local or public blackboard endpoint.
     Verify {
@@ -68,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Run(args)) => run_interactive(args),
         Some(Command::Db { command }) => admin::dispatch_db(command),
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
+        Some(Command::Web { command }) => web_admin::dispatch(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
