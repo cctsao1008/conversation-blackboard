@@ -32,15 +32,15 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --all -- --check
       - name: Rust clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Rust tests
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
       - name: Rust debug build for compatibility scenario
-        run: cargo build
+        run: cargo build --locked
       - name: Frozen compatibility scenario on Rust
         run: python3 tools/compat_smoke.py --runtime rust
       - name: Rust release build
-        run: cargo build --release
+        run: cargo build --release --locked
 
   windows-service-build:
     runs-on: windows-latest
@@ -48,9 +48,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust tests on Windows
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
       - name: Windows release build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: CLI surface
         shell: pwsh
         run: |
@@ -176,15 +176,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item .\target\release\conversation-blackboard.exe .\dist\conversation-blackboard.exe
-          if (Test-Path .\Cargo.lock) {
-            Copy-Item .\Cargo.lock .\dist\Cargo.lock
-          }
+          Copy-Item .\Cargo.lock .\dist\Cargo.lock
           $hash = (Get-FileHash .\dist\conversation-blackboard.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  conversation-blackboard.exe" | Set-Content .\dist\SHA256SUMS.txt -Encoding ascii
           Get-Content .\dist\SHA256SUMS.txt
-          Write-Output "CARGO_LOCK_BASE64_BEGIN"
-          [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path .\Cargo.lock)))
-          Write-Output "CARGO_LOCK_BASE64_END"
       - uses: actions/upload-artifact@v4
         with:
           name: conversation-blackboard-windows-x64-${{ github.sha }}
