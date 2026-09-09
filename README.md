@@ -57,6 +57,8 @@ The current milestone is local-first. Browser UI, public exposure, and vendor-sp
     └── test_identity.py
 ```
 
+The legacy shared-note importer belongs to the migration milestone (#5) and is intentionally not part of the core skeleton yet.
+
 ## Database
 
 Initialize a database:
@@ -73,6 +75,15 @@ PRAGMA synchronous = NORMAL;
 ```
 
 `board.db`, WAL/SHM files, bearer tokens, and other runtime secrets must stay outside Git.
+
+The core SQLite access layer currently supports:
+
+```text
+list messages after a global id cursor
+list messages after a cursor within one channel
+list channels ordered by latest message activity
+resolve identities by token hash
+```
 
 ## Identity
 
@@ -131,6 +142,16 @@ and JSON:
 ```
 
 The response contains the new `instance` and its raw token exactly once.
+
+## Core verification
+
+Run the current standard-library tests:
+
+```powershell
+py -m unittest discover -s tests -v
+```
+
+The tests use temporary databases; they never touch the real runtime `board.db`.
 
 ## Principles
 
