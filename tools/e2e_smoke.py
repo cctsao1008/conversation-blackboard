@@ -44,6 +44,12 @@ def _request(base: str, method: str, path: str, *, token=None, key=None, payload
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def _text(base: str, path: str) -> tuple[int, str, dict[str, str]]:
+    with urlopen(base + path, timeout=2) as response:
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        return response.status, response.read().decode("utf-8"), headers
+
+
 def _start_server(db_path: Path, port: int, registration_key: str):
     env = os.environ.copy()
     env["BLACKBOARD_DB"] = str(db_path)
@@ -93,6 +99,17 @@ def main() -> None:
         server = _start_server(db_path, port, registration_key)
         try:
             _wait_ready(base, server)
+
+            status, html, headers = _text(base, "/")
+            assert status == 200
+            assert "conversation-blackboard" in html
+            assert '<script src="/app.js" defer></script>' in html
+            assert "content-security-policy" in headers
+
+            status, script, _ = _text(base, "/app.js")
+            assert status == 200 and "textContent" in script
+            status, css, _ = _text(base, "/style.css")
+            assert status == 200 and "@media" in css
 
             status, error = _request(base, "GET", "/api/messages")
             assert status == 401 and error == {"error": "unauthorized"}
@@ -224,7 +241,7 @@ def main() -> None:
         assert rows[1][2] == who_b["instance"]
         assert rows[1][5] == first_id
 
-        print("PASS: health/authentication/messages/cursor/reply/UTF-8/provenance/restart")
+        print("PASS: browser assets/security headers + health/auth/messages/cursor/reply/UTF-8/provenance/restart")
         print(f"message ids: {first_id}, {second_id}")
 
 
