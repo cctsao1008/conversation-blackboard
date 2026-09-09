@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from blackboard_db import append_message, connect, initialize, list_channels, list_messages_after
-from identity import hash_token, register_identity, resolve_identity, rotate_token
+from identity import hash_token, register_identity, resolve_identity, revoke_token, rotate_token
 
 
 class CoreContractTests(unittest.TestCase):
@@ -68,7 +68,7 @@ class CoreContractTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_register_resolve_and_rotate(self) -> None:
+    def test_register_resolve_rotate_and_revoke(self) -> None:
         conn = connect(self.db_path)
         try:
             identity, token = register_identity(
@@ -92,6 +92,15 @@ class CoreContractTests(unittest.TestCase):
             new_token = rotate_token(conn, identity.instance)
             self.assertIsNone(resolve_identity(conn, token))
             self.assertEqual(identity, resolve_identity(conn, new_token))
+
+            revoke_token(conn, identity.instance)
+            self.assertIsNone(resolve_identity(conn, new_token))
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT token_hash FROM identities WHERE instance = ?",
+                    (identity.instance,),
+                ).fetchone()["token_hash"]
+            )
         finally:
             conn.close()
 
