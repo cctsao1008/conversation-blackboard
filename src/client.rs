@@ -26,14 +26,6 @@ impl ClientError {
             code: code.into(),
         }
     }
-
-    pub fn status(&self) -> Option<u16> {
-        self.status
-    }
-
-    pub fn code(&self) -> &str {
-        &self.code
-    }
 }
 
 impl fmt::Display for ClientError {
