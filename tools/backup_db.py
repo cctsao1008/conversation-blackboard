@@ -14,6 +14,10 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
 def backup_database(source_path: str | Path, backup_path: str | Path) -> None:
     source_path = Path(source_path)
     backup_path = Path(backup_path)
+
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = backup_path.with_name(backup_path.name + ".tmp")
     if tmp_path.exists():
