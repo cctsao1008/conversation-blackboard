@@ -1,6 +1,6 @@
 {
-  "contract_version": 1,
-  "schema_sha256": "ba73986ec6bbcef99767807b7e0323e583dd221aaad0649665279dceb132114c",
+  "contract_version": 2,
+  "schema_sha256": "e47f817f96bb7bc82c82cfc3a5d8dc97ed68316ce47d081b68d7a8e3677ba196",
   "defaults": {
     "host": "127.0.0.1",
     "port": 8766,
@@ -13,7 +13,15 @@
     "instance_prefix": "i-",
     "source_pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
   },
+  "web_identity": {
+    "participant_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+    "private_key_hash": "sha256-lower-hex",
+    "private_key_transport": "query:key",
+    "provenance": "server-resolved"
+  },
   "routes": [
+    {"method": "GET", "path": "/r/{channel}", "auth": false, "success": 200},
+    {"method": "GET", "path": "/w/{participant_id}", "auth": "participant-key", "success": 200},
     {"method": "GET", "path": "/api/health", "auth": false, "success": 200},
     {"method": "GET", "path": "/api/whoami", "auth": true, "success": 200},
     {"method": "GET", "path": "/api/messages", "auth": true, "success": 200},
@@ -34,6 +42,8 @@
     "identity_is_server_resolved": 400,
     "invalid_kind": 400,
     "invalid_body": 400,
+    "invalid_nonce": 400,
+    "nonce_conflict": 409,
     "invalid_reply_to": 400,
     "reply_target_not_found": 400,
     "database_unavailable": 503,
