@@ -6,6 +6,9 @@ mod http;
 #[cfg(test)]
 mod http_contract_tests;
 mod identity;
+mod mcp;
+#[cfg(test)]
+mod mcp_contract_tests;
 mod model;
 mod participant_admin;
 mod participant_key;
