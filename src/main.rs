@@ -3,6 +3,8 @@ mod client;
 mod client_cli;
 mod db;
 mod http;
+#[cfg(test)]
+mod http_contract_tests;
 mod identity;
 mod model;
 mod runtime;
