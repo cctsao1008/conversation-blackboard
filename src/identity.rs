@@ -13,6 +13,11 @@ fn source_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$").unwrap())
 }
 
+fn participant_id_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$").unwrap())
+}
+
 pub fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut out = String::with_capacity(64);
@@ -41,13 +46,17 @@ pub fn resolve_identity(conn: &Connection, token: &str) -> Result<Option<Identit
     .optional()
 }
 
-pub fn resolve_web_capability(conn: &Connection, capability: &str) -> Result<Option<Identity>> {
-    if capability.is_empty() {
+pub fn resolve_web_participant(
+    conn: &Connection,
+    participant_id: &str,
+    private_key: &str,
+) -> Result<Option<Identity>> {
+    if validate_participant_id(participant_id).is_none() || !validate_private_key(private_key) {
         return Ok(None);
     }
     conn.query_row(
-        "SELECT i.source, i.instance, i.label\n         FROM web_capabilities AS w\n         JOIN identities AS i ON i.instance = w.instance\n         WHERE w.capability_hash = ?1\n         LIMIT 1",
-        [hash_token(capability)],
+        "SELECT source, participant_id, label\n         FROM web_participants\n         WHERE participant_id = ?1 AND key_hash = ?2\n         LIMIT 1",
+        params![participant_id, hash_token(private_key)],
         |row| {
             Ok(Identity {
                 source: row.get(0)?,
@@ -74,6 +83,21 @@ pub fn get_identity(conn: &Connection, instance: &str) -> Result<Option<Identity
     .optional()
 }
 
+pub fn get_web_participant(conn: &Connection, participant_id: &str) -> Result<Option<Identity>> {
+    conn.query_row(
+        "SELECT source, participant_id, label\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
+        [participant_id],
+        |row| {
+            Ok(Identity {
+                source: row.get(0)?,
+                instance: row.get(1)?,
+                label: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
 pub fn validate_source(source: &str) -> Option<String> {
     let source = source.trim();
     if source_re().is_match(source) {
@@ -81,6 +105,23 @@ pub fn validate_source(source: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn validate_participant_id(participant_id: &str) -> Option<String> {
+    let participant_id = participant_id.trim();
+    if participant_id_re().is_match(participant_id) {
+        Some(participant_id.to_owned())
+    } else {
+        None
+    }
+}
+
+pub fn validate_private_key(private_key: &str) -> bool {
+    let length = private_key.chars().count();
+    (1..=256).contains(&length)
+        && !private_key
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace())
 }
 
 pub fn normalize_label(label: Option<&str>) -> Result<Option<String>, &'static str> {
@@ -146,50 +187,62 @@ pub fn revoke_token(conn: &Connection, instance: &str) -> Result<bool> {
     Ok(changed == 1)
 }
 
-pub fn provision_web_capability(conn: &Connection, instance: &str) -> Result<Option<String>> {
-    if get_identity(conn, instance)?.is_none() {
+pub fn provision_web_participant(
+    conn: &Connection,
+    participant_id: &str,
+    source: &str,
+    label: Option<&str>,
+    private_key: &str,
+) -> Result<Option<Identity>> {
+    let participant_id =
+        validate_participant_id(participant_id).ok_or(rusqlite::Error::InvalidQuery)?;
+    let source = validate_source(source).ok_or(rusqlite::Error::InvalidQuery)?;
+    let label = normalize_label(label).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if !validate_private_key(private_key) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    if get_web_participant(conn, &participant_id)?.is_some() {
         return Ok(None);
     }
 
-    let existing = conn
-        .query_row(
-            "SELECT capability_hash FROM web_capabilities WHERE instance = ?1",
-            [instance],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()?;
-
-    if matches!(existing, Some(Some(_))) {
-        return Ok(None);
-    }
-
-    let capability = new_web_capability();
     conn.execute(
-        "INSERT INTO web_capabilities (instance, capability_hash)\n         VALUES (?1, ?2)\n         ON CONFLICT(instance) DO UPDATE SET\n             capability_hash = excluded.capability_hash,\n             updated_at = unixepoch()",
-        params![instance, hash_token(&capability)],
+        "INSERT INTO web_participants (participant_id, source, label, key_hash)\n         VALUES (?1, ?2, ?3, ?4)",
+        params![participant_id, source, label, hash_token(private_key)],
     )?;
-    Ok(Some(capability))
+    Ok(Some(Identity {
+        source,
+        instance: participant_id,
+        label,
+    }))
 }
 
-pub fn rotate_web_capability(conn: &Connection, instance: &str) -> Result<Option<String>> {
-    if get_identity(conn, instance)?.is_none() {
-        return Ok(None);
+pub fn rotate_web_participant_key(
+    conn: &Connection,
+    participant_id: &str,
+    private_key: &str,
+) -> Result<bool> {
+    if validate_participant_id(participant_id).is_none() || !validate_private_key(private_key) {
+        return Err(rusqlite::Error::InvalidQuery);
     }
-
-    let capability = new_web_capability();
-    conn.execute(
-        "INSERT INTO web_capabilities (instance, capability_hash)\n         VALUES (?1, ?2)\n         ON CONFLICT(instance) DO UPDATE SET\n             capability_hash = excluded.capability_hash,\n             updated_at = unixepoch()",
-        params![instance, hash_token(&capability)],
-    )?;
-    Ok(Some(capability))
-}
-
-pub fn revoke_web_capability(conn: &Connection, instance: &str) -> Result<bool> {
     let changed = conn.execute(
-        "UPDATE web_capabilities\n         SET capability_hash = NULL, updated_at = unixepoch()\n         WHERE instance = ?1 AND capability_hash IS NOT NULL",
-        [instance],
+        "UPDATE web_participants\n         SET key_hash = ?1, updated_at = unixepoch()\n         WHERE participant_id = ?2",
+        params![hash_token(private_key), participant_id],
     )?;
     Ok(changed == 1)
+}
+
+pub fn revoke_web_participant_key(conn: &Connection, participant_id: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE web_participants\n         SET key_hash = NULL, updated_at = unixepoch()\n         WHERE participant_id = ?1 AND key_hash IS NOT NULL",
+        [participant_id],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn new_web_private_key() -> String {
+    let mut bytes = [0_u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    format!("wk_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 fn new_instance_id() -> String {
@@ -209,12 +262,6 @@ fn new_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn new_web_capability() -> String {
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    format!("wc_{}", URL_SAFE_NO_PAD.encode(bytes))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,9 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn source_contract_matches_reference() {
+    fn source_and_participant_contracts_match_reference() {
         assert!(validate_source("rotary-inverted-pendulum").is_some());
         assert!(validate_source(" bad source ").is_none());
+        assert!(validate_participant_id("rotary-main").is_some());
+        assert!(validate_participant_id("rotary/main").is_none());
+        assert!(validate_private_key("mini-rsa-d-123-n-456"));
+        assert!(!validate_private_key("key with spaces"));
     }
 
     #[test]
@@ -258,43 +309,63 @@ mod tests {
     }
 
     #[test]
-    fn web_capability_is_independent_and_rotatable() {
+    fn web_participant_key_is_independent_rotatable_and_server_resolved() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        let (record, bearer) = register_identity(&conn, "single", Some("single")).unwrap();
+        let (_, bearer) = register_identity(&conn, "single", Some("rest-single")).unwrap();
 
-        let capability = provision_web_capability(&conn, &record.instance)
-            .unwrap()
-            .unwrap();
-        assert!(capability.starts_with("wc_"));
+        let participant = provision_web_participant(
+            &conn,
+            "single-main",
+            "single",
+            Some("Single main conversation"),
+            "prompt-key-001",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(participant.instance, "single-main");
+        assert_eq!(participant.source, "single");
         assert_eq!(
-            resolve_web_capability(&conn, &capability)
+            resolve_web_participant(&conn, "single-main", "prompt-key-001")
                 .unwrap()
                 .unwrap()
                 .instance,
-            record.instance
+            "single-main"
         );
-        assert!(resolve_identity(&conn, &capability).unwrap().is_none());
-        assert!(resolve_web_capability(&conn, &bearer).unwrap().is_none());
-
-        let rotated = rotate_web_capability(&conn, &record.instance)
+        assert!(resolve_web_participant(&conn, "single-main", "wrong-key")
             .unwrap()
-            .unwrap();
-        assert!(resolve_web_capability(&conn, &capability)
+            .is_none());
+        assert!(resolve_web_participant(&conn, "wrong-participant", "prompt-key-001")
+            .unwrap()
+            .is_none());
+        assert!(resolve_identity(&conn, "prompt-key-001").unwrap().is_none());
+        assert!(resolve_web_participant(&conn, "single-main", &bearer)
+            .unwrap()
+            .is_none());
+
+        assert!(rotate_web_participant_key(
+            &conn,
+            "single-main",
+            "prompt-key-002"
+        )
+        .unwrap());
+        assert!(resolve_web_participant(&conn, "single-main", "prompt-key-001")
             .unwrap()
             .is_none());
         assert_eq!(
-            resolve_web_capability(&conn, &rotated)
+            resolve_web_participant(&conn, "single-main", "prompt-key-002")
                 .unwrap()
                 .unwrap()
                 .instance,
-            record.instance
+            "single-main"
         );
 
-        assert!(revoke_web_capability(&conn, &record.instance).unwrap());
-        assert!(resolve_web_capability(&conn, &rotated).unwrap().is_none());
+        assert!(revoke_web_participant_key(&conn, "single-main").unwrap());
+        assert!(resolve_web_participant(&conn, "single-main", "prompt-key-002")
+            .unwrap()
+            .is_none());
         assert!(resolve_identity(&conn, &bearer).unwrap().is_some());
     }
 }
