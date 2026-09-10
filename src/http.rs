@@ -60,7 +60,7 @@ pub fn app(state: AppState) -> Router {
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
         .route("/r/{channel}", get(navigation_read))
-        .route("/w/{capability}", get(navigation_write))
+        .route("/w/{participant_id}", get(navigation_write))
         .route("/api/health", get(health))
         .route("/api/whoami", get(whoami))
         .route("/api/messages", get(messages).post(post_message))
@@ -125,20 +125,27 @@ async fn navigation_read(
 
 async fn navigation_write(
     State(state): State<AppState>,
-    Path(capability): Path<String>,
+    Path(participant_id): Path<String>,
     uri: Uri,
 ) -> Result<Response, ApiError> {
-    if capability.len() > 128 || !capability.starts_with("wc_") {
+    if identity::validate_participant_id(&participant_id).is_none() {
         return Err(ApiError::unauthorized());
     }
 
+    let params = first_query_values(&uri);
+    let private_key = params
+        .get("key")
+        .filter(|value| identity::validate_private_key(value))
+        .cloned()
+        .ok_or_else(ApiError::unauthorized)?;
+
+    let lookup_participant = participant_id.clone();
     let identity = with_db(&state, move |conn| {
-        identity::resolve_web_capability(conn, &capability)
+        identity::resolve_web_participant(conn, &lookup_participant, &private_key)
     })
     .await?
     .ok_or_else(ApiError::unauthorized)?;
 
-    let params = first_query_values(&uri);
     let channel = params
         .get("channel")
         .filter(|value| name_re().is_match(value))
@@ -221,8 +228,13 @@ async fn navigation_write(
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_owned());
     let body = format!(
-        "conversation-blackboard write\nstatus: {status}\nidempotent: {idempotent}\nid: {}\nsource: {}\ninstance: {}\nchannel: {}\nkind: {}\nreply_to: {reply}\n",
-        persisted.id, persisted.source, persisted.instance, persisted.channel, persisted.kind
+        "conversation-blackboard write\nstatus: {status}\nidempotent: {idempotent}\nid: {}\nsource: {}\nparticipant_id: {}\ninstance: {}\nchannel: {}\nkind: {}\nreply_to: {reply}\n",
+        persisted.id,
+        persisted.source,
+        persisted.instance,
+        persisted.instance,
+        persisted.channel,
+        persisted.kind
     );
     Ok(navigation_text_response(StatusCode::OK, body))
 }
