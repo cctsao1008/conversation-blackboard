@@ -14,6 +14,15 @@ pub enum NavigationAppendResult {
     ReplyTargetNotFound,
 }
 
+pub struct NavigationMessageInput<'a> {
+    pub channel: &'a str,
+    pub kind: &'a str,
+    pub body: &'a str,
+    pub reply_to: Option<i64>,
+    pub nonce: &'a str,
+    pub request_hash: &'a str,
+}
+
 pub fn connect(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
@@ -101,35 +110,30 @@ pub fn append_message(
 pub fn append_navigation_message(
     conn: &Connection,
     identity: &Identity,
-    channel: &str,
-    kind: &str,
-    body: &str,
-    reply_to: Option<i64>,
-    nonce: &str,
-    request_hash: &str,
+    input: NavigationMessageInput<'_>,
 ) -> Result<NavigationAppendResult> {
     let tx = conn.unchecked_transaction()?;
 
     let reserved = tx.execute(
         "INSERT OR IGNORE INTO navigation_writes\n             (instance, nonce, request_hash, message_id)\n         VALUES (?1, ?2, ?3, 0)",
-        params![identity.instance, nonce, request_hash],
+        params![identity.instance, input.nonce, input.request_hash],
     )?;
 
     if reserved == 0 {
         let (stored_hash, message_id): (String, i64) = tx.query_row(
             "SELECT request_hash, message_id\n             FROM navigation_writes\n             WHERE instance = ?1 AND nonce = ?2",
-            params![identity.instance, nonce],
+            params![identity.instance, input.nonce],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        if stored_hash != request_hash {
+        if stored_hash != input.request_hash {
             return Ok(NavigationAppendResult::NonceConflict);
         }
         let message = message_by_id(&tx, message_id)?;
         return Ok(NavigationAppendResult::Existing(message));
     }
 
-    if let Some(target) = reply_to {
+    if let Some(target) = input.reply_to {
         let exists = tx
             .query_row("SELECT 1 FROM messages WHERE id = ?1", [target], |_| {
                 Ok(1_i64)
@@ -143,13 +147,20 @@ pub fn append_navigation_message(
 
     tx.execute(
         "INSERT INTO messages (channel, source, instance, kind, body, reply_to)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![channel, identity.source, identity.instance, kind, body, reply_to],
+        params![
+            input.channel,
+            identity.source,
+            identity.instance,
+            input.kind,
+            input.body,
+            input.reply_to
+        ],
     )?;
     let message_id = tx.last_insert_rowid();
 
     tx.execute(
         "UPDATE navigation_writes\n         SET message_id = ?1\n         WHERE instance = ?2 AND nonce = ?3",
-        params![message_id, identity.instance, nonce],
+        params![message_id, identity.instance, input.nonce],
     )?;
 
     let message = message_by_id(&tx, message_id)?;
@@ -198,12 +209,14 @@ mod tests {
         let first = append_navigation_message(
             &conn,
             &identity,
-            "control-systems",
-            "message",
-            "hello",
-            None,
-            "nonce-1",
-            "hash-a",
+            NavigationMessageInput {
+                channel: "control-systems",
+                kind: "message",
+                body: "hello",
+                reply_to: None,
+                nonce: "nonce-1",
+                request_hash: "hash-a",
+            },
         )
         .unwrap();
         let first_id = match first {
@@ -214,12 +227,14 @@ mod tests {
         let second = append_navigation_message(
             &conn,
             &identity,
-            "control-systems",
-            "message",
-            "hello",
-            None,
-            "nonce-1",
-            "hash-a",
+            NavigationMessageInput {
+                channel: "control-systems",
+                kind: "message",
+                body: "hello",
+                reply_to: None,
+                nonce: "nonce-1",
+                request_hash: "hash-a",
+            },
         )
         .unwrap();
         match second {
@@ -230,12 +245,14 @@ mod tests {
         let conflict = append_navigation_message(
             &conn,
             &identity,
-            "control-systems",
-            "message",
-            "different",
-            None,
-            "nonce-1",
-            "hash-b",
+            NavigationMessageInput {
+                channel: "control-systems",
+                kind: "message",
+                body: "different",
+                reply_to: None,
+                nonce: "nonce-1",
+                request_hash: "hash-b",
+            },
         )
         .unwrap();
         assert!(matches!(conflict, NavigationAppendResult::NonceConflict));
