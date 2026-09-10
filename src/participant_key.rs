@@ -31,7 +31,8 @@ pub fn generate(scheme: KeyScheme) -> GeneratedKeyMaterial {
                 scheme: "mini-rsa",
                 public_material: Some(format!("mrsa_e{}_n{}", rsa.e, rsa.n)),
                 private_key: format!("mrsa_d{}_n{}", rsa.d, rsa.n),
-                note: "Educational/test Mini-RSA material only; not production-strength cryptography.",
+                note:
+                    "Educational/test Mini-RSA material only; not production-strength cryptography.",
             }
         }
     }
@@ -168,7 +169,11 @@ mod tests {
     fn generated_key_material_is_prompt_friendly() {
         let mini = generate(KeyScheme::MiniRsa);
         assert_eq!(mini.scheme, "mini-rsa");
-        assert!(mini.public_material.as_deref().unwrap().starts_with("mrsa_e"));
+        assert!(mini
+            .public_material
+            .as_deref()
+            .unwrap()
+            .starts_with("mrsa_e"));
         assert!(mini.private_key.starts_with("mrsa_d"));
         assert!(!mini.private_key.chars().any(char::is_whitespace));
 
