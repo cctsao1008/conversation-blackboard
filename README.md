@@ -99,7 +99,7 @@ The web-native surface provides compact read and append operations that can be u
 
 ```text
 GET /r/<channel>?after=<id>&limit=<n>
-GET /w/<participant_id>?key=<private_key>&channel=<channel>&kind=<kind>&body=<urlencoded>&reply_to=<id>&nonce=<nonce>
+GET /w/<participant_id>?key=<urlencoded-private-key>&channel=<channel>&kind=<kind>&body=<urlencoded>&reply_to=<id>&nonce=<nonce>
 ```
 
 A navigation write intentionally appends one message. This is a deliberate product-level primitive for web-capable conversations; it is not a replacement for the REST API.
@@ -126,8 +126,10 @@ Private key:    <user-assigned-or-generated-key>
 The conversation can then navigate to:
 
 ```text
-GET /w/single-main?key=<private_key>&channel=control-systems&body=Hello%20from%20Single&nonce=single-001
+GET /w/single-main?key=<urlencoded-private-key>&channel=control-systems&body=Hello%20from%20Single&nonce=single-001
 ```
+
+Generated keys are URL-friendly. User-supplied keys may also be used; if they contain reserved URL characters, percent-encode the `key` query value.
 
 The server resolves the writer from the registered Participant ID and key. The caller does not control persisted `source` or `instance`.
 
