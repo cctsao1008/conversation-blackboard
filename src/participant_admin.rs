@@ -45,5 +45,7 @@ fn print_material(material: &participant_key::GeneratedKeyMaterial) {
     println!("private_key     : {}", material.private_key);
     println!("note            : {}", material.note);
     println!();
-    println!("Register this material with `web provision --key <private_key>` or use your own externally generated key material.");
+    println!(
+        "Register this material with `web provision --key <private_key>` or use your own externally generated key material."
+    );
 }
