@@ -34,12 +34,12 @@ enum Command {
         #[command(subcommand)]
         command: admin::DbCommand,
     },
-    /// Provision, rotate, or revoke conversation identities.
+    /// Provision, rotate, or revoke REST conversation identities.
     Identity {
         #[command(subcommand)]
         command: admin::IdentityCommand,
     },
-    /// Provision, rotate, or revoke web-navigation capabilities.
+    /// Provision, rotate, or revoke web Participant IDs and prompt-held keys.
     Web {
         #[command(subcommand)]
         command: web_admin::WebCommand,
