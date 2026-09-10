@@ -101,3 +101,30 @@ fn run_interactive(args: RunArgs) -> Result<(), Box<dyn std::error::Error + Send
         let _ = tokio::signal::ctrl_c().await;
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn participant_generate_cli_parses_mini_rsa() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "generate",
+            "--scheme",
+            "mini-rsa",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command:
+                    participant_admin::ParticipantCommand::Generate {
+                        scheme: participant_admin::GeneratorScheme::MiniRsa,
+                    },
+            }) => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}
