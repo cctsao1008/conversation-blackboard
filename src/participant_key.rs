@@ -91,13 +91,13 @@ fn is_prime(n: u64) -> bool {
     if n < 2 {
         return false;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         return n == 2;
     }
 
     let mut divisor = 3_u64;
     while divisor <= n / divisor {
-        if n % divisor == 0 {
+        if n.is_multiple_of(divisor) {
             return false;
         }
         divisor += 2;
