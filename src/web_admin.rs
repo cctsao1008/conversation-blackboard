@@ -8,63 +8,91 @@ type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[derive(Debug, Subcommand)]
 pub enum WebCommand {
-    /// Provision the first web-navigation capability for an existing identity.
+    /// Provision a web participant with a prompt-held private key.
     Provision {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
-        instance: String,
+        participant_id: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        label: Option<String>,
+        /// Use caller-supplied key material instead of generating a key.
+        #[arg(long)]
+        key: Option<String>,
     },
-    /// Rotate the web-navigation capability for an existing identity.
+    /// Rotate the prompt-held private key for a web participant.
     Rotate {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
-        instance: String,
+        participant_id: String,
+        /// Use caller-supplied key material instead of generating a key.
+        #[arg(long)]
+        key: Option<String>,
     },
-    /// Revoke the web-navigation capability for an existing identity.
+    /// Revoke the prompt-held private key for a web participant.
     Revoke {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
-        instance: String,
+        participant_id: String,
     },
 }
 
 pub fn dispatch(command: WebCommand) -> DynResult {
     match command {
-        WebCommand::Provision { db: path, instance } => {
+        WebCommand::Provision {
+            db: path,
+            participant_id,
+            source,
+            label,
+            key,
+        } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
-            let record = identity::get_identity(&conn, &instance)?
-                .ok_or_else(|| format!("unknown instance: {instance}"))?;
-            let capability =
-                identity::provision_web_capability(&conn, &instance)?.ok_or_else(|| {
-                    format!("active web capability already exists for {instance}; use web rotate")
-                })?;
-            print_capability(&record.source, &record.instance, &capability);
+            let private_key = key.unwrap_or_else(identity::new_web_private_key);
+            let record = identity::provision_web_participant(
+                &conn,
+                &participant_id,
+                &source,
+                label.as_deref(),
+                &private_key,
+            )?
+            .ok_or_else(|| format!("web participant already exists: {participant_id}"))?;
+            print_participant(&record.source, &record.instance, &private_key);
             Ok(())
         }
-        WebCommand::Rotate { db: path, instance } => {
+        WebCommand::Rotate {
+            db: path,
+            participant_id,
+            key,
+        } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
-            let record = identity::get_identity(&conn, &instance)?
-                .ok_or_else(|| format!("unknown instance: {instance}"))?;
-            let capability = identity::rotate_web_capability(&conn, &instance)?
-                .ok_or_else(|| format!("unknown instance: {instance}"))?;
-            print_capability(&record.source, &record.instance, &capability);
+            let record = identity::get_web_participant(&conn, &participant_id)?
+                .ok_or_else(|| format!("unknown web participant: {participant_id}"))?;
+            let private_key = key.unwrap_or_else(identity::new_web_private_key);
+            if !identity::rotate_web_participant_key(&conn, &participant_id, &private_key)? {
+                return Err(format!("unknown web participant: {participant_id}").into());
+            }
+            print_participant(&record.source, &record.instance, &private_key);
             Ok(())
         }
-        WebCommand::Revoke { db: path, instance } => {
+        WebCommand::Revoke {
+            db: path,
+            participant_id,
+        } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
-            if identity::get_identity(&conn, &instance)?.is_none() {
-                return Err(format!("unknown instance: {instance}").into());
+            if identity::get_web_participant(&conn, &participant_id)?.is_none() {
+                return Err(format!("unknown web participant: {participant_id}").into());
             }
-            if !identity::revoke_web_capability(&conn, &instance)? {
-                return Err(format!("no active web capability for {instance}").into());
+            if !identity::revoke_web_participant_key(&conn, &participant_id)? {
+                return Err(format!("no active key for web participant: {participant_id}").into());
             }
-            println!("revoked web capability: {instance}");
+            println!("revoked web participant key: {participant_id}");
             Ok(())
         }
     }
@@ -78,9 +106,9 @@ fn require_database(path: &std::path::Path) -> DynResult {
     }
 }
 
-fn print_capability(source: &str, instance: &str, capability: &str) {
-    println!("SAVE THIS WEB CAPABILITY NOW. Only its SHA-256 hash is stored in the database.");
-    println!("source     : {source}");
-    println!("instance   : {instance}");
-    println!("capability : {capability}");
+fn print_participant(source: &str, participant_id: &str, private_key: &str) {
+    println!("WEB PARTICIPANT READY. Copy the ID and key into the conversation prompt/context.");
+    println!("source         : {source}");
+    println!("participant_id : {participant_id}");
+    println!("private_key    : {private_key}");
 }
