@@ -6,7 +6,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use sha2::{Digest, Sha256};
 
-use crate::model::Identity;
+use crate::{model::Identity, participant_key};
 
 fn source_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -240,9 +240,7 @@ pub fn revoke_web_participant_key(conn: &Connection, participant_id: &str) -> Re
 }
 
 pub fn new_web_private_key() -> String {
-    let mut bytes = [0_u8; 24];
-    OsRng.fill_bytes(&mut bytes);
-    format!("wk_{}", URL_SAFE_NO_PAD.encode(bytes))
+    participant_key::generate_random_private_key()
 }
 
 fn new_instance_id() -> String {
