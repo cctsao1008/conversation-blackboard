@@ -383,7 +383,8 @@ async fn different_participant_ids_keep_conversation_provenance_separate() {
         "/w/{}?key={}&channel=general&body=from-single&nonce=single-001",
         fixture.participant_id, fixture.private_key
     );
-    let rotary_uri = "/w/rotary-main?key=prompt-key-rotary&channel=general&body=from-rotary&nonce=rotary-001";
+    let rotary_uri =
+        "/w/rotary-main?key=prompt-key-rotary&channel=general&body=from-rotary&nonce=rotary-001";
     assert_eq!(
         get(&fixture.router, &single_uri).await.status(),
         StatusCode::OK
