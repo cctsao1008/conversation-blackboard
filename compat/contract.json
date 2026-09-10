@@ -16,7 +16,7 @@
   "web_identity": {
     "participant_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     "private_key_hash": "sha256-lower-hex",
-    "private_key_transport": "query:key",
+    "private_key_transport": "query:key (URL-decoded before verification)",
     "provenance": "server-resolved"
   },
   "routes": [
