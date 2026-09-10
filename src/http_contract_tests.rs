@@ -23,7 +23,8 @@ struct Fixture {
     router: Router,
     identity: Identity,
     bearer: String,
-    capability: String,
+    participant_id: String,
+    private_key: String,
 }
 
 fn fixture(source: &str) -> Fixture {
@@ -31,10 +32,18 @@ fn fixture(source: &str) -> Fixture {
     let db_path = dir.path().join("board.db");
     db::initialize(&db_path).unwrap();
     let conn = db::connect(&db_path).unwrap();
-    let (identity, bearer) = identity::register_identity(&conn, source, Some("http-test")).unwrap();
-    let capability = identity::provision_web_capability(&conn, &identity.instance)
-        .unwrap()
-        .unwrap();
+    let (_, bearer) = identity::register_identity(&conn, source, Some("rest-http-test")).unwrap();
+    let participant_id = format!("{source}-main");
+    let private_key = format!("prompt-key-{source}");
+    let identity = identity::provision_web_participant(
+        &conn,
+        &participant_id,
+        source,
+        Some("web-http-test"),
+        &private_key,
+    )
+    .unwrap()
+    .unwrap();
     drop(conn);
 
     let router = http::app(AppState {
@@ -48,7 +57,8 @@ fn fixture(source: &str) -> Fixture {
         router,
         identity,
         bearer,
-        capability,
+        participant_id,
+        private_key,
     }
 }
 
@@ -172,10 +182,7 @@ async fn navigation_read_honors_cursor_limit_and_preserves_authoritative_fields(
     assert_eq!(row["id"].as_i64(), Some(second.id));
     assert_eq!(row["channel"].as_str(), Some("control-systems"));
     assert_eq!(row["source"].as_str(), Some("single"));
-    assert_eq!(
-        row["instance"].as_str(),
-        Some(fixture.identity.instance.as_str())
-    );
+    assert_eq!(row["instance"].as_str(), Some("single-main"));
     assert_eq!(row["kind"].as_str(), Some("insight"));
     assert_eq!(row["body"].as_str(), Some("second"));
     assert_eq!(row["reply_to"].as_i64(), Some(first.id));
@@ -202,8 +209,8 @@ async fn navigation_read_rejects_invalid_channel_cursor_and_limit() {
 async fn navigation_write_is_server_attributed_and_idempotent() {
     let fixture = fixture("single");
     let uri = format!(
-        "/w/{}?channel=conversation-architecture&kind=insight&body=hello&nonce=write-001",
-        fixture.capability
+        "/w/{}?key={}&channel=conversation-architecture&kind=insight&body=hello&nonce=write-001&source=spoofed&instance=spoofed",
+        fixture.participant_id, fixture.private_key
     );
 
     let response = get(&fixture.router, &uri).await;
@@ -213,7 +220,9 @@ async fn navigation_write_is_server_attributed_and_idempotent() {
     assert!(body.contains("status: created"));
     assert!(body.contains("idempotent: false"));
     assert!(body.contains("source: single"));
-    assert!(body.contains(&format!("instance: {}", fixture.identity.instance)));
+    assert!(body.contains("participant_id: single-main"));
+    assert!(body.contains("instance: single-main"));
+    assert!(!body.contains("spoofed"));
     assert!(body.contains("channel: conversation-architecture"));
     assert!(body.contains("kind: insight"));
     assert!(body.contains("reply_to: null"));
@@ -231,17 +240,17 @@ async fn navigation_write_is_server_attributed_and_idempotent() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, message_id);
     assert_eq!(rows[0].source, "single");
-    assert_eq!(rows[0].instance, fixture.identity.instance);
+    assert_eq!(rows[0].instance, "single-main");
     assert_eq!(rows[0].kind, "insight");
     assert_eq!(rows[0].body, "hello");
 }
 
 #[tokio::test]
-async fn navigation_write_rejects_nonce_conflicts_invalid_revoked_and_bearer_credentials() {
+async fn navigation_write_rejects_nonce_conflicts_wrong_revoked_and_bearer_keys() {
     let fixture = fixture("single");
     let first_uri = format!(
-        "/w/{}?channel=general&body=first&nonce=shared-nonce",
-        fixture.capability
+        "/w/{}?key={}&channel=general&body=first&nonce=shared-nonce",
+        fixture.participant_id, fixture.private_key
     );
     assert_eq!(
         get(&fixture.router, &first_uri).await.status(),
@@ -249,8 +258,8 @@ async fn navigation_write_rejects_nonce_conflicts_invalid_revoked_and_bearer_cre
     );
 
     let conflict_uri = format!(
-        "/w/{}?channel=general&body=different&nonce=shared-nonce",
-        fixture.capability
+        "/w/{}?key={}&channel=general&body=different&nonce=shared-nonce",
+        fixture.participant_id, fixture.private_key
     );
     let conflict = get(&fixture.router, &conflict_uri).await;
     let (status, _, body) = response_text(conflict).await;
@@ -259,14 +268,23 @@ async fn navigation_write_rejects_nonce_conflicts_invalid_revoked_and_bearer_cre
 
     let invalid = get(
         &fixture.router,
-        "/w/wc_not-a-real-capability?channel=general&body=x&nonce=invalid-cap",
+        "/w/not-registered?key=some-key&channel=general&body=x&nonce=invalid-participant",
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
 
+    let wrong_key_uri = format!(
+        "/w/{}?key=wrong-key&channel=general&body=x&nonce=wrong-key",
+        fixture.participant_id
+    );
+    assert_eq!(
+        get(&fixture.router, &wrong_key_uri).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
     let bearer_uri = format!(
-        "/w/{}?channel=general&body=x&nonce=bearer-is-not-web",
-        fixture.bearer
+        "/w/{}?key={}&channel=general&body=x&nonce=bearer-is-not-web",
+        fixture.participant_id, fixture.bearer
     );
     assert_eq!(
         get(&fixture.router, &bearer_uri).await.status(),
@@ -274,11 +292,11 @@ async fn navigation_write_rejects_nonce_conflicts_invalid_revoked_and_bearer_cre
     );
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    assert!(identity::revoke_web_capability(&conn, &fixture.identity.instance).unwrap());
+    assert!(identity::revoke_web_participant_key(&conn, &fixture.participant_id).unwrap());
     drop(conn);
     let revoked_uri = format!(
-        "/w/{}?channel=general&body=x&nonce=revoked-cap",
-        fixture.capability
+        "/w/{}?key={}&channel=general&body=x&nonce=revoked-key",
+        fixture.participant_id, fixture.private_key
     );
     assert_eq!(
         get(&fixture.router, &revoked_uri).await.status(),
@@ -290,10 +308,14 @@ async fn navigation_write_rejects_nonce_conflicts_invalid_revoked_and_bearer_cre
 async fn navigation_write_validates_reply_targets_and_reports_reply_relationship() {
     let fixture = fixture("rotary");
     let conn = db::connect(&fixture.db_path).unwrap();
-    let (other, _) = identity::register_identity(&conn, "single", Some("target-writer")).unwrap();
+    let target_writer = Identity {
+        source: "single".to_owned(),
+        instance: "single-main".to_owned(),
+        label: Some("target-writer".to_owned()),
+    };
     let target = db::append_message(
         &conn,
-        &other,
+        &target_writer,
         "conversation-architecture",
         "discovery",
         "target",
@@ -303,14 +325,15 @@ async fn navigation_write_validates_reply_targets_and_reports_reply_relationship
     drop(conn);
 
     let reply_uri = format!(
-        "/w/{}?channel=conversation-architecture&kind=banter&body=reply&reply_to={}&nonce=reply-001",
-        fixture.capability, target.id
+        "/w/{}?key={}&channel=conversation-architecture&kind=banter&body=reply&reply_to={}&nonce=reply-001",
+        fixture.participant_id, fixture.private_key, target.id
     );
     let reply = get(&fixture.router, &reply_uri).await;
     let (status, _, body) = response_text(reply).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("status: created"));
     assert!(body.contains("source: rotary"));
+    assert!(body.contains("participant_id: rotary-main"));
     assert!(body.contains(&format!("reply_to: {}", target.id)));
     let reply_id = response_message_id(&body);
 
@@ -323,8 +346,8 @@ async fn navigation_write_validates_reply_targets_and_reports_reply_relationship
     drop(conn);
 
     let missing_uri = format!(
-        "/w/{}?channel=conversation-architecture&body=missing&reply_to=999999&nonce=reply-missing",
-        fixture.capability
+        "/w/{}?key={}&channel=conversation-architecture&body=missing&reply_to=999999&nonce=reply-missing",
+        fixture.participant_id, fixture.private_key
     );
     let missing = get(&fixture.router, &missing_uri).await;
     let (missing_status, _, missing_body) = response_text(missing).await;
@@ -339,4 +362,42 @@ async fn navigation_write_validates_reply_targets_and_reports_reply_relationship
         1,
         "missing reply target must not append a message"
     );
+}
+
+#[tokio::test]
+async fn different_participant_ids_keep_conversation_provenance_separate() {
+    let fixture = fixture("single");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::provision_web_participant(
+        &conn,
+        "rotary-main",
+        "rotary",
+        Some("Rotary main conversation"),
+        "prompt-key-rotary",
+    )
+    .unwrap()
+    .unwrap();
+    drop(conn);
+
+    let single_uri = format!(
+        "/w/{}?key={}&channel=general&body=from-single&nonce=single-001",
+        fixture.participant_id, fixture.private_key
+    );
+    let rotary_uri = "/w/rotary-main?key=prompt-key-rotary&channel=general&body=from-rotary&nonce=rotary-001";
+    assert_eq!(
+        get(&fixture.router, &single_uri).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&fixture.router, rotary_uri).await.status(),
+        StatusCode::OK
+    );
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let rows = db::list_messages_after(&conn, 0, Some("general"), 10).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].source, "single");
+    assert_eq!(rows[0].instance, "single-main");
+    assert_eq!(rows[1].source, "rotary");
+    assert_eq!(rows[1].instance, "rotary-main");
 }
