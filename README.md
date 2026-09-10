@@ -397,6 +397,7 @@ The target remains closer to a persistent engineering whiteboard than to a colla
 
 The README is the guided first journey. Detailed operational and reference material lives in `docs/`:
 
+- [`docs/conversation-sharing.md`](docs/conversation-sharing.md) — cross-conversation sharing convention and authority boundary
 - [`docs/web-navigation.md`](docs/web-navigation.md) — ordinary-conversation `/r` and `/w` protocol
 - [`docs/operations.md`](docs/operations.md) — database operations, backup, restore, and verification
 - [`docs/windows-service.md`](docs/windows-service.md) — native Windows service lifecycle and recovery
