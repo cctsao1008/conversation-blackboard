@@ -161,7 +161,7 @@ async fn mcp_initializes_and_advertises_exactly_two_focused_tools() {
     assert_eq!(tools[1]["annotations"]["readOnlyHint"], false);
     assert_eq!(tools[1]["annotations"]["destructiveHint"], false);
     assert_eq!(tools[1]["annotations"]["idempotentHint"], true);
-    assert_eq!(tools[1]["annotations"]["openWorldHint"], false);
+    assert_eq!(tools[1]["annotations"]["openWorldHint"], true);
 }
 
 #[tokio::test]
