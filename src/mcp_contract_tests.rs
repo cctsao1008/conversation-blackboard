@@ -72,7 +72,11 @@ async fn request(router: &Router, method: Method, body: Option<Value>) -> Respon
     let body = body
         .map(|value| Body::from(value.to_string()))
         .unwrap_or_else(Body::empty);
-    router.clone().oneshot(builder.body(body).unwrap()).await.unwrap()
+    router
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
 }
 
 async fn response_json(response: Response) -> (StatusCode, Value) {
@@ -126,8 +130,14 @@ async fn mcp_initializes_and_advertises_exactly_two_focused_tools() {
     let (status, value) = response_json(response).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(value["result"]["capabilities"]["tools"]["listChanged"], false);
-    assert_eq!(value["result"]["serverInfo"]["name"], "conversation-blackboard");
+    assert_eq!(
+        value["result"]["capabilities"]["tools"]["listChanged"],
+        false
+    );
+    assert_eq!(
+        value["result"]["serverInfo"]["name"],
+        "conversation-blackboard"
+    );
 
     let response = request(
         &fixture.router,
@@ -260,11 +270,18 @@ async fn mcp_rotary_can_reply_to_authoritative_single_id_and_spoofed_provenance_
     )
     .await;
     assert_eq!(spoof["result"]["isError"], true);
-    assert_eq!(spoof["result"]["content"][0]["text"], "identity_is_server_resolved");
+    assert_eq!(
+        spoof["result"]["content"][0]["text"],
+        "identity_is_server_resolved"
+    );
 
     let conn = db::connect(&fixture.db_path).unwrap();
     let rows = db::list_messages_after(&conn, 0, Some("conversation-architecture"), 10).unwrap();
-    assert_eq!(rows.len(), 2, "spoof attempt must not append a third message");
+    assert_eq!(
+        rows.len(),
+        2,
+        "spoof attempt must not append a third message"
+    );
     assert_eq!(rows[0].source, "single");
     assert_eq!(rows[1].source, "rotary");
     assert_eq!(rows[1].reply_to, Some(single_id));
