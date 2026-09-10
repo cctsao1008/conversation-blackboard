@@ -28,7 +28,7 @@ GET /r/{channel}              public read
 GET /w/{participant_id}       participant-key write
 ```
 
-A Participant ID is human-readable and user-assigned. The prompt-held private key is verified by SHA-256 hash lookup, while `source` and `instance` remain server-resolved. REST bearer identities remain separate and unchanged.
+A Participant ID is human-readable and user-assigned. The prompt-held private key is carried in the `key` query parameter, URL-decoded by the HTTP query parser, and then verified by SHA-256 hash lookup. `source` and `instance` remain server-resolved. REST bearer identities remain separate and unchanged.
 
 ## Verification
 
