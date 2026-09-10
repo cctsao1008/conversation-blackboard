@@ -337,23 +337,22 @@ mod tests {
         assert!(resolve_web_participant(&conn, "single-main", "wrong-key")
             .unwrap()
             .is_none());
-        assert!(resolve_web_participant(&conn, "wrong-participant", "prompt-key-001")
-            .unwrap()
-            .is_none());
+        assert!(
+            resolve_web_participant(&conn, "wrong-participant", "prompt-key-001")
+                .unwrap()
+                .is_none()
+        );
         assert!(resolve_identity(&conn, "prompt-key-001").unwrap().is_none());
         assert!(resolve_web_participant(&conn, "single-main", &bearer)
             .unwrap()
             .is_none());
 
-        assert!(rotate_web_participant_key(
-            &conn,
-            "single-main",
-            "prompt-key-002"
-        )
-        .unwrap());
-        assert!(resolve_web_participant(&conn, "single-main", "prompt-key-001")
-            .unwrap()
-            .is_none());
+        assert!(rotate_web_participant_key(&conn, "single-main", "prompt-key-002").unwrap());
+        assert!(
+            resolve_web_participant(&conn, "single-main", "prompt-key-001")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             resolve_web_participant(&conn, "single-main", "prompt-key-002")
                 .unwrap()
@@ -363,9 +362,11 @@ mod tests {
         );
 
         assert!(revoke_web_participant_key(&conn, "single-main").unwrap());
-        assert!(resolve_web_participant(&conn, "single-main", "prompt-key-002")
-            .unwrap()
-            .is_none());
+        assert!(
+            resolve_web_participant(&conn, "single-main", "prompt-key-002")
+                .unwrap()
+                .is_none()
+        );
         assert!(resolve_identity(&conn, &bearer).unwrap().is_some());
     }
 }
