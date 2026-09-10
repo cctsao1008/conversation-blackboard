@@ -112,7 +112,7 @@ async fn navigation_read(
         rows.len()
     );
     for row in rows {
-        body.push_str("\n");
+        body.push('\n');
         body.push_str(
             &serde_json::to_string(&row)
                 .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?,
@@ -186,12 +186,14 @@ async fn navigation_write(
         db::append_navigation_message(
             conn,
             &write_identity,
-            &write_channel,
-            &write_kind,
-            &write_body,
-            reply_to,
-            &write_nonce,
-            &request_hash,
+            db::NavigationMessageInput {
+                channel: &write_channel,
+                kind: &write_kind,
+                body: &write_body,
+                reply_to,
+                nonce: &write_nonce,
+                request_hash: &request_hash,
+            },
         )
     })
     .await?;
