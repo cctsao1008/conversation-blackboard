@@ -593,9 +593,11 @@ fn tool_error(code: &'static str) -> Value {
 }
 
 fn only_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> bool {
-    arguments
-        .keys()
-        .all(|key| allowed.iter().any(|allowed_key| key.as_str() == *allowed_key))
+    arguments.keys().all(|key| {
+        allowed
+            .iter()
+            .any(|allowed_key| key.as_str() == *allowed_key)
+    })
 }
 
 fn name_re() -> &'static Regex {
