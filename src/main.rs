@@ -7,6 +7,8 @@ mod http;
 mod http_contract_tests;
 mod identity;
 mod model;
+mod participant_admin;
+mod participant_key;
 mod runtime;
 mod web_admin;
 #[cfg(windows)]
@@ -38,6 +40,11 @@ enum Command {
     Identity {
         #[command(subcommand)]
         command: admin::IdentityCommand,
+    },
+    /// Generate optional Participant ID key material without registering it.
+    Participant {
+        #[command(subcommand)]
+        command: participant_admin::ParticipantCommand,
     },
     /// Provision, rotate, or revoke web Participant IDs and prompt-held keys.
     Web {
@@ -76,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Run(args)) => run_interactive(args),
         Some(Command::Db { command }) => admin::dispatch_db(command),
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
+        Some(Command::Participant { command }) => participant_admin::dispatch(command),
         Some(Command::Web { command }) => web_admin::dispatch(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
