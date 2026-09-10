@@ -43,6 +43,8 @@ jobs:
           .\target\release\conversation-blackboard.exe --help
           .\target\release\conversation-blackboard.exe db --help
           .\target\release\conversation-blackboard.exe identity --help
+          .\target\release\conversation-blackboard.exe web --help
+          .\target\release\conversation-blackboard.exe web provision --help
           .\target\release\conversation-blackboard.exe verify --help
           .\target\release\conversation-blackboard.exe client --help
           .\target\release\conversation-blackboard.exe service --help
@@ -72,6 +74,17 @@ jobs:
 
           try {
             & $exe db init --db $db
+
+            $web = (& $exe web provision --db $db --participant-id ci-web-main --source ci-web --label "CI web participant" --key ci-web-key-a) | Out-String
+            if ($web -notmatch 'participant_id\s*:\s*ci-web-main' -or $web -notmatch 'private_key\s*:\s*ci-web-key-a') {
+              throw "web participant provisioning output mismatch"
+            }
+            $rotatedWeb = (& $exe web rotate --db $db --participant-id ci-web-main --key ci-web-key-b) | Out-String
+            if ($rotatedWeb -notmatch 'private_key\s*:\s*ci-web-key-b') {
+              throw "web participant rotation output mismatch"
+            }
+            & $exe web revoke --db $db --participant-id ci-web-main
+
             $a = Provision-Identity "ci-source-a" "CI identity A"
             $b = Provision-Identity "ci-source-b" "CI identity B"
             if (-not $a.Instance -or -not $a.Token -or -not $b.Instance -or -not $b.Token) {
