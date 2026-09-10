@@ -282,7 +282,7 @@ fn tools_list_result() -> Value {
                     "readOnlyHint": false,
                     "destructiveHint": false,
                     "idempotentHint": true,
-                    "openWorldHint": false
+                    "openWorldHint": true
                 }
             }
         ]
