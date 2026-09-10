@@ -72,7 +72,11 @@ async fn response_text(response: Response) -> (StatusCode, HeaderMap, String) {
 
 fn assert_navigation_headers(headers: &HeaderMap) {
     assert_eq!(
-        headers.get(header::CACHE_CONTROL).unwrap().to_str().unwrap(),
+        headers
+            .get(header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "no-store"
     );
     assert_eq!(
@@ -149,10 +153,7 @@ async fn navigation_read_honors_cursor_limit_and_preserves_authoritative_fields(
 
     let response = get(
         &fixture.router,
-        &format!(
-            "/r/control-systems?after={}&limit=1",
-            first.id
-        ),
+        &format!("/r/control-systems?after={}&limit=1", first.id),
     )
     .await;
     let (status, headers, body) = response_text(response).await;
@@ -226,13 +227,7 @@ async fn navigation_write_is_server_attributed_and_idempotent() {
     assert_eq!(response_message_id(&replay_body), message_id);
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    let rows = db::list_messages_after(
-        &conn,
-        0,
-        Some("conversation-architecture"),
-        10,
-    )
-    .unwrap();
+    let rows = db::list_messages_after(&conn, 0, Some("conversation-architecture"), 10).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, message_id);
     assert_eq!(rows[0].source, "single");
@@ -320,13 +315,8 @@ async fn navigation_write_validates_reply_targets_and_reports_reply_relationship
     let reply_id = response_message_id(&body);
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    let rows = db::list_messages_after(
-        &conn,
-        target.id,
-        Some("conversation-architecture"),
-        10,
-    )
-    .unwrap();
+    let rows =
+        db::list_messages_after(&conn, target.id, Some("conversation-architecture"), 10).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, reply_id);
     assert_eq!(rows[0].reply_to, Some(target.id));
@@ -342,12 +332,11 @@ async fn navigation_write_validates_reply_targets_and_reports_reply_relationship
     assert!(missing_body.contains("error: reply_target_not_found"));
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    let rows = db::list_messages_after(
-        &conn,
-        target.id,
-        Some("conversation-architecture"),
-        10,
-    )
-    .unwrap();
-    assert_eq!(rows.len(), 1, "missing reply target must not append a message");
+    let rows =
+        db::list_messages_after(&conn, target.id, Some("conversation-architecture"), 10).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "missing reply target must not append a message"
+    );
 }
