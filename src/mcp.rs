@@ -98,12 +98,7 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(value) => value,
         Err(_) => {
-            return jsonrpc_http_error(
-                StatusCode::BAD_REQUEST,
-                Value::Null,
-                -32700,
-                "parse_error",
-            )
+            return jsonrpc_http_error(StatusCode::BAD_REQUEST, Value::Null, -32700, "parse_error")
         }
     };
     let object = match value.as_object() {
@@ -128,9 +123,7 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
 
     let method = match object.get("method").and_then(Value::as_str) {
         Some(method) => method,
-        None if object.contains_key("result") || object.contains_key("error") => {
-            return accepted()
-        }
+        None if object.contains_key("result") || object.contains_key("error") => return accepted(),
         None => {
             return jsonrpc_http_error(
                 StatusCode::BAD_REQUEST,
@@ -602,7 +595,7 @@ fn tool_error(code: &'static str) -> Value {
 fn only_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> bool {
     arguments
         .keys()
-        .all(|key| allowed.iter().any(|allowed_key| key == allowed_key))
+        .all(|key| allowed.iter().any(|allowed_key| key.as_str() == *allowed_key))
 }
 
 fn name_re() -> &'static Regex {
@@ -704,12 +697,7 @@ fn jsonrpc_error_response(id: Value, code: i64, message: &'static str) -> Respon
     )
 }
 
-fn jsonrpc_http_error(
-    status: StatusCode,
-    id: Value,
-    code: i64,
-    message: &'static str,
-) -> Response {
+fn jsonrpc_http_error(status: StatusCode, id: Value, code: i64, message: &'static str) -> Response {
     json_response(
         status,
         json!({
@@ -738,8 +726,7 @@ fn apply_common_headers(response: &mut Response) {
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static("Mcp-Session-Id"),
     );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
