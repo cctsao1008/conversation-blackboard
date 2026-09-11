@@ -1,0 +1,39 @@
+name: implement-totp-human-auth
+
+on:
+  push:
+    branches: [auth-ed25519-v2]
+    paths:
+      - '.github/scripts/implement_totp_human_auth.py'
+      - '.github/workflows/implement-totp-human-auth.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, 'auth: replace human browser credentials with TOTP') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: auth-ed25519-v2
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply TOTP migration
+        run: python .github/scripts/implement_totp_human_auth.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Test
+        run: cargo test --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Commit implementation
+        run: |
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add -A
+          git commit -m "auth: replace human browser credentials with TOTP"
+          git push origin HEAD:auth-ed25519-v2
