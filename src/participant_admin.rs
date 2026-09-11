@@ -10,11 +10,12 @@ type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 pub enum GeneratorScheme {
     Random,
     MiniRsa,
+    Ed25519,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ParticipantCommand {
-    /// Generate prompt-held participant key material without registering it.
+    /// Generate participant key material without registering it.
     Generate {
         #[arg(long, value_enum, default_value_t = GeneratorScheme::Random)]
         scheme: GeneratorScheme,
@@ -27,6 +28,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             let scheme = match scheme {
                 GeneratorScheme::Random => KeyScheme::Random,
                 GeneratorScheme::MiniRsa => KeyScheme::MiniRsa,
+                GeneratorScheme::Ed25519 => KeyScheme::Ed25519,
             };
             let material = participant_key::generate(scheme);
             print_material(&material);
@@ -45,7 +47,13 @@ fn print_material(material: &participant_key::GeneratedKeyMaterial) {
     println!("private_key     : {}", material.private_key);
     println!("note            : {}", material.note);
     println!();
-    println!(
-        "Register this material with `web provision --key <private_key>` or use your own externally generated key material."
-    );
+    if material.scheme == crate::signed_auth::SIGNATURE_SCHEME {
+        println!(
+            "Register only the public material with `web set-signing-key --participant-id <id> --public-key <public_material>`. Keep the private key with the participant."
+        );
+    } else {
+        println!(
+            "Register this material with `web provision --key <private_key>` or use your own externally generated key material."
+        );
+    }
 }
