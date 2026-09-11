@@ -3,6 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 
+use crate::signed_auth;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedKeyMaterial {
     pub scheme: &'static str,
@@ -15,6 +17,7 @@ pub struct GeneratedKeyMaterial {
 pub enum KeyScheme {
     Random,
     MiniRsa,
+    Ed25519,
 }
 
 pub fn generate(scheme: KeyScheme) -> GeneratedKeyMaterial {
@@ -33,6 +36,15 @@ pub fn generate(scheme: KeyScheme) -> GeneratedKeyMaterial {
                 private_key: format!("mrsa_d{}_n{}", rsa.d, rsa.n),
                 note:
                     "Educational/test Mini-RSA material only; not production-strength cryptography.",
+            }
+        }
+        KeyScheme::Ed25519 => {
+            let (private_key, public_key) = signed_auth::generate_keypair();
+            GeneratedKeyMaterial {
+                scheme: signed_auth::SIGNATURE_SCHEME,
+                public_material: Some(public_key),
+                private_key,
+                note: "Production Ed25519 signing material. Keep the private key with the participant; register only the public key with Conversation Blackboard.",
             }
         }
     }
@@ -182,5 +194,17 @@ mod tests {
         assert!(random.public_material.is_none());
         assert!(random.private_key.starts_with("wk_"));
         assert!(!random.private_key.chars().any(char::is_whitespace));
+
+        let ed25519 = generate(KeyScheme::Ed25519);
+        assert_eq!(ed25519.scheme, signed_auth::SIGNATURE_SCHEME);
+        assert!(ed25519
+            .public_material
+            .as_deref()
+            .unwrap()
+            .starts_with(signed_auth::PUBLIC_KEY_PREFIX));
+        assert!(ed25519
+            .private_key
+            .starts_with(signed_auth::PRIVATE_KEY_PREFIX));
+        assert!(!ed25519.private_key.chars().any(char::is_whitespace));
     }
 }
