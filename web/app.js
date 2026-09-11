@@ -2,11 +2,16 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+  const HISTORY_PAGE_SIZE = 20;
+
   const state = {
     token: "",
     identity: null,
     channel: localStorage.getItem("conversation-blackboard.channel") || "",
+    channels: [],
     lastId: 0,
+    oldestId: 0,
+    hasOlder: false,
     replyTo: null,
     pollTimer: null,
   };
@@ -86,44 +91,106 @@
     return button;
   }
 
+  function currentChannelSummary() {
+    return state.channels.find((channel) => channel.channel === state.channel) || null;
+  }
+
+  function updateChannelHeader() {
+    const summary = currentChannelSummary();
+    $("channel-message-count").textContent = state.channel
+      ? `#${summary ? summary.message_count : 0} messages`
+      : "";
+  }
+
+  function renderChannels(channels) {
+    state.channels = channels;
+    const container = $("channels");
+    container.replaceChildren(...channels.map(channelButton));
+    updateChannelHeader();
+  }
+
   async function loadChannels() {
     const data = await api("/api/channels");
-    const container = $("channels");
-    container.replaceChildren();
-    for (const channel of data.channels) container.append(channelButton(channel));
+    renderChannels(data.channels);
 
-    if (!state.channel && data.channels.length) state.channel = data.channels[0].channel;
+    const savedChannelExists = state.channels.some((channel) => channel.channel === state.channel);
+    if (!savedChannelExists) {
+      state.channel = state.channels.length ? state.channels[0].channel : "";
+    }
     if (state.channel) await selectChannel(state.channel, false);
+  }
+
+  function resetHistory() {
+    state.lastId = 0;
+    state.oldestId = 0;
+    state.hasOlder = false;
+    $("timeline").replaceChildren();
+    updateHistoryNav();
+    updateEmpty();
   }
 
   async function selectChannel(channel, refreshChannels = true) {
     state.channel = channel;
-    state.lastId = 0;
     state.replyTo = null;
     localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
-    $("timeline").replaceChildren();
+    resetHistory();
     updateReplyBar();
-    updateEmpty();
 
     if (refreshChannels) {
       const data = await api("/api/channels");
-      const container = $("channels");
-      container.replaceChildren(...data.channels.map(channelButton));
+      renderChannels(data.channels);
+    } else {
+      renderChannels(state.channels);
     }
-    await loadInitialHistory();
+
+    await loadLatestHistory();
   }
 
-  async function loadInitialHistory() {
-    let after = 0;
-    while (true) {
-      const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${after}&limit=200`);
-      for (const message of data.messages) appendMessage(message);
-      if (data.messages.length < 200) break;
-      after = data.messages[data.messages.length - 1].id;
-    }
+  async function loadLatestHistory() {
+    if (!state.channel) return;
+
+    resetHistory();
+    const data = await api(
+      `/api/messages/window?channel=${encodeURIComponent(state.channel)}&limit=${HISTORY_PAGE_SIZE}`,
+    );
+    for (const message of data.messages) appendMessage(message);
+    state.hasOlder = Boolean(data.has_older);
+    updateHistoryNav();
     updateEmpty();
     scrollToBottom();
+  }
+
+  async function loadOlderHistory() {
+    if (!state.channel || !state.oldestId || !state.hasOlder) return;
+
+    const button = $("load-older");
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Loading…";
+    }
+
+    try {
+      const data = await api(
+        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&before=${state.oldestId}&limit=${HISTORY_PAGE_SIZE}`,
+      );
+
+      for (let index = data.messages.length - 1; index >= 0; index -= 1) {
+        appendMessage(data.messages[index], "prepend");
+      }
+      state.hasOlder = Boolean(data.has_older);
+      updateHistoryNav();
+      updateEmpty();
+
+      if (data.messages.length) $("timeline").scrollTop = 0;
+    } catch (error) {
+      if (error.status === 401) {
+        disconnect("Session token is no longer valid.");
+      } else {
+        $("status").textContent = `Could not load older messages: ${error.message}`;
+        updateHistoryNav();
+      }
+    }
   }
 
   async function poll() {
@@ -148,13 +215,14 @@
 
   async function refreshChannelCounts() {
     const data = await api("/api/channels");
-    const container = $("channels");
-    container.replaceChildren(...data.channels.map(channelButton));
+    renderChannels(data.channels);
   }
 
-  function appendMessage(message) {
-    if (document.querySelector(`[data-message-id="${message.id}"]`)) return;
+  function appendMessage(message, placement = "append") {
+    if (document.querySelector(`[data-message-id="${message.id}"]`)) return false;
+
     state.lastId = Math.max(state.lastId, message.id);
+    state.oldestId = state.oldestId ? Math.min(state.oldestId, message.id) : message.id;
 
     const article = document.createElement("article");
     article.className = "message";
@@ -220,11 +288,39 @@
 
     actions.append(expandButton, replyButton);
     article.append(meta, body, actions);
-    $("timeline").append(article);
+
+    const timeline = $("timeline");
+    if (placement === "prepend") {
+      timeline.insertBefore(article, timeline.firstChild);
+    } else {
+      const historyNav = $("history-nav");
+      timeline.insertBefore(article, historyNav || null);
+    }
 
     requestAnimationFrame(() => {
       expandButton.hidden = body.scrollHeight <= body.clientHeight + 1;
     });
+    return true;
+  }
+
+  function updateHistoryNav() {
+    const existing = $("history-nav");
+    if (existing) existing.remove();
+    if (!state.hasOlder || !state.channel) return;
+
+    const nav = document.createElement("div");
+    nav.id = "history-nav";
+    nav.className = "history-nav";
+
+    const button = document.createElement("button");
+    button.id = "load-older";
+    button.type = "button";
+    button.className = "secondary";
+    button.textContent = "Load older messages";
+    button.addEventListener("click", loadOlderHistory);
+
+    nav.append(button);
+    $("timeline").append(nav);
   }
 
   function updateReplyBar() {
@@ -239,7 +335,7 @@
   }
 
   function updateEmpty() {
-    const hasMessages = $("timeline").children.length > 0;
+    const hasMessages = $("timeline").querySelector(".message") !== null;
     $("empty").classList.toggle("visible", !hasMessages);
   }
 
@@ -297,9 +393,8 @@
     state.channel = channel;
     localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
-    $("timeline").replaceChildren();
-    state.lastId = 0;
-    updateEmpty();
+    resetHistory();
+    updateChannelHeader();
   }
 
   function disconnect(message) {
@@ -322,9 +417,11 @@
     updateReplyBar();
   });
   $("new-channel").addEventListener("click", createChannel);
+  $("latest").addEventListener("click", loadLatestHistory);
   $("refresh").addEventListener("click", async () => {
     if (!state.channel) return;
-    await selectChannel(state.channel);
+    await refreshChannelCounts();
+    await loadLatestHistory();
   });
 
   setConnected(false);
