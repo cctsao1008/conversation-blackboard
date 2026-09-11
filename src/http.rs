@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::{db, identity, model::Identity};
+use crate::{db, identity, model::Identity, request_auth};
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -446,18 +446,12 @@ async fn read_json_object(request: Request<Body>) -> Result<Map<String, Value>, 
 }
 
 async fn require_identity(state: &AppState, headers: &HeaderMap) -> Result<Identity, ApiError> {
-    let token = bearer_token(headers).ok_or_else(ApiError::unauthorized)?;
-    let identity = with_db(state, move |conn| identity::resolve_identity(conn, &token)).await?;
+    let headers = headers.clone();
+    let identity = with_db(state, move |conn| {
+        request_auth::resolve_request_identity(conn, &headers)
+    })
+    .await?;
     identity.ok_or_else(ApiError::unauthorized)
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
-        return None;
-    }
-    Some(token.to_owned())
 }
 
 fn constant_time_text_eq(expected: &str, supplied: &str) -> bool {

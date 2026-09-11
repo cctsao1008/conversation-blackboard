@@ -5,7 +5,8 @@
   const HISTORY_PAGE_SIZE = 20;
 
   const state = {
-    token: "",
+    participantId: "",
+    privateKey: "",
     identity: null,
     channel: localStorage.getItem("conversation-blackboard.channel") || "",
     channels: [],
@@ -20,7 +21,10 @@
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
     headers.set("Accept", "application/json");
-    if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
+    if (state.participantId && state.privateKey) {
+      headers.set("X-Blackboard-Participant-Id", state.participantId);
+      headers.set("X-Blackboard-Private-Key", state.privateKey);
+    }
     if (options.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
@@ -52,23 +56,30 @@
 
   async function connect() {
     $("connect-error").textContent = "";
-    const token = $("token").value.trim();
-    if (!token) {
-      $("connect-error").textContent = "Enter a bearer token.";
+    const participantId = $("participant-id").value.trim();
+    const privateKey = $("private-key").value.trim();
+    if (!participantId || !privateKey) {
+      $("connect-error").textContent = "Enter a Participant ID and private key.";
       return;
     }
 
-    state.token = token;
+    state.participantId = participantId;
+    state.privateKey = privateKey;
     try {
       state.identity = await api("/api/whoami");
       $("identity").textContent = identityText(state.identity);
-      $("token").value = "";
+      $("participant-id").value = "";
+      $("private-key").value = "";
       setConnected(true);
       await loadChannels();
       startPolling();
     } catch (error) {
-      state.token = "";
-      $("connect-error").textContent = error.status === 401 ? "Token was not accepted." : "Could not connect.";
+      state.participantId = "";
+      state.privateKey = "";
+      state.identity = null;
+      $("connect-error").textContent = error.status === 401
+        ? "Participant credential was not accepted."
+        : "Could not connect.";
     }
   }
 
@@ -188,7 +199,7 @@
       if (data.messages.length) $("timeline").scrollTop = 0;
     } catch (error) {
       if (error.status === 401) {
-        disconnect("Session token is no longer valid.");
+        disconnect("Participant credential is no longer valid.");
       } else {
         $("status").textContent = `Could not load older messages: ${error.message}`;
         updateHistoryNav();
@@ -245,7 +256,7 @@
       $("status").textContent = `Showing #${id}. Select Latest to return to the live window.`;
     } catch (error) {
       if (error.status === 401) {
-        disconnect("Session token is no longer valid.");
+        disconnect("Participant credential is no longer valid.");
       } else {
         $("status").textContent = `Could not find #${id}: ${error.message}`;
       }
@@ -255,7 +266,7 @@
   }
 
   async function poll() {
-    if (!state.token || !state.channel || !state.followLatest) return;
+    if (!state.participantId || !state.privateKey || !state.channel || !state.followLatest) return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
       for (const message of data.messages) appendMessage(message);
@@ -265,7 +276,7 @@
         await refreshChannelCounts();
       }
     } catch (error) {
-      if (error.status === 401) disconnect("Session token is no longer valid.");
+      if (error.status === 401) disconnect("Participant credential is no longer valid.");
     }
   }
 
@@ -435,7 +446,9 @@
       await loadLatestHistory();
       $("status").textContent = `Posted #${data.message.id}`;
     } catch (error) {
-      $("status").textContent = error.status === 401 ? "Token is no longer valid." : `Post failed: ${error.message}`;
+      $("status").textContent = error.status === 401
+        ? "Participant credential is no longer valid."
+        : `Post failed: ${error.message}`;
     } finally {
       $("send").disabled = false;
     }
@@ -458,7 +471,8 @@
   }
 
   function disconnect(message) {
-    state.token = "";
+    state.participantId = "";
+    state.privateKey = "";
     state.identity = null;
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = null;
@@ -468,7 +482,10 @@
   }
 
   $("connect").addEventListener("click", connect);
-  $("token").addEventListener("keydown", (event) => {
+  $("participant-id").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") connect();
+  });
+  $("private-key").addEventListener("keydown", (event) => {
     if (event.key === "Enter") connect();
   });
   $("composer").addEventListener("submit", postMessage);

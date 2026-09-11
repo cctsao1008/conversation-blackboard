@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use axum::{
     extract::{Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{db, http::AppState, identity, model::Message};
+use crate::{db, http::AppState, model::Message, request_auth};
 
 const DEFAULT_WINDOW_SIZE: usize = 20;
 const MAX_WINDOW_SIZE: usize = 200;
@@ -48,17 +48,14 @@ async fn message_window(
         return json_error(StatusCode::BAD_REQUEST, "invalid_query");
     }
 
-    let Some(token) = bearer_token(&headers) else {
-        return json_error(StatusCode::UNAUTHORIZED, "unauthorized");
-    };
-
     let db_path = state.db_path.clone();
     let channel = query.channel;
     let before = query.before;
+    let auth_headers = headers.clone();
 
     let result = tokio::task::spawn_blocking(move || -> SqlResult<Option<(Vec<Message>, bool)>> {
         let conn = db::connect(&db_path)?;
-        if identity::resolve_identity(&conn, &token)?.is_none() {
+        if request_auth::resolve_request_identity(&conn, &auth_headers)?.is_none() {
             return Ok(None);
         }
 
@@ -135,15 +132,6 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> SqlResult<Message> {
     })
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
-        return None;
-    }
-    Some(token.to_owned())
-}
-
 fn name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$").unwrap())
@@ -158,8 +146,9 @@ mod tests {
     use super::*;
     use axum::{
         body::{to_bytes, Body},
-        http::Request,
+        http::{header, Request},
     };
+    use crate::identity;
     use serde_json::Value;
     use tempfile::{tempdir, TempDir};
     use tower::ServiceExt;

@@ -13,6 +13,7 @@ mod mcp_contract_tests;
 mod model;
 mod participant_admin;
 mod participant_key;
+mod request_auth;
 mod runtime;
 mod web_admin;
 #[cfg(windows)]
