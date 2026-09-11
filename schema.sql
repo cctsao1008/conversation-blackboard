@@ -31,12 +31,14 @@ CREATE TABLE IF NOT EXISTS web_capabilities (
 );
 
 CREATE TABLE IF NOT EXISTS web_participants (
-    participant_id  TEXT PRIMARY KEY,
-    source          TEXT NOT NULL,
-    label           TEXT,
-    key_hash        TEXT UNIQUE,
-    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
-    updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    participant_id    TEXT PRIMARY KEY,
+    source            TEXT NOT NULL,
+    label             TEXT,
+    key_hash          TEXT UNIQUE,
+    public_key        TEXT,
+    signature_scheme  TEXT,
+    created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at        INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE IF NOT EXISTS navigation_writes (
