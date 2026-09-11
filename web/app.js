@@ -12,6 +12,7 @@
     lastId: 0,
     oldestId: 0,
     hasOlder: false,
+    followLatest: true,
     replyTo: null,
     pollTimer: null,
   };
@@ -131,6 +132,7 @@
 
   async function selectChannel(channel, refreshChannels = true) {
     state.channel = channel;
+    state.followLatest = true;
     state.replyTo = null;
     localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
@@ -150,6 +152,7 @@
   async function loadLatestHistory() {
     if (!state.channel) return;
 
+    state.followLatest = true;
     resetHistory();
     const data = await api(
       `/api/messages/window?channel=${encodeURIComponent(state.channel)}&limit=${HISTORY_PAGE_SIZE}`,
@@ -193,8 +196,66 @@
     }
   }
 
+  function focusMessage(id) {
+    const article = document.querySelector(`[data-message-id="${id}"]`);
+    if (!article) return false;
+
+    article.classList.add("message-target");
+    article.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => article.classList.remove("message-target"), 1800);
+    return true;
+  }
+
+  async function jumpToMessage(event) {
+    event.preventDefault();
+    if (!state.channel) return;
+
+    const raw = $("jump-id").value.trim();
+    const id = Number(raw);
+    if (!Number.isSafeInteger(id) || id <= 0 || id >= Number.MAX_SAFE_INTEGER) {
+      $("status").textContent = "Enter a valid positive message ID.";
+      return;
+    }
+
+    if (focusMessage(id)) {
+      $("status").textContent = `Showing #${id}`;
+      return;
+    }
+
+    $("jump-go").disabled = true;
+    $("status").textContent = `Finding #${id}…`;
+    try {
+      const data = await api(
+        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&before=${id + 1}&limit=${HISTORY_PAGE_SIZE}`,
+      );
+      const found = data.messages.some((message) => message.id === id);
+      if (!found) {
+        $("status").textContent = `Message #${id} is not in ${state.channel}.`;
+        return;
+      }
+
+      state.followLatest = false;
+      resetHistory();
+      for (const message of data.messages) appendMessage(message);
+      state.hasOlder = Boolean(data.has_older);
+      updateHistoryNav();
+      updateEmpty();
+
+      requestAnimationFrame(() => focusMessage(id));
+      $("status").textContent = `Showing #${id}. Select Latest to return to the live window.`;
+    } catch (error) {
+      if (error.status === 401) {
+        disconnect("Session token is no longer valid.");
+      } else {
+        $("status").textContent = `Could not find #${id}: ${error.message}`;
+      }
+    } finally {
+      $("jump-go").disabled = false;
+    }
+  }
+
   async function poll() {
-    if (!state.token || !state.channel) return;
+    if (!state.token || !state.channel || !state.followLatest) return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
       for (const message of data.messages) appendMessage(message);
@@ -367,13 +428,11 @@
         method: "POST",
         body: JSON.stringify(payload),
       });
-      appendMessage(data.message);
       $("body").value = "";
       state.replyTo = null;
       updateReplyBar();
-      updateEmpty();
-      scrollToBottom();
       await refreshChannelCounts();
+      await loadLatestHistory();
       $("status").textContent = `Posted #${data.message.id}`;
     } catch (error) {
       $("status").textContent = error.status === 401 ? "Token is no longer valid." : `Post failed: ${error.message}`;
@@ -391,6 +450,7 @@
       return;
     }
     state.channel = channel;
+    state.followLatest = true;
     localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
     resetHistory();
@@ -423,6 +483,7 @@
     await refreshChannelCounts();
     await loadLatestHistory();
   });
+  $("jump-form").addEventListener("submit", jumpToMessage);
 
   setConnected(false);
 })();
