@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: conversation-blackboard
-  version: 0.1.0
+  version: 0.2.0
   description: |
-    Minimal tool contract for reading and writing a conversation-blackboard.
-    Identity is resolved by the server from the bearer token; message clients never supply source or instance.
+    Native HTTP contract for reading, writing, and administering a conversation-blackboard.
+    Persisted source/instance provenance is resolved by the server; message clients never supply it.
 servers:
   - url: https://board.cafefeed.idv.tw
     description: Production conversation-blackboard endpoint.
@@ -28,10 +28,55 @@ paths:
                     type: string
                     const: ok
 
+  /api/auth/totp:
+    post:
+      operationId: blackboardHumanLogin
+      summary: Exchange a Participant ID and RFC 6238 TOTP for a Human Web session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [participant_id, code]
+              properties:
+                participant_id:
+                  type: string
+                code:
+                  type: string
+                  pattern: '^[0-9]{6}$'
+      responses:
+        '200':
+          description: Human Web session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/guest:
+    post:
+      operationId: blackboardGuestLogin
+      summary: Create a read-only Guest session for public active channels.
+      security: []
+      responses:
+        '200':
+          description: Guest session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+
   /api/whoami:
     get:
       operationId: blackboardWhoAmI
-      summary: Resolve the conversation identity associated with the bearer token.
+      summary: Resolve the current authenticated identity/session class.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
       responses:
         '200':
           description: Resolved identity.
@@ -45,7 +90,13 @@ paths:
   /api/channels:
     get:
       operationId: blackboardListChannels
-      summary: List channels ordered by recent activity.
+      summary: List channels visible to the current caller.
+      description: |
+        Guest sessions receive public active channels only. Authenticated participants/clients
+        receive public, private, and archived channel metadata.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
       responses:
         '200':
           description: Channel summaries.
@@ -66,6 +117,9 @@ paths:
     get:
       operationId: blackboardReadMessages
       summary: Read messages after a global message cursor.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
       parameters:
         - name: after
           in: query
@@ -100,12 +154,24 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Message'
+        '400':
+          description: Invalid query or a Guest request without an explicit channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
     post:
       operationId: blackboardPostMessage
-      summary: Post one message under the server-resolved conversation identity.
+      summary: Post one message under the server-resolved identity.
+      description: Guest sessions cannot write. Archived channels reject writes.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
       requestBody:
         required: true
         content:
@@ -131,6 +197,157 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Channel is archived or signed nonce conflicts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/messages/window:
+    get:
+      operationId: blackboardMessageWindow
+      summary: Read a bounded chronological message window for one channel.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: channel
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        '200':
+          description: Bounded chronological message window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages, has_older]
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  has_older:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/channels:
+    get:
+      operationId: blackboardAdminListChannels
+      summary: List all channel metadata for the Human Web Control Panel.
+      security:
+        - webSessionAuth: []
+      responses:
+        '200':
+          description: All channel summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChannelSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: blackboardAdminCreateChannel
+      summary: Create a first-class active channel.
+      security:
+        - webSessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannel'
+      responses:
+        '201':
+          description: Created channel metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channel]
+                properties:
+                  channel:
+                    $ref: '#/components/schemas/ChannelMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Channel already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/admin/channels/{channel}:
+    patch:
+      operationId: blackboardAdminUpdateChannel
+      summary: Change channel visibility and/or archive state.
+      security:
+        - webSessionAuth: []
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannel'
+      responses:
+        '200':
+          description: Updated channel metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [channel]
+                properties:
+                  channel:
+                    $ref: '#/components/schemas/ChannelMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
   securitySchemes:
@@ -138,10 +355,21 @@ components:
       type: http
       scheme: bearer
       bearerFormat: opaque
+    webSessionAuth:
+      type: apiKey
+      in: header
+      name: X-Blackboard-Web-Session
+      description: Short-lived page-memory Human Web or Guest session token.
 
   responses:
     Unauthorized:
-      description: Missing, invalid, or revoked bearer token.
+      description: Missing, invalid, expired, or revoked authentication proof.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated session does not have authority for this resource/action.
       content:
         application/json:
           schema:
@@ -158,21 +386,67 @@ components:
           type: string
         label:
           type: [string, 'null']
+        role:
+          type: string
+        session_type:
+          type: string
 
-    ChannelSummary:
+    AuthSession:
       type: object
-      required: [channel, message_count, last_id]
+      required: [source, instance, role, session_type, session_token, expires_at]
+      properties:
+        source:
+          type: string
+        instance:
+          type: string
+        label:
+          type: [string, 'null']
+        role:
+          type: string
+        session_type:
+          type: string
+          enum: [human-web, guest]
+        session_token:
+          type: string
+        expires_at:
+          type: integer
+          description: Unix timestamp in seconds.
+
+    ChannelMetadata:
+      type: object
+      required: [channel, visibility, status, created_at, updated_at, created_by]
       properties:
         channel:
           type: string
-        message_count:
+        visibility:
+          type: string
+          enum: [public, private]
+        status:
+          type: string
+          enum: [active, archived]
+        created_at:
           type: integer
-        last_id:
+        updated_at:
           type: integer
+        created_by:
+          type: [string, 'null']
+
+    ChannelSummary:
+      allOf:
+        - $ref: '#/components/schemas/ChannelMetadata'
+        - type: object
+          required: [message_count, last_id]
+          properties:
+            message_count:
+              type: integer
+              minimum: 0
+            last_id:
+              type: integer
+              minimum: 0
 
     Message:
       type: object
-      required: [id, created_at, channel, source, instance, kind, body]
+      required: [id, created_at, channel, source, instance, kind, body, reply_to]
       properties:
         id:
           type: integer
@@ -208,12 +482,33 @@ components:
           type: [integer, 'null']
           minimum: 1
 
+    CreateChannel:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        visibility:
+          type: string
+          enum: [public, private]
+          default: private
+
+    UpdateChannel:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        visibility:
+          type: string
+          enum: [public, private]
+        status:
+          type: string
+          enum: [active, archived]
+
     Error:
       type: object
       required: [error]
       properties:
         error:
           type: string
-
-security:
-  - bearerAuth: []
