@@ -143,19 +143,6 @@ async fn navigation_write(
     }
 
     let params = first_query_values(&uri);
-    let private_key = params
-        .get("key")
-        .filter(|value| identity::validate_private_key(value))
-        .cloned()
-        .ok_or_else(ApiError::unauthorized)?;
-
-    let lookup_participant = participant_id.clone();
-    let identity = with_db(&state, move |conn| {
-        identity::resolve_web_participant(conn, &lookup_participant, &private_key)
-    })
-    .await?
-    .ok_or_else(ApiError::unauthorized)?;
-
     let channel = params
         .get("channel")
         .filter(|value| name_re().is_match(value))
@@ -184,6 +171,66 @@ async fn navigation_write(
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_nonce"))?;
     let reply_to = parse_reply_to(&params)?;
 
+    let signed_attempt = params.contains_key("sig") || params.contains_key("scheme");
+    let legacy_attempt = params.contains_key("key");
+    if signed_attempt && legacy_attempt {
+        return Err(ApiError::unauthorized());
+    }
+
+    let write_identity = if signed_attempt {
+        let scheme = params
+            .get("scheme")
+            .filter(|value| value.as_str() == signed_auth::SIGNATURE_SCHEME)
+            .ok_or_else(ApiError::unauthorized)?;
+        let signature = params
+            .get("sig")
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .cloned()
+            .ok_or_else(ApiError::unauthorized)?;
+        let lookup_participant = participant_id.clone();
+        let verify_channel = channel.clone();
+        let verify_kind = kind.clone();
+        let verify_body = message_body.clone();
+        let verify_nonce = nonce.clone();
+        let scheme = scheme.clone();
+        with_db(&state, move |conn| {
+            let Some(record) =
+                identity::get_web_participant_verification(conn, &lookup_participant)?
+            else {
+                return Ok(None);
+            };
+            if record.signature_scheme != scheme
+                || !signed_auth::verify_write_signature(
+                    &record.public_key,
+                    &signature,
+                    &lookup_participant,
+                    &verify_channel,
+                    &verify_kind,
+                    &verify_body,
+                    reply_to,
+                    &verify_nonce,
+                )
+            {
+                return Ok(None);
+            }
+            Ok(Some(record.identity))
+        })
+        .await?
+        .ok_or_else(ApiError::unauthorized)?
+    } else {
+        let private_key = params
+            .get("key")
+            .filter(|value| identity::validate_private_key(value))
+            .cloned()
+            .ok_or_else(ApiError::unauthorized)?;
+        let lookup_participant = participant_id.clone();
+        with_db(&state, move |conn| {
+            identity::resolve_web_participant(conn, &lookup_participant, &private_key)
+        })
+        .await?
+        .ok_or_else(ApiError::unauthorized)?
+    };
+
     let request_hash = identity::hash_token(
         &json!({
             "channel": channel,
@@ -194,7 +241,6 @@ async fn navigation_write(
         .to_string(),
     );
 
-    let write_identity = identity.clone();
     let write_channel = channel.clone();
     let write_kind = kind.clone();
     let write_body = message_body.clone();

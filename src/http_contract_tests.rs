@@ -15,6 +15,7 @@ use crate::{
     http::{self, AppState},
     identity,
     model::Identity,
+    signed_auth,
 };
 
 struct Fixture {
@@ -401,4 +402,58 @@ async fn different_participant_ids_keep_conversation_provenance_separate() {
     assert_eq!(rows[0].instance, "single-main");
     assert_eq!(rows[1].source, "rotary");
     assert_eq!(rows[1].instance, "rotary-main");
+}
+
+#[tokio::test]
+async fn navigation_write_accepts_ed25519_signature_without_raw_private_key() {
+    let fixture = fixture("signed-nav");
+    let (private_key, public_key) = signed_auth::generate_keypair();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    assert!(
+        identity::set_web_participant_signing_key(&conn, &fixture.participant_id, &public_key,)
+            .unwrap()
+    );
+    drop(conn);
+
+    let signature = signed_auth::sign_write(
+        &private_key,
+        &fixture.participant_id,
+        "conversation-architecture",
+        "insight",
+        "signed-hello",
+        None,
+        "signed-nav-001",
+    )
+    .unwrap();
+    let uri = format!(
+        "/w/{}?scheme={}&sig={}&channel=conversation-architecture&kind=insight&body=signed-hello&nonce=signed-nav-001",
+        fixture.participant_id,
+        signed_auth::SIGNATURE_SCHEME,
+        signature,
+    );
+
+    let response = get(&fixture.router, &uri).await;
+    let (status, _, body) = response_text(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("status: created"));
+    assert!(body.contains("source: signed-nav"));
+    assert!(body.contains("participant_id: signed-nav-main"));
+
+    let replay = get(&fixture.router, &uri).await;
+    let (replay_status, _, replay_body) = response_text(replay).await;
+    assert_eq!(replay_status, StatusCode::OK);
+    assert!(replay_body.contains("status: existing"));
+    assert!(replay_body.contains("idempotent: true"));
+
+    let tampered = uri.replace("body=signed-hello", "body=tampered");
+    assert_eq!(
+        get(&fixture.router, &tampered).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let ambiguous = format!("{uri}&key={}", fixture.private_key);
+    assert_eq!(
+        get(&fixture.router, &ambiguous).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
