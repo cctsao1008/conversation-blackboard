@@ -16,14 +16,9 @@ async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
     db::initialize(&db_path).unwrap();
     let conn = db::connect(&db_path).unwrap();
 
-    identity::provision_web_participant_identity(
-        &conn,
-        "cheng-main",
-        "cheng",
-        Some("Cheng"),
-    )
-    .unwrap()
-    .unwrap();
+    identity::provision_web_participant_identity(&conn, "cheng-main", "cheng", Some("Cheng"))
+        .unwrap()
+        .unwrap();
     assert!(identity::set_web_participant_role(&conn, "cheng-main", "admin").unwrap());
 
     let (private_key, public_key) = signed_auth::generate_keypair();
