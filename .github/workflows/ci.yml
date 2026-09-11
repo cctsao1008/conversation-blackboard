@@ -33,10 +33,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Rust tests on Windows
-        run: cargo test --locked --all-targets
-      - name: Windows release build
-        run: cargo build --release --locked
+        with:
+          components: rustfmt, clippy
+      - name: Release verification script
+        shell: pwsh
+        run: .\scripts\verify-release.ps1
       - name: CLI surface
         shell: pwsh
         run: |
