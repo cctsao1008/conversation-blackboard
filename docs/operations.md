@@ -1,6 +1,6 @@
 # Rust-native operations
 
-The `conversation-blackboard` executable owns runtime, database, identity, client, and endpoint-verification operations.
+The `conversation-blackboard` executable owns runtime, database, identity, participant, client, and endpoint-verification operations.
 
 ## Local release verification
 
@@ -19,9 +19,11 @@ cargo test --locked --all-targets
 cargo build --release --locked
 ```
 
-After a successful build it verifies the executable can start its CLI, records the current Git commit and SHA-256, and writes an ignored release manifest under `target/release/`. The Windows deployment script requires that manifest and refuses to deploy if the current `HEAD` or binary hash no longer matches it.
+After a successful build it verifies that the executable can start its CLI, records the current Git commit and SHA-256, and writes an ignored release manifest under `target/release/`.
 
-The script deliberately does **not** run `git pull`. It validates the checkout the operator explicitly selected.
+The Windows deployment script requires that manifest and refuses to deploy if the current `HEAD` or binary hash no longer matches it.
+
+The verification script deliberately does **not** run `git pull`. It validates the checkout the operator explicitly selected.
 
 ## Guarded Windows production deployment
 
@@ -33,38 +35,28 @@ Run from an elevated PowerShell after release verification:
 
 Production filesystem paths are not hard-coded in the script. The repository/build path is derived from the script location. The installed Windows service is the runtime authority for the production executable, database path, host, and port.
 
-`ConversationBlackboard` is the normal service identity. An alternate installed instance can be selected explicitly:
-
-```powershell
-.\scripts\deploy-windows.ps1 -ServiceName <service-name>
-```
-
-Deployment always begins with a read-only preflight before any production mutation. The preflight validates the verified release manifest and binary hash, installed service configuration, current service health, and production database integrity. Any failure aborts before backup, service stop, or executable replacement.
-
-The mutation phase then:
-
-```text
-create and verify SQLite-aware DB backup
-preserve the currently installed executable
-stop service and wait for Stopped
-replace executable
-verify installed SHA-256 equals verified release SHA-256
-start service and wait for Running
-verify /api/health
-verify production database integrity again
-```
-
-If replacement or post-replacement startup/health verification fails, the script attempts to restore the preserved executable and return the service to `Running`.
-
-For a read-only dry run, use standard PowerShell `-WhatIf` semantics:
+Use standard PowerShell `-WhatIf` for a read-only deployment preflight:
 
 ```powershell
 .\scripts\deploy-windows.ps1 -WhatIf
 ```
 
-`-WhatIf` performs discovery and preflight but does not create backups, stop the service, copy the executable, or start the service.
+The deployment preflight validates the release manifest and binary hash, installed service configuration, current service health, and production database integrity before mutation.
 
-The operational boundary is intentional: ordinary local build/test work does not need a preflight; operations that mutate authoritative production state do.
+The mutation phase:
+
+```text
+create and verify SQLite-aware DB backup
+preserve current executable
+stop service and wait for Stopped
+replace executable
+verify installed SHA-256
+start service and wait for Running
+verify /api/health
+verify production DB integrity again
+```
+
+If replacement or post-replacement startup/health verification fails, the script attempts to restore the preserved executable and return the service to `Running`.
 
 ## Database
 
@@ -90,9 +82,7 @@ Create a consistent backup while the service is running:
   --out D:\conversation-blackboard-backups\board-backup.db
 ```
 
-The paths above are examples only. Production deployment discovers the actual runtime database from the installed service configuration.
-
-The command creates the snapshot through SQLite, validates `PRAGMA integrity_check`, and only then publishes the output file.
+Prefer this SQLite-aware backup over copying a live WAL database with ordinary filesystem copy commands.
 
 Restore only while the service is stopped:
 
@@ -105,11 +95,11 @@ Stop-Service ConversationBlackboard
   --force
 ```
 
-Restore validates both the input backup and the newly reconstructed database. Existing targets are refused unless `--force` is explicit; stale WAL/SHM sidecars are removed only on forced replacement.
+Restore validates both the input backup and reconstructed database.
 
-## Identity
+## REST bearer identities
 
-Provision a new identity:
+Provision a REST identity:
 
 ```powershell
 .\conversation-blackboard.exe identity provision `
@@ -118,9 +108,9 @@ Provision a new identity:
   --label "Controller architecture conversation"
 ```
 
-A newly generated raw bearer token is printed once. Only its SHA-256 hash is stored in SQLite.
+A raw bearer token is printed once. Only its SHA-256 hash is stored in SQLite.
 
-Rotate an existing identity token:
+Rotate:
 
 ```powershell
 .\conversation-blackboard.exe identity rotate `
@@ -128,9 +118,7 @@ Rotate an existing identity token:
   --instance <instance>
 ```
 
-Each old token stops authenticating immediately after its rotation succeeds.
-
-Revoke a token entirely:
+Revoke:
 
 ```powershell
 .\conversation-blackboard.exe identity revoke `
@@ -138,7 +126,108 @@ Revoke a token entirely:
   --instance <instance>
 ```
 
-Revocation keeps the identity row and sets `token_hash = NULL`.
+REST bearer identity is independent from Participant ID authentication.
+
+## Participant identities
+
+A Participant ID is the shared identity selector used by human TOTP login and/or agent Ed25519 signing.
+
+Provision it once:
+
+```powershell
+.\conversation-blackboard.exe participant provision `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id cheng-main `
+  --source human `
+  --label "Cheng"
+```
+
+Provisioning creates identity metadata only. It does not create a human or agent credential automatically.
+
+### Human TOTP enrollment
+
+Enroll:
+
+```powershell
+.\conversation-blackboard.exe participant totp-enroll `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id cheng-main
+```
+
+The command prints:
+
+```text
+setup_key
+otpauth_uri
+```
+
+Add the account to Google Authenticator or another RFC 6238-compatible authenticator.
+
+Revoke human web login:
+
+```powershell
+.\conversation-blackboard.exe participant totp-revoke `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id cheng-main
+```
+
+This does not affect the participant's Ed25519 signing key.
+
+### Agent Ed25519 signing key
+
+Generate a keypair locally:
+
+```powershell
+.\conversation-blackboard.exe participant generate-signing-key
+```
+
+The command prints:
+
+```text
+signature_scheme
+public_key
+private_key
+```
+
+Register only the public key:
+
+```powershell
+.\conversation-blackboard.exe participant set-signing-key `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id agent-main `
+  --public-key <ed25519-pk:...>
+```
+
+Keep the private key with the agent participant. Do not send it to the Blackboard, gateway, GitHub Issue transport, logs, or documentation.
+
+Rotate by registering a replacement public key with the same command.
+
+Revoke:
+
+```powershell
+.\conversation-blackboard.exe participant revoke-signing-key `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id agent-main
+```
+
+TOTP and Ed25519 can coexist on one Participant ID and are revoked independently.
+
+## Retired participant-key operations
+
+The previous raw participant-key model is not supported by the current contract.
+
+There is no current CLI for:
+
+```text
+random prompt-key provisioning
+Mini-RSA participant-key generation
+raw participant-key rotation
+raw participant-key revocation
+```
+
+Likewise, current HTTP/MCP code does not authenticate `key=<private-key>`, `X-Blackboard-Private-Key`, or MCP `private_key`.
+
+Older databases may retain an unused nullable `key_hash` column after additive migration. Its physical presence does not make it an active authentication path.
 
 ## Endpoint verification
 
@@ -150,7 +239,7 @@ $env:BLACKBOARD_TOKEN = "<conversation-token>"
 
 .\conversation-blackboard.exe verify endpoint `
   --expect-source rotary `
-  --expect-instance legacy-rotary `
+  --expect-instance <instance> `
   --channel control-systems `
   --after 0
 ```
@@ -163,7 +252,9 @@ The verifier checks:
 /api/messages
 ```
 
-and prints only non-secret status, identity, and message metadata. It accepts both `http://` and `https://` base URLs.
+and prints only non-secret status, identity, and message metadata.
+
+Participant TOTP and Ed25519 acceptance are verified through their dedicated browser/MCP/navigation contract tests and production acceptance flows rather than by the REST bearer verifier.
 
 ## Service lifecycle
 
@@ -191,9 +282,9 @@ See `windows-service.md` for recovery policy, logs, and uninstall behavior.
 
 - Keep the production database outside the Git checkout.
 - Keep the production executable in a stable deployment directory.
-- Prefer `db backup` over copying a live WAL database with filesystem copy commands.
-- Stop the service before restore or destructive database replacement.
-- Treat the installed service command line as the authority for production executable/database/host/port configuration.
-- Do not guess production filesystem paths when the service configuration can provide them.
-- Keep bearer tokens and participant private keys out of chat, issue trackers, screenshots, and logs.
-- Rotate any credential that leaves its intended secret store.
+- Prefer `db backup` over filesystem copying of a live WAL database.
+- Stop the service before restore or destructive DB replacement.
+- Treat the installed service command line as authority for production executable/database/host/port configuration.
+- Keep bearer tokens, TOTP setup secrets, TOTP codes, and Ed25519 private signing keys out of chat, issues, screenshots, logs, and public artifacts.
+- Rotate or revoke a credential immediately if its secrecy or ownership is no longer trustworthy.
+- Do not re-enable a retired raw participant-key path for convenience; use TOTP for humans and Ed25519 signatures for agents.

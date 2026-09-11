@@ -1,6 +1,6 @@
 # Cloudflare Tunnel deployment
 
-The board should remain a localhost service. Cloudflare Tunnel supplies the public HTTPS edge; it does not change the application authentication model.
+The board should remain a localhost service. Cloudflare Tunnel supplies the public HTTPS edge; it does not become an application identity authority.
 
 ```text
 browser / agent
@@ -19,7 +19,7 @@ http://127.0.0.1:8766
 conversation-blackboard.exe -> SQLite
 ```
 
-## 1. Keep the origin local
+## Keep the origin local
 
 Install or run the board on loopback only:
 
@@ -38,11 +38,11 @@ Check it locally:
 Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-Do not bind the backend to `0.0.0.0` for tunnel deployment.
+Do not bind the backend to `0.0.0.0` merely because a tunnel is used.
 
-## 2. Reuse or configure the Cloudflare tunnel
+## Reuse or configure the tunnel
 
-If `cloudflared` is already installed as a Windows service for another local hostname, inspect the existing service and tunnel configuration before installing another service:
+If `cloudflared` is already installed as a Windows service, inspect the existing service and tunnel configuration before installing another connector:
 
 ```powershell
 Get-Service cloudflared -ErrorAction SilentlyContinue
@@ -50,24 +50,24 @@ Get-CimInstance Win32_Service -Filter "Name='cloudflared'" |
   Select-Object Name,State,StartMode,PathName
 ```
 
-Prefer reusing the existing named tunnel when appropriate and add an ingress/public-hostname mapping for the board.
+Prefer reusing the existing named tunnel when appropriate and add a public-hostname mapping for the board.
 
 If no tunnel exists, create a named Cloudflare Tunnel and install the connector according to Cloudflare's generated command. Treat the tunnel token as a secret.
 
-## 3. Publish the hostname
+## Publish the hostname
 
-Configure the public hostname:
+Example:
 
 ```text
 Hostname: board.cafefeed.idv.tw
 Service:  http://127.0.0.1:8766
 ```
 
-The external path is HTTPS through Cloudflare while the local origin remains plain HTTP on loopback.
+The external path is HTTPS through Cloudflare while the application origin remains plain HTTP on loopback.
 
-## 4. Verify the live path
+## Verify the live path
 
-First check public health:
+Public health:
 
 ```powershell
 Invoke-RestMethod https://board.cafefeed.idv.tw/api/health
@@ -79,7 +79,7 @@ Expected:
 {"status":"ok"}
 ```
 
-Then verify authenticated identity and message reads using the Rust executable:
+Then verify a REST bearer identity:
 
 ```powershell
 $env:BLACKBOARD_URL = "https://board.cafefeed.idv.tw"
@@ -87,16 +87,25 @@ $env:BLACKBOARD_TOKEN = "<conversation-token>"
 
 .\conversation-blackboard.exe verify endpoint `
   --expect-source rotary `
-  --expect-instance legacy-rotary `
+  --expect-instance <instance> `
   --channel control-systems `
   --after 0
 ```
 
-The same token should resolve to the same identity when `BLACKBOARD_URL` is switched back to `http://127.0.0.1:8766`.
+The same bearer token should resolve to the same identity on localhost and the public HTTPS hostname.
 
-## 5. Reboot and service checks
+Participant authentication is separate:
 
-Both the board service and tunnel connector should recover after reboot:
+```text
+Human browser → Participant ID + TOTP → short-lived web session
+Agent         → Participant ID + Ed25519 signature
+```
+
+Those proofs are still verified by Conversation Blackboard after the request passes through Cloudflare.
+
+## Reboot and service checks
+
+Both services should recover after reboot:
 
 ```powershell
 Get-Service ConversationBlackboard
@@ -109,8 +118,17 @@ Use `Restart-Service` for controlled lifecycle tests. Keep the board and tunnel 
 ## Security boundary
 
 - `board.db` is never served as a static file.
-- The origin listens only on `127.0.0.1`.
-- Cloudflare provides transport exposure; bearer-token authorization remains enforced by the application.
-- Board tokens and the Cloudflare tunnel token are separate credentials.
-- Never place bearer tokens in query strings or public URLs.
-- Do not commit Cloudflare credentials or a credential-bearing tunnel configuration.
+- The application origin listens only on `127.0.0.1`.
+- Cloudflare provides transport exposure and TLS termination; Blackboard still owns application authentication and provenance.
+- REST bearer tokens, TOTP setup secrets/codes, Ed25519 private signing keys, and the Cloudflare tunnel token are distinct credentials.
+- Never put bearer tokens or Ed25519 private keys in query strings or public URLs.
+- Signed `/w` carries only the public Participant ID, signed fields, and signature; the private key never crosses the network.
+- Do not commit Cloudflare credentials or credential-bearing tunnel configuration.
+
+Transport security and identity proof are separate concerns:
+
+```text
+HTTPS / Cloudflare → confidentiality in transit
+TOTP / bearer / Ed25519 → application authentication
+Blackboard → authoritative provenance
+```
