@@ -147,10 +147,7 @@ pub fn set_web_participant_signing_key(
     Ok(changed == 1)
 }
 
-pub fn revoke_web_participant_signing_key(
-    conn: &Connection,
-    participant_id: &str,
-) -> Result<bool> {
+pub fn revoke_web_participant_signing_key(conn: &Connection, participant_id: &str) -> Result<bool> {
     if validate_participant_id(participant_id).is_none() {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -437,15 +434,9 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        provision_web_participant(
-            &conn,
-            "claude-main",
-            "claude",
-            Some("Claude"),
-            "legacy-key",
-        )
-        .unwrap()
-        .unwrap();
+        provision_web_participant(&conn, "claude-main", "claude", Some("Claude"), "legacy-key")
+            .unwrap()
+            .unwrap();
 
         let (_, public_a) = signed_auth::generate_keypair();
         let (_, public_b) = signed_auth::generate_keypair();
