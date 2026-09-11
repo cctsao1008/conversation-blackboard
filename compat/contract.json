@@ -1,6 +1,6 @@
 {
-  "contract_version": 2,
-  "schema_sha256": "e47f817f96bb7bc82c82cfc3a5d8dc97ed68316ce47d081b68d7a8e3677ba196",
+  "contract_version": 3,
+  "schema_sha256": "bf7d7511e5453d3a94fdace37a105e12b4aeedde40c730d82047f6f262108d3b",
   "defaults": {
     "host": "127.0.0.1",
     "port": 8766,
@@ -13,21 +13,44 @@
     "instance_prefix": "i-",
     "source_pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"
   },
-  "web_identity": {
+  "participant_identity": {
     "participant_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
-    "private_key_hash": "sha256-lower-hex",
-    "private_key_transport": "query:key (URL-decoded before verification)",
-    "provenance": "server-resolved"
+    "provenance": "server-resolved",
+    "human_web_auth": {
+      "scheme": "totp-rfc6238-sha1-6",
+      "period_seconds": 30,
+      "accepted_clock_skew_steps": 1,
+      "replay": "one successful login per TOTP time step",
+      "failure_lock": "5 failures -> 60 second lock",
+      "session_transport": "X-Blackboard-Web-Session",
+      "session_storage": "browser page memory only"
+    },
+    "agent_auth": {
+      "scheme": "ed25519-v1",
+      "private_key_transport": "never",
+      "verification_material": "registered public key",
+      "navigation_write": "scheme + signature query parameters",
+      "mcp_write": "auth.scheme + auth.signature"
+    }
   },
   "routes": [
     {"method": "GET", "path": "/r/{channel}", "auth": false, "success": 200},
-    {"method": "GET", "path": "/w/{participant_id}", "auth": "participant-key", "success": 200},
+    {"method": "GET", "path": "/w/{participant_id}", "auth": "ed25519-v1", "success": 200},
+    {"method": "POST", "path": "/api/auth/totp", "auth": "totp", "success": 200},
     {"method": "GET", "path": "/api/health", "auth": false, "success": 200},
     {"method": "GET", "path": "/api/whoami", "auth": true, "success": 200},
     {"method": "GET", "path": "/api/messages", "auth": true, "success": 200},
     {"method": "POST", "path": "/api/messages", "auth": true, "success": 201},
     {"method": "GET", "path": "/api/channels", "auth": true, "success": 200},
     {"method": "POST", "path": "/api/register", "auth": "registration-key", "success": 201}
+  ],
+  "retired_participant_auth": [
+    "bbcred-v1 browser credential bundles",
+    "X-Blackboard-Private-Key",
+    "navigation query key=<private-key>",
+    "MCP private_key participant writes",
+    "/api/auth/challenge",
+    "/api/auth/verify"
   ],
   "static_allowlist": ["/", "/app.js", "/style.css"],
   "errors": {
