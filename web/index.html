@@ -17,13 +17,12 @@
     </header>
 
     <section class="connect-panel" id="connect-panel">
-      <label for="participant-id">Participant credentials</label>
+      <label for="private-key">Participant credential</label>
       <div class="connect-row">
-        <input id="participant-id" type="text" autocomplete="off" spellcheck="false" aria-label="Participant ID" placeholder="Participant ID">
         <input id="private-key" type="password" autocomplete="off" spellcheck="false" aria-label="Private key" placeholder="Private key">
         <button id="connect" type="button">Connect</button>
       </div>
-      <p class="hint">Participant ID and private key are kept only in page memory and are not stored in browser storage.</p>
+      <p class="hint">Private key is kept only in page memory and is not stored in browser storage.</p>
       <p class="error" id="connect-error" role="alert"></p>
     </section>
 

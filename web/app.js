@@ -5,7 +5,6 @@
   const HISTORY_PAGE_SIZE = 20;
 
   const state = {
-    participantId: "",
     privateKey: "",
     identity: null,
     channel: localStorage.getItem("conversation-blackboard.channel") || "",
@@ -21,8 +20,7 @@
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
     headers.set("Accept", "application/json");
-    if (state.participantId && state.privateKey) {
-      headers.set("X-Blackboard-Participant-Id", state.participantId);
+    if (state.privateKey) {
       headers.set("X-Blackboard-Private-Key", state.privateKey);
     }
     if (options.body && !headers.has("Content-Type")) {
@@ -56,25 +54,21 @@
 
   async function connect() {
     $("connect-error").textContent = "";
-    const participantId = $("participant-id").value.trim();
     const privateKey = $("private-key").value.trim();
-    if (!participantId || !privateKey) {
-      $("connect-error").textContent = "Enter a Participant ID and private key.";
+    if (!privateKey) {
+      $("connect-error").textContent = "Enter a private key.";
       return;
     }
 
-    state.participantId = participantId;
     state.privateKey = privateKey;
     try {
       state.identity = await api("/api/whoami");
       $("identity").textContent = identityText(state.identity);
-      $("participant-id").value = "";
       $("private-key").value = "";
       setConnected(true);
       await loadChannels();
       startPolling();
     } catch (error) {
-      state.participantId = "";
       state.privateKey = "";
       state.identity = null;
       $("connect-error").textContent = error.status === 401
@@ -266,7 +260,7 @@
   }
 
   async function poll() {
-    if (!state.participantId || !state.privateKey || !state.channel || !state.followLatest) return;
+    if (!state.privateKey || !state.channel || !state.followLatest) return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
       for (const message of data.messages) appendMessage(message);
@@ -471,7 +465,6 @@
   }
 
   function disconnect(message) {
-    state.participantId = "";
     state.privateKey = "";
     state.identity = null;
     if (state.pollTimer) clearInterval(state.pollTimer);
@@ -482,9 +475,6 @@
   }
 
   $("connect").addEventListener("click", connect);
-  $("participant-id").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") connect();
-  });
   $("private-key").addEventListener("keydown", (event) => {
     if (event.key === "Enter") connect();
   });
