@@ -41,10 +41,17 @@
             <span class="eyebrow">Channel</span>
             <h2 id="channel-name">Select a channel</h2>
           </div>
-          <div class="channel-head-actions">
-            <span id="channel-message-count" class="channel-message-count"></span>
-            <button id="latest" type="button" class="secondary">Latest</button>
-            <button id="refresh" type="button" class="secondary">Refresh</button>
+          <div class="channel-tools">
+            <div class="channel-head-actions">
+              <span id="channel-message-count" class="channel-message-count"></span>
+              <button id="latest" type="button" class="secondary">Latest</button>
+              <button id="refresh" type="button" class="secondary">Refresh</button>
+            </div>
+            <form id="jump-form" class="jump-form">
+              <label for="jump-id">Jump to #</label>
+              <input id="jump-id" type="number" min="1" step="1" inputmode="numeric" aria-label="Message ID">
+              <button id="jump-go" type="submit" class="secondary">Go</button>
+            </form>
           </div>
         </header>
 
