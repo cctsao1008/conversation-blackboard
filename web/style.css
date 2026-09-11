@@ -121,14 +121,21 @@ button.link-button {
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 16px;
   margin-top: 20px;
-  min-height: 70vh;
+  height: calc(100vh - 128px);
+  min-height: 560px;
+  max-height: 900px;
 }
 
-.sidebar { padding: 14px; }
+.sidebar {
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+}
 .sidebar-head { margin-bottom: 12px; }
 .channels { display: grid; gap: 6px; }
 .channel-button {
   width: 100%;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -141,12 +148,19 @@ button.link-button {
   border-color: color-mix(in srgb, CanvasText 28%, transparent);
   background: color-mix(in srgb, CanvasText 8%, transparent);
 }
+.channel-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .channel-count { opacity: .55; }
 
 .conversation {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -188,7 +202,22 @@ button.link-button {
   overflow-wrap: anywhere;
   line-height: 1.48;
 }
-.message-actions { margin-top: 9px; }
+.message-body.collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+.message-body.expanded {
+  display: block;
+  overflow: visible;
+}
+.message-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 9px;
+}
 .message-actions button { font-size: .78rem; }
 
 .empty {
@@ -218,14 +247,23 @@ button.link-button {
   .app-shell { padding: 12px; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .identity { max-width: 100%; text-align: left; }
-  .board { grid-template-columns: 1fr; }
-  .sidebar { padding-bottom: 10px; }
+  .board {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+  .sidebar {
+    overflow: visible;
+    padding-bottom: 10px;
+  }
   .channels {
     display: flex;
     overflow-x: auto;
     padding-bottom: 4px;
   }
   .channel-button { width: auto; min-width: max-content; }
+  .channel-name-text { overflow: visible; text-overflow: clip; }
   .conversation { min-height: 68vh; }
   .connect-row { align-items: stretch; flex-direction: column; }
 }

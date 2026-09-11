@@ -73,7 +73,10 @@
     if (channel.channel === state.channel) button.classList.add("active");
 
     const name = document.createElement("span");
+    name.className = "channel-name-text";
     name.textContent = channel.channel;
+    name.title = channel.channel;
+
     const count = document.createElement("span");
     count.className = "channel-count";
     count.textContent = String(channel.message_count);
@@ -186,11 +189,25 @@
     }
 
     const body = document.createElement("p");
-    body.className = "message-body";
+    body.className = "message-body collapsed";
     body.textContent = message.body;
 
     const actions = document.createElement("div");
     actions.className = "message-actions";
+
+    const expandButton = document.createElement("button");
+    expandButton.type = "button";
+    expandButton.className = "secondary message-expand";
+    expandButton.textContent = "Expand";
+    expandButton.setAttribute("aria-expanded", "false");
+    expandButton.hidden = true;
+    expandButton.addEventListener("click", () => {
+      const expanded = body.classList.toggle("expanded");
+      body.classList.toggle("collapsed", !expanded);
+      expandButton.textContent = expanded ? "Collapse" : "Expand";
+      expandButton.setAttribute("aria-expanded", String(expanded));
+    });
+
     const replyButton = document.createElement("button");
     replyButton.type = "button";
     replyButton.className = "secondary";
@@ -200,10 +217,14 @@
       updateReplyBar();
       $("body").focus();
     });
-    actions.append(replyButton);
 
+    actions.append(expandButton, replyButton);
     article.append(meta, body, actions);
     $("timeline").append(article);
+
+    requestAnimationFrame(() => {
+      expandButton.hidden = body.scrollHeight <= body.clientHeight + 1;
+    });
   }
 
   function updateReplyBar() {
