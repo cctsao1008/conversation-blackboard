@@ -59,10 +59,67 @@
     return bundle;
   }
 
+  function bytesStartWith(value, prefix, offset = 0) {
+    if (value.length < offset + prefix.length) return false;
+    for (let index = 0; index < prefix.length; index += 1) {
+      if (value[offset + index] !== prefix[index]) return false;
+    }
+    return true;
+  }
+
+  function normalizeEd25519Pkcs8ForWebCrypto(pkcs8) {
+    // ring::Ed25519KeyPair::generate_pkcs8() emits PKCS#8 v2 OneAsymmetricKey:
+    //   30 51 02 01 01 ... 04 22 04 20 <32-byte seed> 81 21 00 <32-byte public key>
+    // Some WebCrypto implementations accept only RFC 5208 PrivateKeyInfo v1:
+    //   30 2e 02 01 00 ... 04 22 04 20 <32-byte seed>
+    // The conversion is local serialization normalization only; key material is unchanged.
+    const v1Prefix = Uint8Array.of(
+      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+      0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+    );
+    const ringV2Prefix = Uint8Array.of(
+      0x30, 0x51, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06,
+      0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+    );
+    const ringV2PublicMarker = Uint8Array.of(0x81, 0x21, 0x00);
+
+    if (pkcs8.length === 48 && bytesStartWith(pkcs8, v1Prefix)) return pkcs8;
+
+    if (
+      pkcs8.length === 83
+      && bytesStartWith(pkcs8, ringV2Prefix)
+      && bytesStartWith(pkcs8, ringV2PublicMarker, 48)
+    ) {
+      const normalized = new Uint8Array(48);
+      normalized.set(v1Prefix, 0);
+      normalized.set(pkcs8.slice(16, 48), 16);
+      return normalized;
+    }
+
+    return pkcs8;
+  }
+
   async function importSigningKey(privateKey) {
     const encoded = privateKey.slice("ed25519-sk:".length);
     const pkcs8 = base64urlDecode(encoded);
-    return crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
+
+    try {
+      return await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
+    } catch (originalError) {
+      const normalized = normalizeEd25519Pkcs8ForWebCrypto(pkcs8);
+      if (normalized === pkcs8) throw originalError;
+      try {
+        return await crypto.subtle.importKey(
+          "pkcs8",
+          normalized,
+          { name: "Ed25519" },
+          false,
+          ["sign"],
+        );
+      } catch (_) {
+        throw new Error("Browser could not import this Ed25519 participant credential.");
+      }
+    }
   }
 
   async function signObject(signingKey, value) {
