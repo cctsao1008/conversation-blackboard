@@ -86,3 +86,28 @@ async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
         .unwrap();
     assert_eq!(human_response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn guest_session_is_forbidden_from_admin_control_plane() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("board.db");
+    db::initialize(&db_path).unwrap();
+    let router = http::app(http::AppState {
+        db_path,
+        registration_key: None,
+    });
+    let guest = web_auth::issue_guest_session();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/admin/channels")
+                .header(web_auth::WEB_SESSION_HEADER, guest.token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
