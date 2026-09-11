@@ -197,12 +197,10 @@ fn verify_web_session_at(token: &str, now: u64) -> Option<WebSession> {
     }
     let participant_id = value.get("participant_id")?.as_str()?.to_owned();
     let expires_at = value.get("expires_at")?.as_u64()?;
-    let session_type = value
-        .get("session_type")
-        .and_then(Value::as_str)
-        .map(WebSessionKind::parse)
-        .transpose()?
-        .unwrap_or(WebSessionKind::HumanWeb);
+    let session_type = match value.get("session_type") {
+        None => WebSessionKind::HumanWeb,
+        Some(value) => WebSessionKind::parse(value.as_str()?)?,
+    };
     if participant_id.is_empty() || participant_id.len() > 64 || expires_at < now {
         return None;
     }
