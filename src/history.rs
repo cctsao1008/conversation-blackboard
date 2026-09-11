@@ -1,9 +1,8 @@
 use std::sync::OnceLock;
 
 use axum::{
-    body::{to_bytes, Body},
     extract::{Query, State},
-    http::{header, HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -11,7 +10,7 @@ use axum::{
 use regex::Regex;
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::{db, http::AppState, identity, model::Message};
 
@@ -157,6 +156,11 @@ fn json_error(status: StatusCode, code: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use serde_json::Value;
     use tempfile::{tempdir, TempDir};
     use tower::ServiceExt;
 
