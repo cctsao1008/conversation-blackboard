@@ -21,6 +21,25 @@ jobs:
           components: rustfmt, clippy
       - name: Apply browser signed-auth phase
         run: python3 .github/scripts/implement_web_signed_auth.py
+      - name: Keep credential-bundle construction test-only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/web_auth.rs')
+          text = path.read_text()
+          text = text.replace(
+              'pub const CREDENTIAL_BUNDLE_PREFIX: &str = "bbcred-v1:";',
+              '#[cfg(test)]\npub const CREDENTIAL_BUNDLE_PREFIX: &str = "bbcred-v1:";',
+              1,
+          )
+          text = text.replace(
+              'pub fn credential_bundle(participant_id: &str, private_key: &str) -> String {',
+              '#[cfg(test)]\npub fn credential_bundle(participant_id: &str, private_key: &str) -> String {',
+              1,
+          )
+          path.write_text(text)
+          PY
       - name: Format
         run: cargo fmt --all
       - name: Clippy
