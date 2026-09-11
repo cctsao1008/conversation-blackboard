@@ -143,7 +143,9 @@ pub fn dispatch(command: WebCommand) -> DynResult {
                 return Err(format!("unknown web participant: {participant_id}").into());
             }
             if !identity::revoke_web_participant_signing_key(&conn, &participant_id)? {
-                return Err(format!("no active signing key for web participant: {participant_id}").into());
+                return Err(
+                    format!("no active signing key for web participant: {participant_id}").into(),
+                );
             }
             println!("revoked participant signing key: {participant_id}");
             Ok(())
