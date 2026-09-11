@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """End-to-end UTCP and MCP convergence test for Conversation Blackboard.
 
-The test starts one local Blackboard instance, provisions independent REST and
-web identities, discovers the provider manual through /utcp, and proves that
-UTCP/native-HTTP and MCP access paths observe the same canonical message log.
+The test starts one local Blackboard instance, provisions an independent REST
+bearer identity plus an Ed25519 participant identity, discovers the provider
+manual through /utcp, and proves that UTCP/native-HTTP and signed MCP access
+paths observe the same canonical message log.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import socket
 import subprocess
@@ -18,11 +20,14 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from cryptography.hazmat.primitives.serialization import load_der_private_key
 from utcp.data.utcp_client_config import UtcpClientConfig
 from utcp.utcp_client import UtcpClient
 from utcp_http.http_call_template import HttpCallTemplate
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
+SIGNATURE_SCHEME = "ed25519-v1"
+PRIVATE_KEY_PREFIX = "ed25519-sk:"
 
 
 def parse_field(output: str, field: str) -> str:
@@ -81,6 +86,49 @@ def mcp_call(base_url: str, request_id: int, tool: str, arguments: dict) -> dict
     return result["structuredContent"]
 
 
+def base64url_decode_unpadded(value: str) -> bytes:
+    padding = "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def base64url_encode_unpadded(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def sign_write(
+    private_key: str,
+    participant_id: str,
+    channel: str,
+    kind: str,
+    body: str,
+    reply_to: int | None,
+    nonce: str,
+) -> str:
+    if not private_key.startswith(PRIVATE_KEY_PREFIX):
+        raise RuntimeError("unexpected Ed25519 private-key prefix")
+    der = base64url_decode_unpadded(private_key.removeprefix(PRIVATE_KEY_PREFIX))
+    key = load_der_private_key(der, password=None)
+    payload = {
+        "body": body,
+        "channel": channel,
+        "kind": kind,
+        "nonce": nonce,
+        "participant_id": participant_id,
+        "reply_to": reply_to,
+        "signature_version": SIGNATURE_SCHEME,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    signature = key.sign(canonical)
+    if len(signature) != 64:
+        raise RuntimeError("unexpected Ed25519 signature length")
+    return base64url_encode_unpadded(signature)
+
+
 async def exercise_interfaces(
     base_url: str,
     bearer: str,
@@ -110,7 +158,7 @@ async def exercise_interfaces(
     )
     assert initial == {"messages": []}, initial
 
-    # UTCP -> native HTTP write.
+    # UTCP -> native HTTP write using the independent REST bearer identity.
     utcp_posted = await client.call_tool(
         "blackboard.post_message",
         {
@@ -140,18 +188,33 @@ async def exercise_interfaces(
     assert mcp_observed["messages"][0]["source"] == "utcp-ci", mcp_observed
     assert mcp_observed["messages"][0]["instance"] == rest_instance, mcp_observed
 
-    # MCP -> Blackboard write using its own participant identity path.
+    # MCP -> Blackboard using an Ed25519 participant signature. The private key
+    # remains local to this test client and is not part of the MCP arguments.
+    channel = "utcp-ci"
+    kind = "test"
+    body = "hello from MCP"
+    nonce = "utcp-mcp-convergence-001"
+    signature = sign_write(
+        private_key,
+        participant_id,
+        channel,
+        kind,
+        body,
+        None,
+        nonce,
+    )
     mcp_written = mcp_call(
         base_url,
         2,
         "blackboard_write",
         {
             "participant_id": participant_id,
-            "private_key": private_key,
-            "channel": "utcp-ci",
-            "kind": "test",
-            "body": "hello from MCP",
-            "nonce": "utcp-mcp-convergence-001",
+            "auth": {"scheme": SIGNATURE_SCHEME, "signature": signature},
+            "channel": channel,
+            "kind": kind,
+            "body": body,
+            "reply_to": None,
+            "nonce": nonce,
         },
     )
     assert mcp_written["source"] == "mcp-ci", mcp_written
@@ -171,7 +234,7 @@ async def exercise_interfaces(
     assert messages[1]["id"] == mcp_written["id"], messages
     assert messages[1]["source"] == "mcp-ci", messages
     assert messages[1]["instance"] == participant_id, messages
-    assert messages[1]["body"] == "hello from MCP", messages
+    assert messages[1]["body"] == body, messages
 
 
 def main() -> int:
@@ -210,10 +273,10 @@ def main() -> int:
         bearer = parse_field(rest_provision, "token")
         rest_instance = parse_field(rest_provision, "instance")
 
-        web_provision = subprocess.run(
+        participant_provision = subprocess.run(
             [
                 str(binary),
-                "web",
+                "participant",
                 "provision",
                 "--db",
                 str(db_path),
@@ -228,8 +291,31 @@ def main() -> int:
             text=True,
             capture_output=True,
         ).stdout
-        participant_id = parse_field(web_provision, "participant_id")
-        private_key = parse_field(web_provision, "private_key")
+        participant_id = parse_field(participant_provision, "participant_id")
+
+        signing_material = subprocess.run(
+            [str(binary), "participant", "generate-signing-key"],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+        public_key = parse_field(signing_material, "public_key")
+        private_key = parse_field(signing_material, "private_key")
+        subprocess.run(
+            [
+                str(binary),
+                "participant",
+                "set-signing-key",
+                "--db",
+                str(db_path),
+                "--participant-id",
+                participant_id,
+                "--public-key",
+                public_key,
+            ],
+            check=True,
+            text=True,
+        )
 
         port = free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -259,7 +345,7 @@ def main() -> int:
                     private_key,
                 )
             )
-            print("UTCP discovery + UTCP/MCP convergence: PASS")
+            print("UTCP discovery + signed MCP convergence: PASS")
         finally:
             server.terminate()
             try:
