@@ -44,12 +44,13 @@ jobs:
           .\target\release\conversation-blackboard.exe --help
           .\target\release\conversation-blackboard.exe db --help
           .\target\release\conversation-blackboard.exe identity --help
-          .\target\release\conversation-blackboard.exe web --help
-          .\target\release\conversation-blackboard.exe web provision --help
-          .\target\release\conversation-blackboard.exe web totp-enroll --help
-          .\target\release\conversation-blackboard.exe web totp-revoke --help
-          .\target\release\conversation-blackboard.exe web set-signing-key --help
-          .\target\release\conversation-blackboard.exe web revoke-signing-key --help
+          .\target\release\conversation-blackboard.exe participant --help
+          .\target\release\conversation-blackboard.exe participant provision --help
+          .\target\release\conversation-blackboard.exe participant totp-enroll --help
+          .\target\release\conversation-blackboard.exe participant totp-revoke --help
+          .\target\release\conversation-blackboard.exe participant generate-signing-key --help
+          .\target\release\conversation-blackboard.exe participant set-signing-key --help
+          .\target\release\conversation-blackboard.exe participant revoke-signing-key --help
           .\target\release\conversation-blackboard.exe verify --help
           .\target\release\conversation-blackboard.exe client --help
           .\target\release\conversation-blackboard.exe service --help
@@ -80,15 +81,29 @@ jobs:
           try {
             & $exe db init --db $db
 
-            $web = (& $exe web provision --db $db --participant-id ci-web-main --source ci-web --label "CI web participant") | Out-String
-            if ($web -notmatch 'participant_id\s*:\s*ci-web-main') {
-              throw "web participant provisioning output mismatch"
+            $participant = (& $exe participant provision --db $db --participant-id ci-participant-main --source ci-participant --label "CI participant") | Out-String
+            if ($participant -notmatch 'participant_id\s*:\s*ci-participant-main') {
+              throw "participant provisioning output mismatch"
             }
-            $totp = (& $exe web totp-enroll --db $db --participant-id ci-web-main) | Out-String
+
+            $totp = (& $exe participant totp-enroll --db $db --participant-id ci-participant-main) | Out-String
             if ($totp -notmatch 'setup_key\s*:' -or $totp -notmatch 'otpauth_uri\s*:') {
               throw "TOTP enrollment output mismatch"
             }
-            & $exe web totp-revoke --db $db --participant-id ci-web-main
+            & $exe participant totp-revoke --db $db --participant-id ci-participant-main
+
+            $signing = (& $exe participant generate-signing-key) | Out-String
+            $publicLine = (($signing -split "\r?\n") | Where-Object { $_ -match '^public_key\s*:' } | Select-Object -First 1)
+            $privateLine = (($signing -split "\r?\n") | Where-Object { $_ -match '^private_key\s*:' } | Select-Object -First 1)
+            if (-not $publicLine -or -not $privateLine) {
+              throw "Ed25519 signing-key generation output mismatch"
+            }
+            $publicKey = ($publicLine -replace '^public_key\s*:\s*', '').Trim()
+            if ($publicKey -notmatch '^ed25519-pk:') {
+              throw "Ed25519 public-key prefix mismatch"
+            }
+            & $exe participant set-signing-key --db $db --participant-id ci-participant-main --public-key $publicKey
+            & $exe participant revoke-signing-key --db $db --participant-id ci-participant-main
 
             $a = Provision-Identity "ci-source-a" "CI identity A"
             $b = Provision-Identity "ci-source-b" "CI identity B"

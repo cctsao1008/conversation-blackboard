@@ -12,11 +12,9 @@ mod mcp;
 mod mcp_contract_tests;
 mod model;
 mod participant_admin;
-mod participant_key;
 mod request_auth;
 mod runtime;
 mod signed_auth;
-mod web_admin;
 mod web_auth;
 #[cfg(test)]
 mod web_auth_contract_tests;
@@ -45,20 +43,15 @@ enum Command {
         #[command(subcommand)]
         command: admin::DbCommand,
     },
-    /// Provision, rotate, or revoke REST conversation identities.
+    /// Provision, rotate, or revoke REST bearer identities.
     Identity {
         #[command(subcommand)]
         command: admin::IdentityCommand,
     },
-    /// Generate optional Participant ID key material without registering it.
+    /// Provision participant identities and manage human TOTP / agent signing keys.
     Participant {
         #[command(subcommand)]
         command: participant_admin::ParticipantCommand,
-    },
-    /// Manage participant identities, human TOTP login, and agent signing keys.
-    Web {
-        #[command(subcommand)]
-        command: web_admin::WebCommand,
     },
     /// Verify a local or public blackboard endpoint.
     Verify {
@@ -93,7 +86,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Db { command }) => admin::dispatch_db(command),
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
         Some(Command::Participant { command }) => participant_admin::dispatch(command),
-        Some(Command::Web { command }) => web_admin::dispatch(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
@@ -116,45 +108,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn participant_generate_cli_parses_mini_rsa() {
+    fn participant_generate_signing_key_cli_parses() {
         let cli = Cli::try_parse_from([
             "conversation-blackboard",
             "participant",
-            "generate",
-            "--scheme",
-            "mini-rsa",
+            "generate-signing-key",
         ])
         .unwrap();
 
         match cli.command {
             Some(Command::Participant {
-                command:
-                    participant_admin::ParticipantCommand::Generate {
-                        scheme: participant_admin::GeneratorScheme::MiniRsa,
-                    },
+                command: participant_admin::ParticipantCommand::GenerateSigningKey,
             }) => {}
             other => panic!("unexpected command: {other:?}"),
         }
     }
 
     #[test]
-    fn participant_generate_cli_parses_ed25519() {
+    fn participant_totp_enroll_cli_parses() {
         let cli = Cli::try_parse_from([
             "conversation-blackboard",
             "participant",
-            "generate",
-            "--scheme",
-            "ed25519",
+            "totp-enroll",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "cheng-main",
         ])
         .unwrap();
 
         match cli.command {
             Some(Command::Participant {
                 command:
-                    participant_admin::ParticipantCommand::Generate {
-                        scheme: participant_admin::GeneratorScheme::Ed25519,
+                    participant_admin::ParticipantCommand::TotpEnroll {
+                        participant_id, ..
                     },
-            }) => {}
+            }) => assert_eq!(participant_id, "cheng-main"),
             other => panic!("unexpected command: {other:?}"),
         }
     }
