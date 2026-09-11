@@ -166,7 +166,10 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert!(!app.contains("bbcred-v1"));
     assert!(!app.contains("crypto.subtle"));
     assert!(!app.contains("private_key"));
+    assert!(!app.contains("localStorage"));
     assert!(app.contains("/api/auth/totp"));
+    assert!(app.contains("Connecting…"));
+    assert!(app.contains("$(\"connect\").addEventListener(\"click\", connect);"));
 }
 
 #[tokio::test]
