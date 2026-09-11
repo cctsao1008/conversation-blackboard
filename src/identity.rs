@@ -83,6 +83,33 @@ pub fn get_web_participant(conn: &Connection, participant_id: &str) -> Result<Op
     .optional()
 }
 
+pub fn get_web_participant_role(conn: &Connection, participant_id: &str) -> Result<Option<String>> {
+    if validate_participant_id(participant_id).is_none() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT role FROM web_participants WHERE participant_id = ?1 LIMIT 1",
+        [participant_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+pub fn set_web_participant_role(
+    conn: &Connection,
+    participant_id: &str,
+    role: &str,
+) -> Result<bool> {
+    if validate_participant_id(participant_id).is_none() || !matches!(role, "user" | "admin") {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let changed = conn.execute(
+        "UPDATE web_participants\n         SET role = ?1, updated_at = unixepoch()\n         WHERE participant_id = ?2",
+        params![role, participant_id],
+    )?;
+    Ok(changed == 1)
+}
+
 pub fn provision_web_participant_identity(
     conn: &Connection,
     participant_id: &str,
@@ -411,6 +438,30 @@ mod tests {
         assert!(validate_source(" bad source ").is_none());
         assert!(validate_participant_id("rotary-main").is_some());
         assert!(validate_participant_id("rotary/main").is_none());
+    }
+
+    #[test]
+    fn participant_roles_are_explicit_and_mutable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        provision_web_participant_identity(&conn, "operator-main", "operator", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            get_web_participant_role(&conn, "operator-main")
+                .unwrap()
+                .as_deref(),
+            Some("user")
+        );
+        assert!(set_web_participant_role(&conn, "operator-main", "admin").unwrap());
+        assert_eq!(
+            get_web_participant_role(&conn, "operator-main")
+                .unwrap()
+                .as_deref(),
+            Some("admin")
+        );
     }
 
     #[test]
