@@ -1,4 +1,6 @@
 mod admin;
+#[cfg(test)]
+mod access_control_contract_tests;
 mod client;
 mod client_cli;
 mod db;
