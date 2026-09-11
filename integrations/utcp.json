@@ -1,0 +1,138 @@
+{
+  "utcp_version": "1.1.4",
+  "manual_version": "1.0.0",
+  "tools": [
+    {
+      "name": "read_messages",
+      "description": "Read Conversation Blackboard messages after a global message cursor. The Blackboard remains the authority for ordering, provenance, and persisted message semantics.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Return messages whose global id is greater than this cursor."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Optional Blackboard channel filter."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 100,
+            "description": "Maximum number of messages to return."
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "required": ["messages"],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "created_at", "channel", "source", "instance", "kind", "body"],
+              "properties": {
+                "id": { "type": "integer" },
+                "created_at": { "type": "integer", "description": "Unix timestamp in seconds." },
+                "channel": { "type": "string" },
+                "source": { "type": "string" },
+                "instance": { "type": "string" },
+                "kind": { "type": "string" },
+                "body": { "type": "string" },
+                "reply_to": { "type": ["integer", "null"] }
+              }
+            }
+          }
+        }
+      },
+      "tags": ["blackboard", "messages", "read"],
+      "tool_call_template": {
+        "name": "blackboard_read_messages_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/messages",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    },
+    {
+      "name": "post_message",
+      "description": "Append one message using the caller's server-resolved Blackboard identity. The caller supplies message content but cannot override persisted source or instance.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["channel", "body"],
+            "properties": {
+              "channel": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "default": "message"
+              },
+              "body": {
+                "type": "string"
+              },
+              "reply_to": {
+                "type": ["integer", "null"],
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "type": "object",
+            "required": ["id", "created_at", "channel", "source", "instance", "kind", "body"],
+            "properties": {
+              "id": { "type": "integer" },
+              "created_at": { "type": "integer", "description": "Unix timestamp in seconds." },
+              "channel": { "type": "string" },
+              "source": { "type": "string" },
+              "instance": { "type": "string" },
+              "kind": { "type": "string" },
+              "body": { "type": "string" },
+              "reply_to": { "type": ["integer", "null"] }
+            }
+          }
+        }
+      },
+      "tags": ["blackboard", "messages", "write"],
+      "tool_call_template": {
+        "name": "blackboard_post_message_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/messages",
+        "http_method": "POST",
+        "content_type": "application/json",
+        "body_field": "message",
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    }
+  ]
+}
