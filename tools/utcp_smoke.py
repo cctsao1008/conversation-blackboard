@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from cryptography.hazmat.primitives.serialization import load_der_private_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from utcp.data.utcp_client_config import UtcpClientConfig
 from utcp.utcp_client import UtcpClient
 from utcp_http.http_call_template import HttpCallTemplate
@@ -28,6 +28,26 @@ from utcp_http.http_call_template import HttpCallTemplate
 MCP_PROTOCOL_VERSION = "2025-11-25"
 SIGNATURE_SCHEME = "ed25519-v1"
 PRIVATE_KEY_PREFIX = "ed25519-sk:"
+RING_PKCS8_V2_PREFIX = bytes(
+    [
+        0x30,
+        0x51,
+        0x02,
+        0x01,
+        0x01,
+        0x30,
+        0x05,
+        0x06,
+        0x03,
+        0x2B,
+        0x65,
+        0x70,
+        0x04,
+        0x22,
+        0x04,
+        0x20,
+    ]
+)
 
 
 def parse_field(output: str, field: str) -> str:
@@ -95,6 +115,15 @@ def base64url_encode_unpadded(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
+def ring_private_seed(private_key: str) -> bytes:
+    if not private_key.startswith(PRIVATE_KEY_PREFIX):
+        raise RuntimeError("unexpected Ed25519 private-key prefix")
+    der = base64url_decode_unpadded(private_key.removeprefix(PRIVATE_KEY_PREFIX))
+    if len(der) != 83 or der[:16] != RING_PKCS8_V2_PREFIX:
+        raise RuntimeError("unexpected ring Ed25519 PKCS#8 shape")
+    return der[16:48]
+
+
 def sign_write(
     private_key: str,
     participant_id: str,
@@ -104,10 +133,7 @@ def sign_write(
     reply_to: int | None,
     nonce: str,
 ) -> str:
-    if not private_key.startswith(PRIVATE_KEY_PREFIX):
-        raise RuntimeError("unexpected Ed25519 private-key prefix")
-    der = base64url_decode_unpadded(private_key.removeprefix(PRIVATE_KEY_PREFIX))
-    key = load_der_private_key(der, password=None)
+    key = Ed25519PrivateKey.from_private_bytes(ring_private_seed(private_key))
     payload = {
         "body": body,
         "channel": channel,
