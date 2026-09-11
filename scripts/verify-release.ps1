@@ -95,6 +95,7 @@ if (-not (Test-Path -LiteralPath $releaseBinary -PathType Leaf)) {
 
 $null = Invoke-NativeText -FilePath $releaseBinary -Arguments @("--help")
 $hash = (Get-FileHash -LiteralPath $releaseBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+$hashFingerprint = $hash.Substring(0, 16).ToUpperInvariant()
 $size = (Get-Item -LiteralPath $releaseBinary).Length
 
 $statusAfterBuild = Invoke-NativeText -FilePath "git" -Arguments @("-C", $repoRoot, "status", "--porcelain")
@@ -120,7 +121,7 @@ Write-Host ""
 Write-Host "RELEASE VERIFICATION PASSED"
 Write-Host "Binary     : $releaseBinary"
 Write-Host "Size       : $size bytes"
-Write-Host "SHA256     : $hash"
+Write-Host "SHA256-64  : $hashFingerprint"
 Write-Host "Manifest   : $manifestPath"
 
 [pscustomobject]@{
@@ -129,6 +130,6 @@ Write-Host "Manifest   : $manifestPath"
     Commit = $head
     Binary = $releaseBinary
     Size = $size
-    SHA256 = $hash
+    SHA256_64 = $hashFingerprint
     Manifest = $manifestPath
 }
