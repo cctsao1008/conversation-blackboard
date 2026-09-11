@@ -166,7 +166,19 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert!(!app.contains("bbcred-v1"));
     assert!(!app.contains("crypto.subtle"));
     assert!(!app.contains("private_key"));
-    assert!(!app.contains("localStorage"));
+    assert!(!app.contains("sessionStorage"));
+    assert!(!app.contains("document.cookie"));
+
+    // #53 permits persistence for the non-sensitive theme preference only.
+    // Authentication/session state must remain page-memory-only and must not
+    // gain additional browser-storage call sites.
+    assert!(app.contains("const THEME_KEY = \"conversation-blackboard-theme\";"));
+    assert!(app.contains("storageSet(THEME_KEY, theme)"));
+    assert!(app.contains("storageGet(THEME_KEY)"));
+    assert_eq!(app.matches("window.localStorage").count(), 2);
+    assert_eq!(app.matches("storageSet(").count(), 2);
+    assert_eq!(app.matches("storageGet(").count(), 2);
+
     assert!(app.contains("/api/auth/totp"));
     assert!(app.contains("Connecting…"));
     assert!(app.contains("$(\"connect\").addEventListener(\"click\", connect);"));
