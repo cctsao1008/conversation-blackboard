@@ -69,6 +69,16 @@ jobs:
               count=1,
               flags=re.S,
           )
+          text = text.replace(
+              'pub fn authenticate_web_totp(',
+              'type TotpParticipantRow = (String, Option<String>, String, Option<i64>, i64, Option<i64>);\n\npub fn authenticate_web_totp(',
+              1,
+          )
+          text = text.replace(
+              'let row: Option<(String, Option<String>, String, Option<i64>, i64, Option<i64>)> = tx',
+              'let row: Option<TotpParticipantRow> = tx',
+              1,
+          )
           tests = r'''#[cfg(test)]
           mod tests {
               use super::*;
