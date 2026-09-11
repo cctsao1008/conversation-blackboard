@@ -52,6 +52,8 @@ pub fn canonical_write_bytes(
     serde_json::to_vec(&payload).expect("canonical signed-write payload must serialize")
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub fn sign_write(
     private_key: &str,
     participant_id: &str,
@@ -67,6 +69,7 @@ pub fn sign_write(
     Some(URL_SAFE_NO_PAD.encode(keypair.sign(&canonical).as_ref()))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verify_write_signature(
     public_key: &str,
     signature: &str,
