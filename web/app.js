@@ -8,7 +8,7 @@
     participantId: "",
     sessionToken: "",
     identity: null,
-    channel: localStorage.getItem("conversation-blackboard.channel") || "",
+    channel: "",
     channels: [],
     lastId: 0,
     oldestId: 0,
@@ -66,6 +66,9 @@
       return;
     }
 
+    const button = $("connect");
+    button.disabled = true;
+    button.textContent = "Connecting…";
     try {
       const auth = await api("/api/auth/totp", {
         method: "POST",
@@ -84,9 +87,13 @@
       state.participantId = "";
       state.sessionToken = "";
       state.identity = null;
+      setConnected(false);
       $("connect-error").textContent = error.status === 401
         ? "Participant or authenticator code was not accepted."
         : (error.message || "Could not connect.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Connect";
     }
   }
 
@@ -132,8 +139,8 @@
     const data = await api("/api/channels");
     renderChannels(data.channels);
 
-    const savedChannelExists = state.channels.some((channel) => channel.channel === state.channel);
-    if (!savedChannelExists) {
+    const selectedChannelExists = state.channels.some((channel) => channel.channel === state.channel);
+    if (!selectedChannelExists) {
       state.channel = state.channels.length ? state.channels[0].channel : "";
     }
     if (state.channel) await selectChannel(state.channel, false);
@@ -152,7 +159,6 @@
     state.channel = channel;
     state.followLatest = true;
     state.replyTo = null;
-    localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
     resetHistory();
     updateReplyBar();
@@ -206,7 +212,7 @@
       if (data.messages.length) $("timeline").scrollTop = 0;
     } catch (error) {
       if (error.status === 401) {
-        disconnect("Participant credential is no longer valid.");
+        disconnect("Participant session is no longer valid.");
       } else {
         $("status").textContent = `Could not load older messages: ${error.message}`;
         updateHistoryNav();
@@ -263,7 +269,7 @@
       $("status").textContent = `Showing #${id}. Select Latest to return to the live window.`;
     } catch (error) {
       if (error.status === 401) {
-        disconnect("Participant credential is no longer valid.");
+        disconnect("Participant session is no longer valid.");
       } else {
         $("status").textContent = `Could not find #${id}: ${error.message}`;
       }
@@ -283,7 +289,7 @@
         await refreshChannelCounts();
       }
     } catch (error) {
-      if (error.status === 401) disconnect("Participant credential is no longer valid.");
+      if (error.status === 401) disconnect("Participant session is no longer valid.");
     }
   }
 
@@ -453,7 +459,7 @@
       $("status").textContent = `Posted #${data.message.id}`;
     } catch (error) {
       $("status").textContent = error.status === 401
-        ? "Participant credential is no longer valid."
+        ? "Participant session is no longer valid."
         : `Post failed: ${error.message}`;
     } finally {
       $("send").disabled = false;
@@ -470,7 +476,6 @@
     }
     state.channel = channel;
     state.followLatest = true;
-    localStorage.setItem("conversation-blackboard.channel", channel);
     $("channel-name").textContent = channel;
     resetHistory();
     updateChannelHeader();
