@@ -28,7 +28,8 @@ button { cursor: pointer; }
 .sidebar-head,
 .composer-actions,
 .connect-row,
-.reply-bar {
+.reply-bar,
+.jump-form {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -181,14 +182,34 @@ button.link-button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.channel-tools {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
 .channel-head-actions {
-  flex: 0 0 auto;
   justify-content: flex-end;
 }
 .channel-message-count {
   font-size: .82rem;
   opacity: .6;
   white-space: nowrap;
+}
+.jump-form {
+  justify-content: flex-end;
+  gap: 7px;
+}
+.jump-form label {
+  font-size: .78rem;
+  opacity: .65;
+  white-space: nowrap;
+}
+.jump-form input {
+  width: 92px;
+  padding: 6px 9px;
+}
+.jump-form button {
+  padding: 6px 10px;
 }
 
 .timeline {
@@ -205,6 +226,11 @@ button.link-button {
   border-radius: 12px;
   padding: 12px 14px;
   background: Canvas;
+  transition: border-color .18s ease, background-color .18s ease;
+}
+.message-target {
+  border-color: color-mix(in srgb, CanvasText 55%, transparent);
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
 }
 .message-meta {
   display: flex;
@@ -299,10 +325,18 @@ button.link-button {
     align-items: flex-start;
     flex-direction: column;
   }
+  .channel-tools {
+    width: 100%;
+    justify-items: start;
+  }
   .channel-head-actions {
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+  .jump-form {
+    width: 100%;
+    justify-content: flex-start;
   }
   .connect-row { align-items: stretch; flex-direction: column; }
 }
