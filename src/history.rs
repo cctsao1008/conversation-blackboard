@@ -192,15 +192,7 @@ mod tests {
             .unwrap();
             ids.push(message.id);
         }
-        db::append_message(
-            &conn,
-            &writer,
-            "other-channel",
-            "message",
-            "other",
-            None,
-        )
-        .unwrap();
+        db::append_message(&conn, &writer, "other-channel", "message", "other", None).unwrap();
         drop(conn);
 
         let router = app(AppState {
@@ -260,9 +252,7 @@ mod tests {
         let before = fixture.ids[20];
         let response = request(
             &fixture,
-            &format!(
-                "/api/messages/window?channel=control-systems&before={before}&limit=5"
-            ),
+            &format!("/api/messages/window?channel=control-systems&before={before}&limit=5"),
         )
         .await;
         let (status, body) = response_json(response).await;
@@ -280,9 +270,7 @@ mod tests {
         let before = fixture.ids[5];
         let response = request(
             &fixture,
-            &format!(
-                "/api/messages/window?channel=control-systems&before={before}&limit=5"
-            ),
+            &format!("/api/messages/window?channel=control-systems&before={before}&limit=5"),
         )
         .await;
         let (status, body) = response_json(response).await;
@@ -317,7 +305,10 @@ mod tests {
             "/api/messages/window?channel=control-systems&limit=0",
             "/api/messages/window?channel=control-systems&limit=201",
         ] {
-            assert_eq!(request(&fixture, uri).await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                request(&fixture, uri).await.status(),
+                StatusCode::BAD_REQUEST
+            );
         }
     }
 }
