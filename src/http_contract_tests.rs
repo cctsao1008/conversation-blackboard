@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use axum::{
     body::{to_bytes, Body},
-    http::{HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     response::Response,
     Router,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
@@ -15,7 +15,7 @@ use crate::{
     http::{self, AppState},
     identity,
     model::Identity,
-    signed_auth,
+    signed_auth, web_auth,
 };
 
 struct Fixture {
@@ -58,12 +58,29 @@ fn fixture(source: &str) -> Fixture {
     }
 }
 
+async fn request(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    session: Option<&str>,
+    body: Option<Value>,
+) -> Response {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(session) = session {
+        builder = builder.header(web_auth::WEB_SESSION_HEADER, session);
+    }
+    let body = match body {
+        Some(value) => {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    router.clone().oneshot(builder.body(body).unwrap()).await.unwrap()
+}
+
 async fn get(router: &Router, uri: &str) -> Response {
-    router
-        .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
+    request(router, Method::GET, uri, None, None).await
 }
 
 async fn response_text(response: Response) -> (StatusCode, HeaderMap, String) {
@@ -74,6 +91,14 @@ async fn response_text(response: Response) -> (StatusCode, HeaderMap, String) {
         parts.headers,
         String::from_utf8(bytes.to_vec()).unwrap(),
     )
+}
+
+async fn response_json(response: Response) -> (StatusCode, Value) {
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), http::MAX_BODY_BYTES * 2)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
 }
 
 fn message_json(body: &str) -> Value {
@@ -124,26 +149,196 @@ fn signed_uri(
 }
 
 #[tokio::test]
-async fn navigation_read_preserves_authoritative_fields() {
+async fn anonymous_navigation_read_exposes_only_public_active_channels() {
     let fixture = fixture("single");
     let conn = db::connect(&fixture.db_path).unwrap();
-    let row = db::append_message(
+    let public = db::append_message(
+        &conn,
+        &fixture.identity,
+        "blackboard-lounge",
+        "insight",
+        "hello public",
+        None,
+    )
+    .unwrap();
+    db::append_message(
         &conn,
         &fixture.identity,
         "control-systems",
         "insight",
-        "hello",
+        "hello private",
         None,
     )
     .unwrap();
     drop(conn);
-    let response = get(&fixture.router, "/r/control-systems?after=0&limit=10").await;
+
+    let response = get(&fixture.router, "/r/blackboard-lounge?after=0&limit=10").await;
     let (status, _, body) = response_text(response).await;
     assert_eq!(status, StatusCode::OK);
     let message = message_json(&body);
-    assert_eq!(message["id"].as_i64(), Some(row.id));
+    assert_eq!(message["id"].as_i64(), Some(public.id));
     assert_eq!(message["source"], "single");
     assert_eq!(message["instance"], "single-main");
+
+    assert_eq!(
+        get(&fixture.router, "/r/control-systems?after=0&limit=10")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn guest_session_reads_public_channels_only_and_cannot_write() {
+    let fixture = fixture("single");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    db::append_message(
+        &conn,
+        &fixture.identity,
+        "blackboard-lounge",
+        "message",
+        "public",
+        None,
+    )
+    .unwrap();
+    db::append_message(
+        &conn,
+        &fixture.identity,
+        "control-systems",
+        "message",
+        "private",
+        None,
+    )
+    .unwrap();
+    drop(conn);
+
+    let guest = request(
+        &fixture.router,
+        Method::POST,
+        "/api/auth/guest",
+        None,
+        None,
+    )
+    .await;
+    let (status, guest_body) = response_json(guest).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(guest_body["instance"], "anonymous");
+    assert_eq!(guest_body["role"], "guest");
+    let token = guest_body["session_token"].as_str().unwrap();
+
+    let channels = request(
+        &fixture.router,
+        Method::GET,
+        "/api/channels",
+        Some(token),
+        None,
+    )
+    .await;
+    let (status, body) = response_json(channels).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["channels"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["channel"], "blackboard-lounge");
+    assert_eq!(rows[0]["visibility"], "public");
+
+    assert_eq!(
+        request(
+            &fixture.router,
+            Method::GET,
+            "/api/messages?channel=blackboard-lounge",
+            Some(token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &fixture.router,
+            Method::GET,
+            "/api/messages?channel=control-systems",
+            Some(token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &fixture.router,
+            Method::POST,
+            "/api/messages",
+            Some(token),
+            Some(json!({"channel": "blackboard-lounge", "body": "nope"})),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn human_admin_can_manage_channels_while_normal_human_cannot() {
+    let admin = fixture("cheng");
+    let conn = db::connect(&admin.db_path).unwrap();
+    identity::set_web_participant_role(&conn, "cheng-main", "admin").unwrap();
+    drop(conn);
+    let admin_session = web_auth::issue_web_session("cheng-main");
+
+    assert_eq!(
+        request(
+            &admin.router,
+            Method::GET,
+            "/api/admin/channels",
+            Some(&admin_session.token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let created = request(
+        &admin.router,
+        Method::POST,
+        "/api/admin/channels",
+        Some(&admin_session.token),
+        Some(json!({"name": "public-demo", "visibility": "public"})),
+    )
+    .await;
+    let (status, body) = response_json(created).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["channel"]["visibility"], "public");
+    assert_eq!(body["channel"]["status"], "active");
+
+    let patched = request(
+        &admin.router,
+        Method::PATCH,
+        "/api/admin/channels/public-demo",
+        Some(&admin_session.token),
+        Some(json!({"visibility": "private", "status": "archived"})),
+    )
+    .await;
+    let (status, body) = response_json(patched).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["channel"]["visibility"], "private");
+    assert_eq!(body["channel"]["status"], "archived");
+
+    let user = fixture("single");
+    let user_session = web_auth::issue_web_session("single-main");
+    assert_eq!(
+        request(
+            &user.router,
+            Method::GET,
+            "/api/admin/channels",
+            Some(&user_session.token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]
@@ -278,7 +473,8 @@ async fn distinct_signed_participants_keep_provenance_separate() {
     .unwrap();
     let rotary_uri = format!(
         "/w/rotary-main?scheme={}&sig={}&channel=general&kind=message&body=from-rotary&nonce=rotary-001",
-        signed_auth::SIGNATURE_SCHEME, rotary_signature
+        signed_auth::SIGNATURE_SCHEME,
+        rotary_signature
     );
     assert_eq!(
         get(&single.router, &rotary_uri).await.status(),
