@@ -17,12 +17,13 @@
     </header>
 
     <section class="connect-panel" id="connect-panel">
-      <label for="participant-credential">Participant credential</label>
+      <label for="participant-id">Participant</label>
       <div class="connect-row">
-        <input id="participant-credential" type="password" autocomplete="off" spellcheck="false" aria-label="Participant credential" placeholder="bbcred-v1:…">
+        <input id="participant-id" type="text" autocomplete="username" spellcheck="false" aria-label="Participant ID" placeholder="cheng-main">
+        <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" aria-label="Authenticator code" placeholder="6-digit code">
         <button id="connect" type="button">Connect</button>
       </div>
-      <p class="hint">Credential is parsed locally. The private signing key is never sent or stored in browser storage.</p>
+      <p class="hint">Enter the current code from Google Authenticator or any RFC 6238 compatible authenticator.</p>
       <p class="error" id="connect-error" role="alert"></p>
     </section>
 

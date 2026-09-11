@@ -63,8 +63,7 @@ pub fn app(state: AppState) -> Router {
         .route("/r/{channel}", get(navigation_read))
         .route("/w/{participant_id}", get(navigation_write))
         .route("/api/health", get(health))
-        .route("/api/auth/challenge", post(auth_challenge))
-        .route("/api/auth/verify", post(auth_verify))
+        .route("/api/auth/totp", post(auth_totp))
         .route("/api/whoami", get(whoami))
         .route("/api/messages", get(messages).post(post_message))
         .route("/api/channels", get(channels))
@@ -171,65 +170,47 @@ async fn navigation_write(
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_nonce"))?;
     let reply_to = parse_reply_to(&params)?;
 
-    let signed_attempt = params.contains_key("sig") || params.contains_key("scheme");
-    let legacy_attempt = params.contains_key("key");
-    if signed_attempt && legacy_attempt {
+    if params.contains_key("key") {
         return Err(ApiError::unauthorized());
     }
-
-    let write_identity = if signed_attempt {
-        let scheme = params
-            .get("scheme")
-            .filter(|value| value.as_str() == signed_auth::SIGNATURE_SCHEME)
-            .ok_or_else(ApiError::unauthorized)?;
-        let signature = params
-            .get("sig")
-            .filter(|value| !value.is_empty() && value.len() <= 256)
-            .cloned()
-            .ok_or_else(ApiError::unauthorized)?;
-        let lookup_participant = participant_id.clone();
-        let verify_channel = channel.clone();
-        let verify_kind = kind.clone();
-        let verify_body = message_body.clone();
-        let verify_nonce = nonce.clone();
-        let scheme = scheme.clone();
-        with_db(&state, move |conn| {
-            let Some(record) =
-                identity::get_web_participant_verification(conn, &lookup_participant)?
-            else {
-                return Ok(None);
-            };
-            if record.signature_scheme != scheme
-                || !signed_auth::verify_write_signature(
-                    &record.public_key,
-                    &signature,
-                    &lookup_participant,
-                    &verify_channel,
-                    &verify_kind,
-                    &verify_body,
-                    reply_to,
-                    &verify_nonce,
-                )
-            {
-                return Ok(None);
-            }
-            Ok(Some(record.identity))
-        })
-        .await?
+    let scheme = params
+        .get("scheme")
+        .filter(|value| value.as_str() == signed_auth::SIGNATURE_SCHEME)
         .ok_or_else(ApiError::unauthorized)?
-    } else {
-        let private_key = params
-            .get("key")
-            .filter(|value| identity::validate_private_key(value))
-            .cloned()
-            .ok_or_else(ApiError::unauthorized)?;
-        let lookup_participant = participant_id.clone();
-        with_db(&state, move |conn| {
-            identity::resolve_web_participant(conn, &lookup_participant, &private_key)
-        })
-        .await?
-        .ok_or_else(ApiError::unauthorized)?
-    };
+        .clone();
+    let signature = params
+        .get("sig")
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .cloned()
+        .ok_or_else(ApiError::unauthorized)?;
+    let lookup_participant = participant_id.clone();
+    let verify_channel = channel.clone();
+    let verify_kind = kind.clone();
+    let verify_body = message_body.clone();
+    let verify_nonce = nonce.clone();
+    let write_identity = with_db(&state, move |conn| {
+        let Some(record) = identity::get_web_participant_verification(conn, &lookup_participant)?
+        else {
+            return Ok(None);
+        };
+        if record.signature_scheme != scheme
+            || !signed_auth::verify_write_signature(
+                &record.public_key,
+                &signature,
+                &lookup_participant,
+                &verify_channel,
+                &verify_kind,
+                &verify_body,
+                reply_to,
+                &verify_nonce,
+            )
+        {
+            return Ok(None);
+        }
+        Ok(Some(record.identity))
+    })
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
 
     let request_hash = identity::hash_token(
         &json!({
@@ -300,12 +281,12 @@ async fn health(State(state): State<AppState>) -> Result<Response, ApiError> {
     Ok(json_response(StatusCode::OK, json!({"status": "ok"})))
 }
 
-async fn auth_challenge(
+async fn auth_totp(
     State(state): State<AppState>,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
     let body = read_json_object(request).await?;
-    if !only_keys(&body, &["participant_id"]) {
+    if !only_keys(&body, &["participant_id", "code"]) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"));
     }
     let participant_id = body
@@ -313,122 +294,30 @@ async fn auth_challenge(
         .and_then(Value::as_str)
         .and_then(identity::validate_participant_id)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_participant_id"))?;
-
+    let code = body
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == web_auth::TOTP_DIGITS as usize)
+        .filter(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?
+        .to_owned();
     let lookup = participant_id.clone();
-    let registered = with_db(&state, move |conn| {
-        identity::get_web_participant_verification(conn, &lookup)
-    })
-    .await?;
-    if registered.is_none() {
-        return Err(ApiError::unauthorized());
-    }
-
-    let challenge = web_auth::issue_browser_challenge(&participant_id);
-    Ok(json_response(
-        StatusCode::OK,
-        json!({
-            "signature_version": signed_auth::SIGNATURE_SCHEME,
-            "purpose": web_auth::BROWSER_CHALLENGE_PURPOSE,
-            "challenge": challenge.challenge,
-            "expires_at": challenge.expires_at,
-            "challenge_token": challenge.challenge_token,
-        }),
-    ))
-}
-
-async fn auth_verify(
-    State(state): State<AppState>,
-    request: Request<Body>,
-) -> Result<Response, ApiError> {
-    let body = read_json_object(request).await?;
-    if !only_keys(
-        &body,
-        &[
-            "participant_id",
-            "challenge",
-            "expires_at",
-            "challenge_token",
-            "auth",
-        ],
-    ) {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"));
-    }
-
-    let participant_id = body
-        .get("participant_id")
-        .and_then(Value::as_str)
-        .and_then(identity::validate_participant_id)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_participant_id"))?;
-    let challenge = body
-        .get("challenge")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 256)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?
-        .to_owned();
-    let expires_at = body
-        .get("expires_at")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?;
-    let challenge_token = body
-        .get("challenge_token")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 256)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?
-        .to_owned();
-    let auth = body
-        .get("auth")
-        .and_then(Value::as_object)
-        .filter(|value| only_keys(value, &["scheme", "signature"]))
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?;
-    let scheme = auth
-        .get("scheme")
-        .and_then(Value::as_str)
-        .filter(|value| *value == signed_auth::SIGNATURE_SCHEME)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unsupported_signature_scheme"))?
-        .to_owned();
-    let signature = auth
-        .get("signature")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 256)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?
-        .to_owned();
-
-    if !web_auth::verify_browser_challenge_token(
-        &participant_id,
-        &challenge,
-        expires_at,
-        &challenge_token,
-    ) {
-        return Err(ApiError::unauthorized());
-    }
-
-    let lookup = participant_id.clone();
+    let now = web_auth::current_unix_time();
     let verified = with_db(&state, move |conn| {
-        let Some(record) = identity::get_web_participant_verification(conn, &lookup)? else {
-            return Ok(None);
-        };
-        if record.signature_scheme != scheme
-            || !web_auth::verify_browser_challenge_signature(
-                &record.public_key,
-                &signature,
-                &lookup,
-                &challenge,
-                expires_at,
-            )
-        {
-            return Ok(None);
-        }
-        Ok(Some(record.identity))
+        identity::authenticate_web_totp(conn, &lookup, &code, now)
     })
     .await?
     .ok_or_else(ApiError::unauthorized)?;
 
+    let session = web_auth::issue_web_session(&participant_id);
     Ok(json_response(
         StatusCode::OK,
         json!({
             "source": verified.source,
             "instance": verified.instance,
             "label": verified.label,
+            "session_token": session.token,
+            "expires_at": session.expires_at,
         }),
     ))
 }

@@ -85,13 +85,6 @@ pub fn verify_message_signature(public_key: &str, signature: &str, message: &[u8
         .is_ok()
 }
 
-#[cfg(test)]
-pub fn sign_message_signature(private_key: &str, message: &[u8]) -> Option<String> {
-    let pkcs8 = decode_prefixed(private_key, PRIVATE_KEY_PREFIX)?;
-    let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8).ok()?;
-    Some(URL_SAFE_NO_PAD.encode(keypair.sign(message).as_ref()))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn verify_write_signature(
     public_key: &str,
@@ -150,31 +143,6 @@ mod tests {
             None,
             "claude-001",
         ));
-    }
-
-    #[test]
-    fn generated_pkcs8_shape_matches_browser_normalizer_contract() {
-        let (private_key, public_key) = generate_keypair();
-        let pkcs8 = decode_prefixed(&private_key, PRIVATE_KEY_PREFIX).unwrap();
-        let public = decode_public_key(&public_key).unwrap();
-
-        let expected_v2_prefix = [
-            0x30, 0x51, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-            0x04, 0x20,
-        ];
-        assert_eq!(pkcs8.len(), 83);
-        assert_eq!(&pkcs8[..16], &expected_v2_prefix);
-        assert_eq!(&pkcs8[48..51], &[0x81, 0x21, 0x00]);
-        assert_eq!(&pkcs8[51..83], public.as_slice());
-
-        let expected_v1_prefix = [
-            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-            0x04, 0x20,
-        ];
-        let mut browser_pkcs8 = Vec::with_capacity(48);
-        browser_pkcs8.extend_from_slice(&expected_v1_prefix);
-        browser_pkcs8.extend_from_slice(&pkcs8[16..48]);
-        assert_eq!(browser_pkcs8.len(), 48);
     }
 
     #[test]

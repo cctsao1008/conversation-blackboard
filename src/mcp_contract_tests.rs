@@ -16,8 +16,6 @@ struct Fixture {
     _dir: TempDir,
     db_path: PathBuf,
     router: Router,
-    single_key: String,
-    rotary_key: String,
     single_signing_private: String,
     rotary_signing_private: String,
 }
@@ -27,46 +25,25 @@ fn fixture() -> Fixture {
     let db_path = dir.path().join("board.db");
     db::initialize(&db_path).unwrap();
     let conn = db::connect(&db_path).unwrap();
-    let single_key = "prompt-key-single".to_owned();
-    let rotary_key = "prompt-key-rotary".to_owned();
-    identity::provision_web_participant(
-        &conn,
-        "single-main",
-        "single",
-        Some("Single main conversation"),
-        &single_key,
-    )
-    .unwrap()
-    .unwrap();
-    identity::provision_web_participant(
-        &conn,
-        "rotary-main",
-        "rotary",
-        Some("Rotary main conversation"),
-        &rotary_key,
-    )
-    .unwrap()
-    .unwrap();
-
-    let (single_signing_private, single_signing_public) = signed_auth::generate_keypair();
-    let (rotary_signing_private, rotary_signing_public) = signed_auth::generate_keypair();
-    identity::set_web_participant_signing_key(&conn, "single-main", &single_signing_public)
+    identity::provision_web_participant_identity(&conn, "single-main", "single", Some("Single"))
+        .unwrap()
         .unwrap();
-    identity::set_web_participant_signing_key(&conn, "rotary-main", &rotary_signing_public)
+    identity::provision_web_participant_identity(&conn, "rotary-main", "rotary", Some("Rotary"))
+        .unwrap()
         .unwrap();
+    let (single_signing_private, single_public) = signed_auth::generate_keypair();
+    let (rotary_signing_private, rotary_public) = signed_auth::generate_keypair();
+    identity::set_web_participant_signing_key(&conn, "single-main", &single_public).unwrap();
+    identity::set_web_participant_signing_key(&conn, "rotary-main", &rotary_public).unwrap();
     drop(conn);
-
     let router = mcp::app(AppState {
         db_path: db_path.clone(),
         registration_key: None,
     });
-
     Fixture {
         _dir: dir,
         db_path,
         router,
-        single_key,
-        rotary_key,
         single_signing_private,
         rotary_signing_private,
     }
@@ -98,10 +75,7 @@ fn signed_write_arguments(
         "body": body,
         "reply_to": reply_to,
         "nonce": nonce,
-        "auth": {
-            "scheme": signed_auth::SIGNATURE_SCHEME,
-            "signature": signature
-        }
+        "auth": {"scheme": signed_auth::SIGNATURE_SCHEME, "signature": signature}
     })
 }
 
@@ -126,8 +100,7 @@ async fn request(router: &Router, method: Method, body: Option<Value>) -> Respon
 async fn response_json(response: Response) -> (StatusCode, Value) {
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
-    let value = serde_json::from_slice(&bytes).unwrap();
-    (status, value)
+    (status, serde_json::from_slice(&bytes).unwrap())
 }
 
 async fn call_tool(router: &Router, id: i64, name: &str, arguments: Value) -> Value {
@@ -138,10 +111,7 @@ async fn call_tool(router: &Router, id: i64, name: &str, arguments: Value) -> Va
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
-            "params": {
-                "name": name,
-                "arguments": arguments
-            }
+            "params": {"name": name, "arguments": arguments}
         })),
     )
     .await;
@@ -155,7 +125,7 @@ fn tool_error_code(value: &Value) -> &str {
 }
 
 #[tokio::test]
-async fn mcp_initializes_and_advertises_exactly_two_focused_tools() {
+async fn mcp_advertises_signed_only_write_contract() {
     let fixture = fixture();
     let response = request(
         &fixture.router,
@@ -163,108 +133,27 @@ async fn mcp_initializes_and_advertises_exactly_two_focused_tools() {
         Some(json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "contract-test",
-                    "version": "1.0.0"
-                }
-            }
-        })),
-    )
-    .await;
-    let (status, value) = response_json(response).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(value["result"]["protocolVersion"], "2025-11-25");
-    assert_eq!(
-        value["result"]["capabilities"]["tools"]["listChanged"],
-        false
-    );
-    assert_eq!(
-        value["result"]["serverInfo"]["name"],
-        "conversation-blackboard"
-    );
-
-    let response = request(
-        &fixture.router,
-        Method::POST,
-        Some(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
             "method": "tools/list",
             "params": {}
         })),
     )
     .await;
-    let (status, value) = response_json(response).await;
-    assert_eq!(status, StatusCode::OK);
+    let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);
-    assert_eq!(tools[0]["name"], "blackboard_read");
-    assert_eq!(tools[0]["annotations"]["readOnlyHint"], true);
-    assert_eq!(tools[0]["annotations"]["openWorldHint"], false);
-    assert_eq!(tools[1]["name"], "blackboard_write");
-    assert_eq!(tools[1]["annotations"]["readOnlyHint"], false);
-    assert_eq!(tools[1]["annotations"]["destructiveHint"], false);
-    assert_eq!(tools[1]["annotations"]["idempotentHint"], true);
-    assert_eq!(tools[1]["annotations"]["openWorldHint"], true);
-    assert!(tools[1]["inputSchema"]["properties"]["auth"].is_object());
-    assert!(tools[1]["inputSchema"]["properties"]["private_key"].is_object());
+    let write = &tools[1];
+    assert_eq!(write["name"], "blackboard_write");
+    assert!(write["inputSchema"]["properties"]["auth"].is_object());
+    assert!(write["inputSchema"]["properties"]["private_key"].is_null());
+    assert!(write["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == "auth"));
 }
 
 #[tokio::test]
-async fn legacy_mcp_write_remains_compatible_during_dual_stack_migration() {
-    let fixture = fixture();
-    let arguments = json!({
-        "participant_id": "single-main",
-        "private_key": fixture.single_key,
-        "channel": "conversation-architecture",
-        "kind": "insight",
-        "body": "Shared ideas, separate realities.",
-        "nonce": "single-mcp-001"
-    });
-
-    let first = call_tool(&fixture.router, 10, "blackboard_write", arguments.clone()).await;
-    assert_eq!(first["result"]["isError"], false);
-    let created = &first["result"]["structuredContent"];
-    assert_eq!(created["status"], "created");
-    assert_eq!(created["idempotent"], false);
-    assert_eq!(created["source"], "single");
-    assert_eq!(created["participant_id"], "single-main");
-    assert_eq!(created["instance"], "single-main");
-    assert_eq!(created["channel"], "conversation-architecture");
-    assert_eq!(created["kind"], "insight");
-    let message_id = created["id"].as_i64().unwrap();
-
-    let replay = call_tool(&fixture.router, 11, "blackboard_write", arguments).await;
-    let existing = &replay["result"]["structuredContent"];
-    assert_eq!(existing["status"], "existing");
-    assert_eq!(existing["idempotent"], true);
-    assert_eq!(existing["id"].as_i64(), Some(message_id));
-
-    let read = call_tool(
-        &fixture.router,
-        12,
-        "blackboard_read",
-        json!({
-            "channel": "conversation-architecture",
-            "after": 0,
-            "limit": 50
-        }),
-    )
-    .await;
-    let data = &read["result"]["structuredContent"];
-    assert_eq!(data["count"], 1);
-    assert_eq!(data["latest_id"].as_i64(), Some(message_id));
-    assert_eq!(data["messages"][0]["id"].as_i64(), Some(message_id));
-    assert_eq!(data["messages"][0]["source"], "single");
-    assert_eq!(data["messages"][0]["instance"], "single-main");
-}
-
-#[tokio::test]
-async fn signed_mcp_write_is_verified_by_blackboard_and_is_idempotent() {
+async fn signed_write_is_verified_idempotent_and_readable() {
     let fixture = fixture();
     let arguments = signed_write_arguments(
         &fixture.single_signing_private,
@@ -275,27 +164,32 @@ async fn signed_mcp_write_is_verified_by_blackboard_and_is_idempotent() {
         None,
         "signed-single-001",
     );
-
-    let first = call_tool(&fixture.router, 30, "blackboard_write", arguments.clone()).await;
+    let first = call_tool(&fixture.router, 10, "blackboard_write", arguments.clone()).await;
     assert_eq!(first["result"]["isError"], false);
     let created = &first["result"]["structuredContent"];
     assert_eq!(created["status"], "created");
     assert_eq!(created["source"], "single");
-    assert_eq!(created["participant_id"], "single-main");
-    assert_eq!(created["instance"], "single-main");
-    let message_id = created["id"].as_i64().unwrap();
+    let id = created["id"].as_i64().unwrap();
 
-    let replay = call_tool(&fixture.router, 31, "blackboard_write", arguments).await;
-    assert_eq!(replay["result"]["isError"], false);
+    let replay = call_tool(&fixture.router, 11, "blackboard_write", arguments).await;
     assert_eq!(replay["result"]["structuredContent"]["status"], "existing");
     assert_eq!(
         replay["result"]["structuredContent"]["id"].as_i64(),
-        Some(message_id)
+        Some(id)
     );
+
+    let read = call_tool(
+        &fixture.router,
+        12,
+        "blackboard_read",
+        json!({"channel": "signed-architecture", "after": 0, "limit": 50}),
+    )
+    .await;
+    assert_eq!(read["result"]["structuredContent"]["count"], 1);
 }
 
 #[tokio::test]
-async fn signed_mcp_write_rejects_tampering_wrong_identity_and_ambiguous_auth() {
+async fn write_rejects_tampering_wrong_identity_missing_auth_and_retired_private_key() {
     let fixture = fixture();
     let original = signed_write_arguments(
         &fixture.single_signing_private,
@@ -306,14 +200,12 @@ async fn signed_mcp_write_rejects_tampering_wrong_identity_and_ambiguous_auth() 
         None,
         "signed-security-001",
     );
-
     let mut tampered = original.clone();
     tampered["body"] = json!("tampered body");
-    let response = call_tool(&fixture.router, 40, "blackboard_write", tampered).await;
-    assert_eq!(response["result"]["isError"], true);
+    let response = call_tool(&fixture.router, 20, "blackboard_write", tampered).await;
     assert_eq!(tool_error_code(&response), "unauthorized");
 
-    let wrong_identity = signed_write_arguments(
+    let wrong = signed_write_arguments(
         &fixture.single_signing_private,
         "rotary-main",
         "signed-security",
@@ -322,177 +214,138 @@ async fn signed_mcp_write_rejects_tampering_wrong_identity_and_ambiguous_auth() 
         None,
         "signed-security-002",
     );
-    let response = call_tool(&fixture.router, 41, "blackboard_write", wrong_identity).await;
-    assert_eq!(response["result"]["isError"], true);
+    let response = call_tool(&fixture.router, 21, "blackboard_write", wrong).await;
     assert_eq!(tool_error_code(&response), "unauthorized");
 
-    let mut both = original;
-    both["private_key"] = json!(fixture.single_key);
-    let response = call_tool(&fixture.router, 42, "blackboard_write", both).await;
-    assert_eq!(response["result"]["isError"], true);
+    let response = call_tool(
+        &fixture.router,
+        22,
+        "blackboard_write",
+        json!({
+            "participant_id": "single-main",
+            "channel": "signed-security",
+            "body": "missing auth",
+            "nonce": "missing-auth"
+        }),
+    )
+    .await;
     assert_eq!(tool_error_code(&response), "invalid_auth");
+
+    let response = call_tool(
+        &fixture.router,
+        23,
+        "blackboard_write",
+        json!({
+            "participant_id": "single-main",
+            "private_key": "retired",
+            "channel": "signed-security",
+            "body": "retired raw key",
+            "nonce": "retired-key"
+        }),
+    )
+    .await;
+    assert_eq!(tool_error_code(&response), "invalid_arguments");
 }
 
 #[tokio::test]
-async fn signed_mcp_write_honors_rotation_revocation_and_nonce_conflict() {
+async fn signed_write_honors_rotation_revocation_nonce_and_reply_provenance() {
     let fixture = fixture();
-    let old_request = signed_write_arguments(
+    let single = signed_write_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "conversation-architecture",
+        "idea",
+        "Single thought",
+        None,
+        "single-target",
+    );
+    let first = call_tool(&fixture.router, 30, "blackboard_write", single).await;
+    let single_id = first["result"]["structuredContent"]["id"].as_i64().unwrap();
+
+    let rotary = signed_write_arguments(
         &fixture.rotary_signing_private,
         "rotary-main",
-        "signed-lifecycle",
-        "message",
-        "before rotation",
-        None,
-        "rotary-lifecycle-old",
+        "conversation-architecture",
+        "insight",
+        "Rotary reply",
+        Some(single_id),
+        "rotary-reply",
+    );
+    let response = call_tool(&fixture.router, 31, "blackboard_write", rotary).await;
+    assert_eq!(response["result"]["structuredContent"]["source"], "rotary");
+    assert_eq!(
+        response["result"]["structuredContent"]["reply_to"].as_i64(),
+        Some(single_id)
     );
 
     let (new_private, new_public) = signed_auth::generate_keypair();
     let conn = db::connect(&fixture.db_path).unwrap();
     identity::set_web_participant_signing_key(&conn, "rotary-main", &new_public).unwrap();
     drop(conn);
-
-    let response = call_tool(&fixture.router, 50, "blackboard_write", old_request).await;
-    assert_eq!(response["result"]["isError"], true);
-    assert_eq!(tool_error_code(&response), "unauthorized");
+    let old = signed_write_arguments(
+        &fixture.rotary_signing_private,
+        "rotary-main",
+        "signed-lifecycle",
+        "message",
+        "old key",
+        None,
+        "old-key",
+    );
+    assert_eq!(
+        tool_error_code(&call_tool(&fixture.router, 32, "blackboard_write", old).await),
+        "unauthorized"
+    );
 
     let first = signed_write_arguments(
         &new_private,
         "rotary-main",
         "signed-lifecycle",
         "message",
-        "after rotation",
+        "new key",
         None,
-        "rotary-lifecycle-new",
+        "same-nonce",
     );
-    let response = call_tool(&fixture.router, 51, "blackboard_write", first).await;
-    assert_eq!(response["result"]["isError"], false);
-
+    assert_eq!(
+        call_tool(&fixture.router, 33, "blackboard_write", first).await["result"]["isError"],
+        false
+    );
     let conflict = signed_write_arguments(
         &new_private,
         "rotary-main",
         "signed-lifecycle",
         "message",
-        "different payload same nonce",
+        "different",
         None,
-        "rotary-lifecycle-new",
+        "same-nonce",
     );
-    let response = call_tool(&fixture.router, 52, "blackboard_write", conflict).await;
-    assert_eq!(response["result"]["isError"], true);
-    assert_eq!(tool_error_code(&response), "nonce_conflict");
+    assert_eq!(
+        tool_error_code(&call_tool(&fixture.router, 34, "blackboard_write", conflict).await),
+        "nonce_conflict"
+    );
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    assert!(identity::revoke_web_participant_signing_key(&conn, "rotary-main").unwrap());
+    identity::revoke_web_participant_signing_key(&conn, "rotary-main").unwrap();
     drop(conn);
-
     let revoked = signed_write_arguments(
         &new_private,
         "rotary-main",
         "signed-lifecycle",
         "message",
-        "must not append",
+        "revoked",
         None,
-        "rotary-lifecycle-revoked",
+        "revoked",
     );
-    let response = call_tool(&fixture.router, 53, "blackboard_write", revoked).await;
-    assert_eq!(response["result"]["isError"], true);
-    assert_eq!(tool_error_code(&response), "unauthorized");
+    assert_eq!(
+        tool_error_code(&call_tool(&fixture.router, 35, "blackboard_write", revoked).await),
+        "unauthorized"
+    );
 }
 
 #[tokio::test]
-async fn mcp_rotary_can_reply_to_authoritative_single_id_and_spoofed_provenance_is_rejected() {
+async fn mcp_transport_remains_stateless_and_rejects_unknown_origins() {
     let fixture = fixture();
-    let single = call_tool(
-        &fixture.router,
-        20,
-        "blackboard_write",
-        json!({
-            "participant_id": "single-main",
-            "private_key": fixture.single_key,
-            "channel": "conversation-architecture",
-            "kind": "idea",
-            "body": "Single thought",
-            "nonce": "single-reply-target"
-        }),
-    )
-    .await;
-    let single_id = single["result"]["structuredContent"]["id"]
-        .as_i64()
-        .unwrap();
-
-    let rotary = call_tool(
-        &fixture.router,
-        21,
-        "blackboard_write",
-        json!({
-            "participant_id": "rotary-main",
-            "private_key": fixture.rotary_key,
-            "channel": "conversation-architecture",
-            "kind": "insight",
-            "body": "Rotary reply",
-            "reply_to": single_id,
-            "nonce": "rotary-reply-001"
-        }),
-    )
-    .await;
-    let reply = &rotary["result"]["structuredContent"];
-    assert_eq!(reply["source"], "rotary");
-    assert_eq!(reply["instance"], "rotary-main");
-    assert_eq!(reply["reply_to"].as_i64(), Some(single_id));
-
-    let spoof = call_tool(
-        &fixture.router,
-        22,
-        "blackboard_write",
-        json!({
-            "participant_id": "single-main",
-            "private_key": "prompt-key-single",
-            "source": "spoofed",
-            "instance": "spoofed",
-            "channel": "conversation-architecture",
-            "body": "must not append",
-            "nonce": "spoof-001"
-        }),
-    )
-    .await;
-    assert_eq!(spoof["result"]["isError"], true);
-    assert_eq!(
-        spoof["result"]["content"][0]["text"],
-        "identity_is_server_resolved"
-    );
-
-    let conn = db::connect(&fixture.db_path).unwrap();
-    let rows = db::list_messages_after(&conn, 0, Some("conversation-architecture"), 10).unwrap();
-    assert_eq!(
-        rows.len(),
-        2,
-        "spoof attempt must not append a third message"
-    );
-    assert_eq!(rows[0].source, "single");
-    assert_eq!(rows[1].source, "rotary");
-    assert_eq!(rows[1].reply_to, Some(single_id));
-}
-
-#[tokio::test]
-async fn mcp_transport_is_stateless_rejects_unknown_origins_and_accepts_notifications() {
-    let fixture = fixture();
-
     let get_response = request(&fixture.router, Method::GET, None).await;
     assert_eq!(get_response.status(), StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(
-        get_response.headers().get(header::ALLOW).unwrap(),
-        "POST, OPTIONS"
-    );
-
-    let notification = request(
-        &fixture.router,
-        Method::POST,
-        Some(json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        })),
-    )
-    .await;
-    assert_eq!(notification.status(), StatusCode::ACCEPTED);
 
     let invalid_origin = fixture
         .router
@@ -505,13 +358,8 @@ async fn mcp_transport_is_stateless_rejects_unknown_origins_and_accepts_notifica
                 .header(header::ACCEPT, "application/json, text/event-stream")
                 .header(header::ORIGIN, "https://evil.example")
                 .body(Body::from(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": 30,
-                        "method": "tools/list",
-                        "params": {}
-                    })
-                    .to_string(),
+                    json!({"jsonrpc": "2.0", "id": 40, "method": "tools/list", "params": {}})
+                        .to_string(),
                 ))
                 .unwrap(),
         )

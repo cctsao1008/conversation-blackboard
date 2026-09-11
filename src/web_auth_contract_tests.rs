@@ -9,14 +9,14 @@ use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
-use crate::{db, http, identity, signed_auth, web_auth};
+use crate::{db, http, identity, web_auth};
 
 struct Fixture {
     _dir: TempDir,
     db_path: PathBuf,
     router: Router,
     participant_id: String,
-    private_key: String,
+    secret: String,
 }
 
 fn fixture() -> Fixture {
@@ -24,17 +24,16 @@ fn fixture() -> Fixture {
     let db_path = dir.path().join("board.db");
     db::initialize(&db_path).unwrap();
     let conn = db::connect(&db_path).unwrap();
-    identity::provision_web_participant(
+    identity::provision_web_participant_identity(
         &conn,
         "browser-main",
         "browser",
         Some("Browser participant"),
-        "legacy-browser-key",
     )
     .unwrap()
     .unwrap();
-    let (private_key, public_key) = signed_auth::generate_keypair();
-    identity::set_web_participant_signing_key(&conn, "browser-main", &public_key).unwrap();
+    let secret = web_auth::generate_totp_secret();
+    identity::set_web_participant_totp(&conn, "browser-main", &secret).unwrap();
     drop(conn);
 
     let router = http::app(http::AppState {
@@ -46,7 +45,7 @@ fn fixture() -> Fixture {
         db_path,
         router,
         participant_id: "browser-main".to_owned(),
-        private_key,
+        secret,
     }
 }
 
@@ -79,149 +78,120 @@ async fn json_request(
 }
 
 #[tokio::test]
-async fn browser_challenge_activates_local_signer_without_session() {
+async fn browser_totp_login_issues_session_for_normal_reads_and_writes() {
     let fixture = fixture();
-    let (status, challenge) = json_request(
+    let now = web_auth::current_unix_time();
+    let code = web_auth::totp_code_at(&fixture.secret, now, web_auth::TOTP_DIGITS).unwrap();
+    let (status, auth) = json_request(
         &fixture.router,
         Method::POST,
-        "/api/auth/challenge",
-        Some(json!({"participant_id": fixture.participant_id})),
+        "/api/auth/totp",
+        Some(json!({"participant_id": fixture.participant_id, "code": code})),
         &[],
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-
-    let challenge_text = challenge["challenge"].as_str().unwrap();
-    let expires_at = challenge["expires_at"].as_u64().unwrap();
-    let canonical = web_auth::canonical_browser_challenge_bytes(
-        &fixture.participant_id,
-        challenge_text,
-        expires_at,
-    );
-    let signature = signed_auth::sign_message_signature(&fixture.private_key, &canonical).unwrap();
-
-    let (status, identity) = json_request(
-        &fixture.router,
-        Method::POST,
-        "/api/auth/verify",
-        Some(json!({
-            "participant_id": fixture.participant_id,
-            "challenge": challenge_text,
-            "expires_at": expires_at,
-            "challenge_token": challenge["challenge_token"],
-            "auth": {
-                "scheme": signed_auth::SIGNATURE_SCHEME,
-                "signature": signature,
-            }
-        })),
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(identity["source"], "browser");
-    assert_eq!(identity["instance"], "browser-main");
-}
-
-#[tokio::test]
-async fn signed_browser_reads_bind_exact_request_target() {
-    let fixture = fixture();
-    let target = "/api/channels";
-    let canonical = web_auth::canonical_http_request_bytes(&fixture.participant_id, "GET", target);
-    let signature = signed_auth::sign_message_signature(&fixture.private_key, &canonical).unwrap();
-    let headers = [
-        (
-            "X-Blackboard-Participant-Id",
-            fixture.participant_id.clone(),
-        ),
-        (
-            "X-Blackboard-Signature-Scheme",
-            signed_auth::SIGNATURE_SCHEME.to_owned(),
-        ),
-        ("X-Blackboard-Signature", signature.clone()),
-    ];
-    let (status, _) = json_request(&fixture.router, Method::GET, target, None, &headers).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(auth["source"], "browser");
+    assert_eq!(auth["instance"], "browser-main");
+    let session = auth["session_token"].as_str().unwrap().to_owned();
+    let headers = [(web_auth::WEB_SESSION_HEADER, session)];
 
     let (status, _) = json_request(
         &fixture.router,
         Method::GET,
-        "/api/messages?channel=general&after=0&limit=10",
+        "/api/channels",
         None,
         &headers,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
+    assert_eq!(status, StatusCode::OK);
 
-#[tokio::test]
-async fn signed_browser_write_is_verified_and_idempotent() {
-    let fixture = fixture();
-    let participant_id = &fixture.participant_id;
-    let channel = "browser-signed";
-    let kind = "message";
-    let body = "signed in browser";
-    let nonce = "web-test-001";
-    let signature = signed_auth::sign_write(
-        &fixture.private_key,
-        participant_id,
-        channel,
-        kind,
-        body,
-        None,
-        nonce,
-    )
-    .unwrap();
-    let payload = json!({
-        "participant_id": participant_id,
-        "channel": channel,
-        "kind": kind,
-        "body": body,
-        "reply_to": null,
-        "nonce": nonce,
-        "auth": {
-            "scheme": signed_auth::SIGNATURE_SCHEME,
-            "signature": signature,
-        }
-    });
-
-    let (status, first) = json_request(
+    let (status, written) = json_request(
         &fixture.router,
         Method::POST,
         "/api/messages",
-        Some(payload.clone()),
-        &[],
+        Some(json!({
+            "channel": "human-web",
+            "kind": "message",
+            "body": "TOTP-authenticated human write",
+            "reply_to": null
+        })),
+        &headers,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(first["status"], "created");
-    assert_eq!(first["message"]["source"], "browser");
-    assert_eq!(first["message"]["instance"], "browser-main");
-    let id = first["message"]["id"].as_i64().unwrap();
-
-    let (status, replay) = json_request(
-        &fixture.router,
-        Method::POST,
-        "/api/messages",
-        Some(payload),
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(replay["status"], "existing");
-    assert_eq!(replay["message"]["id"].as_i64(), Some(id));
+    assert_eq!(written["message"]["instance"], "browser-main");
 
     let conn = db::connect(&fixture.db_path).unwrap();
-    let rows = db::list_messages_after(&conn, 0, Some(channel), 10).unwrap();
+    let rows = db::list_messages_after(&conn, 0, Some("human-web"), 10).unwrap();
     assert_eq!(rows.len(), 1);
 }
 
-#[test]
-fn browser_bundle_contains_private_key_only_inside_local_container() {
-    let bundle = web_auth::credential_bundle("browser-main", "ed25519-sk:test");
-    assert!(bundle.starts_with("bbcred-v1:"));
+#[tokio::test]
+async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone() {
+    let fixture = fixture();
+    let now = web_auth::current_unix_time();
+    let code = web_auth::totp_code_at(&fixture.secret, now, web_auth::TOTP_DIGITS).unwrap();
+    let body = json!({"participant_id": fixture.participant_id, "code": code});
+    let (first, _) = json_request(
+        &fixture.router,
+        Method::POST,
+        "/api/auth/totp",
+        Some(body.clone()),
+        &[],
+    )
+    .await;
+    assert_eq!(first, StatusCode::OK);
+    let (replay, _) = json_request(
+        &fixture.router,
+        Method::POST,
+        "/api/auth/totp",
+        Some(body),
+        &[],
+    )
+    .await;
+    assert_eq!(replay, StatusCode::UNAUTHORIZED);
+
+    let (old_challenge, _) = json_request(
+        &fixture.router,
+        Method::POST,
+        "/api/auth/challenge",
+        Some(json!({"participant_id": "browser-main"})),
+        &[],
+    )
+    .await;
+    assert_eq!(old_challenge, StatusCode::NOT_FOUND);
+
     let app = include_str!("../web/app.js");
-    assert!(!app.contains("X-Blackboard-Private-Key"));
-    assert!(!app.contains("state.privateKey"));
-    assert!(app.contains("crypto.subtle.sign"));
-    assert!(app.contains("crypto.subtle.importKey"));
+    assert!(!app.contains("bbcred-v1"));
+    assert!(!app.contains("crypto.subtle"));
+    assert!(!app.contains("private_key"));
+    assert!(app.contains("/api/auth/totp"));
+}
+
+#[tokio::test]
+async fn repeated_bad_codes_are_throttled_without_disclosing_participant_state() {
+    let fixture = fixture();
+    for _ in 0..web_auth::TOTP_MAX_FAILURES {
+        let (status, _) = json_request(
+            &fixture.router,
+            Method::POST,
+            "/api/auth/totp",
+            Some(json!({"participant_id": fixture.participant_id, "code": "000000"})),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let now = web_auth::current_unix_time();
+    let valid = web_auth::totp_code_at(&fixture.secret, now, web_auth::TOTP_DIGITS).unwrap();
+    let (status, _) = json_request(
+        &fixture.router,
+        Method::POST,
+        "/api/auth/totp",
+        Some(json!({"participant_id": fixture.participant_id, "code": valid})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

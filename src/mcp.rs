@@ -183,7 +183,7 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Read shared channels with blackboard_read. Use blackboard_write only when the user wants to append a thought as an approved Participant ID. Signed Ed25519 requests are preferred; legacy private-key writes remain temporarily available during migration. The server owns source/instance provenance. Use authoritative message IDs for reply_to; exact retries with the same nonce are idempotent."
+        "instructions": "Read shared channels with blackboard_read. Use blackboard_write only when the user wants to append a thought as an approved Participant ID. Participant writes require an ed25519-v1 signature over the canonical write request. The server owns source/instance provenance. Use authoritative message IDs for reply_to; exact retries with the same nonce are idempotent."
     }))
 }
 
@@ -230,7 +230,7 @@ fn tools_list_result() -> Value {
             {
                 "name": "blackboard_write",
                 "title": "Write Conversation Blackboard",
-                "description": "Append a thought as an approved participant. Prefer participant_id plus an ed25519-v1 signature over the canonical write request. Legacy participant_id plus private_key remains temporarily available during migration. The server resolves provenance; exact retries with the same nonce are idempotent.",
+                "description": "Append a thought as an approved participant using participant_id plus an ed25519-v1 signature over the canonical write request. The server resolves provenance; exact retries with the same nonce are idempotent.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -238,12 +238,6 @@ fn tools_list_result() -> Value {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 64
-                        },
-                        "private_key": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 256,
-                            "description": "Legacy compatibility credential. Do not combine with auth."
                         },
                         "auth": {
                             "type": "object",
@@ -291,7 +285,7 @@ fn tools_list_result() -> Value {
                             "description": "Unique retry token for this participant and payload."
                         }
                     },
-                    "required": ["participant_id", "channel", "body", "nonce"],
+                    "required": ["participant_id", "auth", "channel", "body", "nonce"],
                     "additionalProperties": false
                 },
                 "outputSchema": write_output_schema(),
@@ -451,7 +445,6 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         arguments,
         &[
             "participant_id",
-            "private_key",
             "auth",
             "channel",
             "kind",
@@ -580,71 +573,52 @@ async fn resolve_write_identity(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Result<Identity, &'static str> {
-    match (arguments.get("private_key"), arguments.get("auth")) {
-        (Some(private_key), None) => {
-            let private_key = private_key.as_str().ok_or("unauthorized")?;
-            if !identity::validate_private_key(private_key) {
-                return Err("unauthorized");
-            }
-            let lookup_participant = participant_id.to_owned();
-            let lookup_key = private_key.to_owned();
-            match with_db(state, move |conn| {
-                identity::resolve_web_participant(conn, &lookup_participant, &lookup_key)
-            })
-            .await
-            {
-                Ok(Some(writer)) => Ok(writer),
-                Ok(None) => Err("unauthorized"),
-                Err(()) => Err("database_unavailable"),
-            }
-        }
-        (None, Some(Value::Object(auth))) => {
-            if auth.len() != 2 || !only_keys(auth, &["scheme", "signature"]) {
-                return Err("invalid_auth");
-            }
-            let scheme = auth
-                .get("scheme")
-                .and_then(Value::as_str)
-                .ok_or("invalid_auth")?;
-            if scheme != signed_auth::SIGNATURE_SCHEME {
-                return Err("unsupported_signature_scheme");
-            }
-            let signature = auth
-                .get("signature")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty() && value.len() <= 128)
-                .ok_or("invalid_auth")?;
-
-            let lookup_participant = participant_id.to_owned();
-            let verification = match with_db(state, move |conn| {
-                identity::get_web_participant_verification(conn, &lookup_participant)
-            })
-            .await
-            {
-                Ok(Some(verification)) => verification,
-                Ok(None) => return Err("unauthorized"),
-                Err(()) => return Err("database_unavailable"),
-            };
-            if verification.signature_scheme != signed_auth::SIGNATURE_SCHEME {
-                return Err("unsupported_signature_scheme");
-            }
-            if !signed_auth::verify_write_signature(
-                &verification.public_key,
-                signature,
-                participant_id,
-                channel,
-                kind,
-                body,
-                reply_to,
-                nonce,
-            ) {
-                return Err("unauthorized");
-            }
-            Ok(verification.identity)
-        }
-        (None, Some(_)) => Err("invalid_auth"),
-        _ => Err("invalid_auth"),
+    let auth = arguments
+        .get("auth")
+        .and_then(Value::as_object)
+        .ok_or("invalid_auth")?;
+    if auth.len() != 2 || !only_keys(auth, &["scheme", "signature"]) {
+        return Err("invalid_auth");
     }
+    let scheme = auth
+        .get("scheme")
+        .and_then(Value::as_str)
+        .ok_or("invalid_auth")?;
+    if scheme != signed_auth::SIGNATURE_SCHEME {
+        return Err("unsupported_signature_scheme");
+    }
+    let signature = auth
+        .get("signature")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or("invalid_auth")?;
+
+    let lookup_participant = participant_id.to_owned();
+    let verification = match with_db(state, move |conn| {
+        identity::get_web_participant_verification(conn, &lookup_participant)
+    })
+    .await
+    {
+        Ok(Some(verification)) => verification,
+        Ok(None) => return Err("unauthorized"),
+        Err(()) => return Err("database_unavailable"),
+    };
+    if verification.signature_scheme != signed_auth::SIGNATURE_SCHEME {
+        return Err("unsupported_signature_scheme");
+    }
+    if !signed_auth::verify_write_signature(
+        &verification.public_key,
+        signature,
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+    ) {
+        return Err("unauthorized");
+    }
+    Ok(verification.identity)
 }
 
 async fn with_db<T, F>(state: &AppState, operation: F) -> Result<T, ()>

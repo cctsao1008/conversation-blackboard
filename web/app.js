@@ -6,7 +6,7 @@
 
   const state = {
     participantId: "",
-    signingKey: null,
+    sessionToken: "",
     identity: null,
     channel: localStorage.getItem("conversation-blackboard.channel") || "",
     channels: [],
@@ -18,165 +18,12 @@
     pollTimer: null,
   };
 
-  function base64urlDecode(value) {
-    const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
-  }
-
-  function base64urlEncode(value) {
-    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  }
-
-  function canonicalJson(value) {
-    if (value === null || typeof value !== "object") return JSON.stringify(value);
-    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-
-  function parseCredentialBundle(value) {
-    const prefix = "bbcred-v1:";
-    if (!value.startsWith(prefix)) throw new Error("Unsupported participant credential format.");
-    const decoded = new TextDecoder().decode(base64urlDecode(value.slice(prefix.length)));
-    const bundle = JSON.parse(decoded);
-    if (
-      bundle.version !== "bbcred-v1"
-      || typeof bundle.participant_id !== "string"
-      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(bundle.participant_id)
-      || typeof bundle.private_key !== "string"
-      || !bundle.private_key.startsWith("ed25519-sk:")
-    ) {
-      throw new Error("Invalid participant credential.");
-    }
-    return bundle;
-  }
-
-  function bytesStartWith(value, prefix, offset = 0) {
-    if (value.length < offset + prefix.length) return false;
-    for (let index = 0; index < prefix.length; index += 1) {
-      if (value[offset + index] !== prefix[index]) return false;
-    }
-    return true;
-  }
-
-  function normalizeEd25519Pkcs8ForWebCrypto(pkcs8) {
-    // ring::Ed25519KeyPair::generate_pkcs8() emits PKCS#8 v2 OneAsymmetricKey:
-    //   30 51 02 01 01 ... 04 22 04 20 <32-byte seed> 81 21 00 <32-byte public key>
-    // Some WebCrypto implementations accept only RFC 5208 PrivateKeyInfo v1:
-    //   30 2e 02 01 00 ... 04 22 04 20 <32-byte seed>
-    // The conversion is local serialization normalization only; key material is unchanged.
-    const v1Prefix = Uint8Array.of(
-      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
-      0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-    );
-    const ringV2Prefix = Uint8Array.of(
-      0x30, 0x51, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06,
-      0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
-    );
-    const ringV2PublicMarker = Uint8Array.of(0x81, 0x21, 0x00);
-
-    if (pkcs8.length === 48 && bytesStartWith(pkcs8, v1Prefix)) return pkcs8;
-
-    if (
-      pkcs8.length === 83
-      && bytesStartWith(pkcs8, ringV2Prefix)
-      && bytesStartWith(pkcs8, ringV2PublicMarker, 48)
-    ) {
-      const normalized = new Uint8Array(48);
-      normalized.set(v1Prefix, 0);
-      normalized.set(pkcs8.slice(16, 48), 16);
-      return normalized;
-    }
-
-    return pkcs8;
-  }
-
-  async function importSigningKey(privateKey) {
-    const encoded = privateKey.slice("ed25519-sk:".length);
-    const pkcs8 = base64urlDecode(encoded);
-
-    try {
-      return await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
-    } catch (originalError) {
-      const normalized = normalizeEd25519Pkcs8ForWebCrypto(pkcs8);
-      if (normalized === pkcs8) throw originalError;
-      try {
-        return await crypto.subtle.importKey(
-          "pkcs8",
-          normalized,
-          { name: "Ed25519" },
-          false,
-          ["sign"],
-        );
-      } catch (_) {
-        throw new Error("Browser could not import this Ed25519 participant credential.");
-      }
-    }
-  }
-
-  async function signObject(signingKey, value) {
-    const bytes = new TextEncoder().encode(canonicalJson(value));
-    const signature = await crypto.subtle.sign({ name: "Ed25519" }, signingKey, bytes);
-    return base64urlEncode(signature);
-  }
-
-  async function signedReadHeaders(method, requestTarget) {
-    const signature = await signObject(state.signingKey, {
-      method,
-      participant_id: state.participantId,
-      purpose: "http-request-auth-v1",
-      request_target: requestTarget,
-      signature_version: "ed25519-v1",
-    });
-    return {
-      "X-Blackboard-Participant-Id": state.participantId,
-      "X-Blackboard-Signature-Scheme": "ed25519-v1",
-      "X-Blackboard-Signature": signature,
-    };
-  }
-
-  async function signedWriteEnvelope(channel, kind, body, replyTo) {
-    const nonce = `web-${crypto.randomUUID()}`;
-    const payload = {
-      signature_version: "ed25519-v1",
-      participant_id: state.participantId,
-      channel,
-      kind,
-      body,
-      reply_to: replyTo,
-      nonce,
-    };
-    const signature = await signObject(state.signingKey, payload);
-    return {
-      participant_id: state.participantId,
-      channel,
-      kind,
-      body,
-      reply_to: replyTo,
-      nonce,
-      auth: {
-        scheme: "ed25519-v1",
-        signature,
-      },
-    };
-  }
-
   async function api(path, options = {}) {
-    const { skipRequestAuth = false, ...fetchOptions } = options;
-    const method = (fetchOptions.method || "GET").toUpperCase();
+    const { skipSession = false, ...fetchOptions } = options;
     const headers = new Headers(fetchOptions.headers || {});
     headers.set("Accept", "application/json");
-    if (!skipRequestAuth && method === "GET" && state.participantId && state.signingKey) {
-      const authHeaders = await signedReadHeaders(method, path);
-      for (const [name, value] of Object.entries(authHeaders)) headers.set(name, value);
+    if (!skipSession && state.sessionToken) {
+      headers.set("X-Blackboard-Web-Session", state.sessionToken);
     }
     if (fetchOptions.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
@@ -208,56 +55,37 @@
 
   async function connect() {
     $("connect-error").textContent = "";
-    const credential = $("participant-credential").value.trim();
-    if (!credential) {
-      $("connect-error").textContent = "Enter a participant credential.";
+    const participantId = $("participant-id").value.trim();
+    const code = $("totp-code").value.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(participantId)) {
+      $("connect-error").textContent = "Enter a valid participant ID.";
+      return;
+    }
+    if (!/^\d{6}$/.test(code)) {
+      $("connect-error").textContent = "Enter the current 6-digit authenticator code.";
       return;
     }
 
     try {
-      const bundle = parseCredentialBundle(credential);
-      const signingKey = await importSigningKey(bundle.private_key);
-      const challenge = await api("/api/auth/challenge", {
+      const auth = await api("/api/auth/totp", {
         method: "POST",
-        body: JSON.stringify({ participant_id: bundle.participant_id }),
-        skipRequestAuth: true,
+        body: JSON.stringify({ participant_id: participantId, code }),
+        skipSession: true,
       });
-      const signature = await signObject(signingKey, {
-        challenge: challenge.challenge,
-        expires_at: challenge.expires_at,
-        participant_id: bundle.participant_id,
-        purpose: "browser-connect-v1",
-        signature_version: "ed25519-v1",
-      });
-      const identity = await api("/api/auth/verify", {
-        method: "POST",
-        body: JSON.stringify({
-          participant_id: bundle.participant_id,
-          challenge: challenge.challenge,
-          expires_at: challenge.expires_at,
-          challenge_token: challenge.challenge_token,
-          auth: {
-            scheme: "ed25519-v1",
-            signature,
-          },
-        }),
-        skipRequestAuth: true,
-      });
-
-      state.participantId = bundle.participant_id;
-      state.signingKey = signingKey;
-      state.identity = identity;
+      state.participantId = auth.instance;
+      state.sessionToken = auth.session_token;
+      state.identity = auth;
       $("identity").textContent = identityText(state.identity);
-      $("participant-credential").value = "";
+      $("totp-code").value = "";
       setConnected(true);
       await loadChannels();
       startPolling();
     } catch (error) {
       state.participantId = "";
-      state.signingKey = null;
+      state.sessionToken = "";
       state.identity = null;
       $("connect-error").textContent = error.status === 401
-        ? "Participant credential was not accepted."
+        ? "Participant or authenticator code was not accepted."
         : (error.message || "Could not connect.");
     }
   }
@@ -445,7 +273,7 @@
   }
 
   async function poll() {
-    if (!state.signingKey || !state.channel || !state.followLatest) return;
+    if (!state.sessionToken || !state.channel || !state.followLatest) return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
       for (const message of data.messages) appendMessage(message);
@@ -608,16 +436,14 @@
     $("send").disabled = true;
     $("status").textContent = "Posting…";
     try {
-      const payload = await signedWriteEnvelope(
-        state.channel,
-        $("kind").value,
-        body,
-        state.replyTo ? state.replyTo.id : null,
-      );
       const data = await api("/api/messages", {
         method: "POST",
-        body: JSON.stringify(payload),
-        skipRequestAuth: true,
+        body: JSON.stringify({
+          channel: state.channel,
+          kind: $("kind").value,
+          body,
+          reply_to: state.replyTo ? state.replyTo.id : null,
+        }),
       });
       $("body").value = "";
       state.replyTo = null;
@@ -652,7 +478,7 @@
 
   function disconnect(message) {
     state.participantId = "";
-    state.signingKey = null;
+    state.sessionToken = "";
     state.identity = null;
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = null;
@@ -662,7 +488,10 @@
   }
 
   $("connect").addEventListener("click", connect);
-  $("participant-credential").addEventListener("keydown", (event) => {
+  $("participant-id").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") $("totp-code").focus();
+  });
+  $("totp-code").addEventListener("keydown", (event) => {
     if (event.key === "Enter") connect();
   });
   $("composer").addEventListener("submit", postMessage);

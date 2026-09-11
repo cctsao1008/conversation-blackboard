@@ -35,6 +35,7 @@ pub fn initialize(path: &Path) -> Result<()> {
     let conn = connect(path)?;
     conn.execute_batch(SCHEMA)?;
     migrate_web_participant_signing_columns(&conn)?;
+    migrate_web_participant_totp_columns(&conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_participants_public_key\n         ON web_participants(public_key)\n         WHERE public_key IS NOT NULL",
         [],
@@ -54,6 +55,23 @@ fn migrate_web_participant_signing_columns(conn: &Connection) -> Result<()> {
             "ALTER TABLE web_participants ADD COLUMN signature_scheme TEXT",
             [],
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_web_participant_totp_columns(conn: &Connection) -> Result<()> {
+    for (name, definition) in [
+        ("totp_secret", "TEXT"),
+        ("totp_last_step", "INTEGER"),
+        ("totp_fail_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("totp_locked_until", "INTEGER"),
+    ] {
+        if !table_has_column(conn, "web_participants", name)? {
+            conn.execute(
+                &format!("ALTER TABLE web_participants ADD COLUMN {name} {definition}"),
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -243,6 +261,10 @@ mod tests {
         let conn = connect(&path).unwrap();
         assert!(table_has_column(&conn, "web_participants", "public_key").unwrap());
         assert!(table_has_column(&conn, "web_participants", "signature_scheme").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "totp_secret").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "totp_last_step").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "totp_fail_count").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "totp_locked_until").unwrap());
     }
 
     #[test]

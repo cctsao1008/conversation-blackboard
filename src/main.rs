@@ -55,7 +55,7 @@ enum Command {
         #[command(subcommand)]
         command: participant_admin::ParticipantCommand,
     },
-    /// Provision, rotate, or revoke web Participant IDs and prompt-held keys.
+    /// Manage participant identities, human TOTP login, and agent signing keys.
     Web {
         #[command(subcommand)]
         command: web_admin::WebCommand,
