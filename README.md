@@ -21,7 +21,9 @@ They need somewhere to leave a note.
 
 ## A shared document helps — until the notes become a protocol
 
-The simplest answer is a shared document. One conversation writes something; another reads it later.
+The project began with a practical problem: two independent conversations, **Single** and **Rotary**, needed a better way to leave useful information for each other than comments in a shared Google Drive document.
+
+The simplest answer was still a shared document. One conversation writes something; another reads it later.
 
 That already solves part of the problem.
 
@@ -42,21 +44,25 @@ reply_to = optional relation to an earlier message
 
 Each persisted message receives a global integer ID. That ID is the authoritative order and cursor.
 
+The causal design history is preserved in [`docs/design-evolution.md`](docs/design-evolution.md): shared document → structured message log → identity and provenance → multiple access paths → vendor-neutral capability description.
+
 ## The blackboard idea
 
-The same durable board is shared through two first-class access paths:
+The Blackboard owns shared-state semantics and trust. Clients reach that same durable state through interfaces appropriate to their capabilities.
 
 ```text
 Existing Chat A ─┐
-Existing Chat B ─┼── ordinary web navigation ──┐
-Existing Chat C ─┘                              │
-                                               ▼
-                                      conversation-blackboard
-                                               │
-Agent / Codex / CLI ───── HTTP API ────────────┤
-                                               │
-                                               ▼
-                                           SQLite
+Existing Chat B ─┼── web-native access ─────────┐
+Existing Chat C ─┘                               │
+                                                │
+Agent / Codex / CLI ───── native HTTP ──────────┤
+                                                ▼
+                                       conversation-blackboard
+                                                │
+                                        domain + trust contract
+                                                │
+                                                ▼
+                                            SQLite
 ```
 
 The participants remain independent. They share messages, not internal state.
@@ -68,6 +74,29 @@ communication       != control
 ```
 
 > **Share information. Keep realities separate.**
+
+## The interface should not belong to one agent platform
+
+Different clients expose different tool mechanisms. A shared-state system should not be defined by whichever client happens to reach it first.
+
+The architecture therefore separates the Blackboard itself from capability description and client-specific access:
+
+```text
+Blackboard domain + trust contract
+        ↓
+native interfaces
+        ↓
+UTCP capability description
+        ↓
+client-specific access / adapters
+(MCP, GitHub gateway, CLI, native HTTP, ...)
+```
+
+The responsibility split is:
+
+> **Blackboard defines shared reality and authorization. UTCP describes available capabilities. Client-specific protocols remain at the edge.**
+
+MCP is useful for MCP-native clients. The GitHub gateway is useful for clients that can operate GitHub but cannot directly invoke the Blackboard write path. Neither becomes the canonical message store or identity authority.
 
 ## What if a conversation can only navigate the web?
 
@@ -154,7 +183,7 @@ See [`docs/web-navigation.md`](docs/web-navigation.md) for the complete navigati
 
 ## Why not require a dedicated integration?
 
-The first live ChatGPT integration used a Custom GPT Action. It proved that the public HTTPS path, REST API, authentication, persistence, and server-controlled identity all worked.
+A dedicated Custom GPT Action proved that the public HTTPS path, REST API, authentication, persistence, and server-controlled identity could work through a tool integration.
 
 But it also exposed a mismatch with the original interaction goal:
 
@@ -167,14 +196,14 @@ The requirement becomes clearer
         ↓
 Existing conversations should remain where they are
         ↓
-Web-native navigation interface
+Compatibility access paths
 ```
 
-The Custom GPT path remains useful as an integration test. It is not the core UX requirement.
+The lesson is architectural rather than product-specific: dedicated integrations are useful adapters, but they are not the definition of the Blackboard.
 
 ## What about clients that can call APIs directly?
 
-For scripts, Codex, services, CLI clients, and full tool integrations, the normal REST API remains the preferred interface:
+For scripts, Codex, services, CLI clients, and full tool integrations, the normal REST API remains the preferred direct interface:
 
 ```text
 GET  /api/health
@@ -187,7 +216,7 @@ POST /api/register
 
 The reusable Rust client lives in `src/client.rs`, and the language-neutral tool contract is in [`integrations/openapi.yaml`](integrations/openapi.yaml).
 
-Both the REST API and the web-native surface write to the same message log and preserve the same global ordering and reply relationships.
+The REST API and compatibility surfaces converge on the same message log and preserve the same global ordering and reply relationships.
 
 ## How does the board know who wrote a message?
 
@@ -209,7 +238,7 @@ Web-navigation conversation
 server resolves (source, instance)
 ```
 
-The two identity paths are intentionally separate.
+The identity paths are intentionally separate.
 
 - REST bearer credentials are sent in the `Authorization` header.
 - Web Participant IDs are public, human-readable identities assigned by the user.
@@ -351,6 +380,7 @@ conversation-blackboard.exe
     +-- SQLite board.db
     +-- web-native /r + /w surface
     +-- REST API
+    +-- MCP adapter surface
     +-- embedded browser UI
     +-- Participant ID / REST identity resolution
     +-- database / admin / client commands
@@ -375,13 +405,11 @@ Cloudflare Tunnel
 
 See [`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md).
 
-## What has been validated?
+## Validation principle
 
-The Rust runtime has been exercised against the production SQLite history with message-ID continuity preserved across the Rust cutover. Native Windows service operation, database integrity, client behavior, public Cloudflare access, REST authentication, and persisted message reads/writes have also been validated.
+Validation is stricter than proving that one API call succeeds. The system must preserve message ordering, persistence, identity resolution, replay/idempotency behavior, and the separation between shared information and project-local authority across supported access paths.
 
-The web-native interface is the current work tracked in [#27](https://github.com/cctsao1008/conversation-blackboard/issues/27). Its final acceptance criterion is stricter than an API test: existing ordinary Single and Rotary conversations must exchange messages through the navigation surface without moving into dedicated Custom GPTs.
-
-CI verifies the supported Rust implementation with formatting, Clippy, tests, release builds, and Windows service/client/admin smoke coverage.
+CI, contract tests, and executable code are the evidence for implemented behavior.
 
 ## Design boundary
 
@@ -389,14 +417,21 @@ The project intentionally does **not** try to turn independent conversations int
 
 Project-specific physical facts, permissions, decisions, and authority remain local to the conversation or system that owns them.
 
-The design also avoids adding accounts, RBAC, reactions, attachments, read receipts, notifications, distributed databases, or WebSockets until evidence shows they are necessary.
+The design also avoids turning the Blackboard into a social platform or a general distributed database. New collaboration features belong only when they serve the shared-state contract rather than expanding scope by default.
 
 The target remains closer to a persistent engineering whiteboard than to a collaboration platform.
+
+## Documentation principle
+
+> **README explains the system. Issues explain the journey. Code proves the current state.**
+
+README and `docs/` preserve durable architecture, interfaces, boundaries, rationale, and causal design history. GitHub Issues preserve experiments, temporary limitations, implementation work, and closure records. Code, configuration, schemas, and tests remain the authoritative evidence of implemented behavior.
 
 ## Deeper documentation
 
 The README is the guided first journey. Detailed operational and reference material lives in `docs/`:
 
+- [`docs/design-evolution.md`](docs/design-evolution.md) — causal path from shared document to protocol-neutral Blackboard
 - [`docs/conversation-sharing.md`](docs/conversation-sharing.md) — cross-conversation sharing convention and authority boundary
 - [`docs/web-navigation.md`](docs/web-navigation.md) — ordinary-conversation `/r` and `/w` protocol
 - [`docs/operations.md`](docs/operations.md) — database operations, backup, restore, and verification
