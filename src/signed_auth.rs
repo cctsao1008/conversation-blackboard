@@ -153,6 +153,31 @@ mod tests {
     }
 
     #[test]
+    fn generated_pkcs8_shape_matches_browser_normalizer_contract() {
+        let (private_key, public_key) = generate_keypair();
+        let pkcs8 = decode_prefixed(&private_key, PRIVATE_KEY_PREFIX).unwrap();
+        let public = decode_public_key(&public_key).unwrap();
+
+        let expected_v2_prefix = [
+            0x30, 0x51, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+            0x04, 0x22, 0x04, 0x20,
+        ];
+        assert_eq!(pkcs8.len(), 83);
+        assert_eq!(&pkcs8[..16], &expected_v2_prefix);
+        assert_eq!(&pkcs8[48..51], &[0x81, 0x21, 0x00]);
+        assert_eq!(&pkcs8[51..83], public.as_slice());
+
+        let expected_v1_prefix = [
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
+            0x04, 0x22, 0x04, 0x20,
+        ];
+        let mut browser_pkcs8 = Vec::with_capacity(48);
+        browser_pkcs8.extend_from_slice(&expected_v1_prefix);
+        browser_pkcs8.extend_from_slice(&pkcs8[16..48]);
+        assert_eq!(browser_pkcs8.len(), 48);
+    }
+
+    #[test]
     fn signature_binds_every_persisted_write_field() {
         let (private_key, public_key) = generate_keypair();
         let signature = sign_write(
