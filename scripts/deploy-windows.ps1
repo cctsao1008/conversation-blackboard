@@ -147,6 +147,7 @@ if ($manifest.commit -ne $head) {
     throw "Release binary was verified for commit $($manifest.commit), but current HEAD is $head. Run scripts\verify-release.ps1 again."
 }
 $sourceHash = (Get-FileHash -LiteralPath $sourceExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$sourceFingerprint = $sourceHash.Substring(0, 16).ToUpperInvariant()
 if ($manifest.sha256 -ne $sourceHash) {
     throw "Release binary hash no longer matches the verified manifest. Run scripts\verify-release.ps1 again."
 }
@@ -195,7 +196,7 @@ Write-Host "DISCOVERED PRODUCTION CONFIGURATION"
 Write-Host "Repository    : $repoRoot"
 Write-Host "HEAD          : $head"
 Write-Host "Source EXE    : $sourceExe"
-Write-Host "Source SHA256 : $sourceHash"
+Write-Host "SHA256-64     : $sourceFingerprint"
 Write-Host "Service       : $ServiceName"
 Write-Host "Service state : $($serviceConfig.State)"
 Write-Host "Production EXE: $productionExe"
@@ -294,7 +295,7 @@ catch {
 Write-Host ""
 Write-Host "DEPLOYMENT PASSED"
 Write-Host "HEAD          : $head"
-Write-Host "SHA256        : $sourceHash"
+Write-Host "SHA256-64     : $sourceFingerprint"
 Write-Host "Database      : $database"
 Write-Host "DB backup     : $databaseBackup"
 Write-Host "Binary backup : $binaryBackup"
