@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
-use crate::{db, http::AppState, identity, mcp};
+use crate::{db, http::AppState, identity, mcp, signed_auth};
 
 struct Fixture {
     _dir: TempDir,
@@ -18,6 +18,8 @@ struct Fixture {
     router: Router,
     single_key: String,
     rotary_key: String,
+    single_signing_private: String,
+    rotary_signing_private: String,
 }
 
 fn fixture() -> Fixture {
@@ -45,6 +47,13 @@ fn fixture() -> Fixture {
     )
     .unwrap()
     .unwrap();
+
+    let (single_signing_private, single_signing_public) = signed_auth::generate_keypair();
+    let (rotary_signing_private, rotary_signing_public) = signed_auth::generate_keypair();
+    identity::set_web_participant_signing_key(&conn, "single-main", &single_signing_public)
+        .unwrap();
+    identity::set_web_participant_signing_key(&conn, "rotary-main", &rotary_signing_public)
+        .unwrap();
     drop(conn);
 
     let router = mcp::app(AppState {
@@ -58,7 +67,42 @@ fn fixture() -> Fixture {
         router,
         single_key,
         rotary_key,
+        single_signing_private,
+        rotary_signing_private,
     }
+}
+
+fn signed_write_arguments(
+    private_key: &str,
+    participant_id: &str,
+    channel: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<i64>,
+    nonce: &str,
+) -> Value {
+    let signature = signed_auth::sign_write(
+        private_key,
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+    )
+    .unwrap();
+    json!({
+        "participant_id": participant_id,
+        "channel": channel,
+        "kind": kind,
+        "body": body,
+        "reply_to": reply_to,
+        "nonce": nonce,
+        "auth": {
+            "scheme": signed_auth::SIGNATURE_SCHEME,
+            "signature": signature
+        }
+    })
 }
 
 async fn request(router: &Router, method: Method, body: Option<Value>) -> Response {
@@ -104,6 +148,10 @@ async fn call_tool(router: &Router, id: i64, name: &str, arguments: Value) -> Va
     let (status, value) = response_json(response).await;
     assert_eq!(status, StatusCode::OK);
     value
+}
+
+fn tool_error_code(value: &Value) -> &str {
+    value["result"]["content"][0]["text"].as_str().unwrap()
 }
 
 #[tokio::test]
@@ -162,10 +210,12 @@ async fn mcp_initializes_and_advertises_exactly_two_focused_tools() {
     assert_eq!(tools[1]["annotations"]["destructiveHint"], false);
     assert_eq!(tools[1]["annotations"]["idempotentHint"], true);
     assert_eq!(tools[1]["annotations"]["openWorldHint"], true);
+    assert!(tools[1]["inputSchema"]["properties"]["auth"].is_object());
+    assert!(tools[1]["inputSchema"]["properties"]["private_key"].is_object());
 }
 
 #[tokio::test]
-async fn mcp_write_preserves_server_provenance_and_nonce_idempotency_then_read_returns_it() {
+async fn legacy_mcp_write_remains_compatible_during_dual_stack_migration() {
     let fixture = fixture();
     let arguments = json!({
         "participant_id": "single-main",
@@ -211,6 +261,144 @@ async fn mcp_write_preserves_server_provenance_and_nonce_idempotency_then_read_r
     assert_eq!(data["messages"][0]["id"].as_i64(), Some(message_id));
     assert_eq!(data["messages"][0]["source"], "single");
     assert_eq!(data["messages"][0]["instance"], "single-main");
+}
+
+#[tokio::test]
+async fn signed_mcp_write_is_verified_by_blackboard_and_is_idempotent() {
+    let fixture = fixture();
+    let arguments = signed_write_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "signed-architecture",
+        "insight",
+        "Private key stays with participant.",
+        None,
+        "signed-single-001",
+    );
+
+    let first = call_tool(&fixture.router, 30, "blackboard_write", arguments.clone()).await;
+    assert_eq!(first["result"]["isError"], false);
+    let created = &first["result"]["structuredContent"];
+    assert_eq!(created["status"], "created");
+    assert_eq!(created["source"], "single");
+    assert_eq!(created["participant_id"], "single-main");
+    assert_eq!(created["instance"], "single-main");
+    let message_id = created["id"].as_i64().unwrap();
+
+    let replay = call_tool(&fixture.router, 31, "blackboard_write", arguments).await;
+    assert_eq!(replay["result"]["isError"], false);
+    assert_eq!(
+        replay["result"]["structuredContent"]["status"],
+        "existing"
+    );
+    assert_eq!(
+        replay["result"]["structuredContent"]["id"].as_i64(),
+        Some(message_id)
+    );
+}
+
+#[tokio::test]
+async fn signed_mcp_write_rejects_tampering_wrong_identity_and_ambiguous_auth() {
+    let fixture = fixture();
+    let original = signed_write_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "signed-security",
+        "message",
+        "original body",
+        None,
+        "signed-security-001",
+    );
+
+    let mut tampered = original.clone();
+    tampered["body"] = json!("tampered body");
+    let response = call_tool(&fixture.router, 40, "blackboard_write", tampered).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "unauthorized");
+
+    let wrong_identity = signed_write_arguments(
+        &fixture.single_signing_private,
+        "rotary-main",
+        "signed-security",
+        "message",
+        "wrong signer",
+        None,
+        "signed-security-002",
+    );
+    let response = call_tool(&fixture.router, 41, "blackboard_write", wrong_identity).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "unauthorized");
+
+    let mut both = original;
+    both["private_key"] = json!(fixture.single_key);
+    let response = call_tool(&fixture.router, 42, "blackboard_write", both).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "invalid_auth");
+}
+
+#[tokio::test]
+async fn signed_mcp_write_honors_rotation_revocation_and_nonce_conflict() {
+    let fixture = fixture();
+    let old_request = signed_write_arguments(
+        &fixture.rotary_signing_private,
+        "rotary-main",
+        "signed-lifecycle",
+        "message",
+        "before rotation",
+        None,
+        "rotary-lifecycle-old",
+    );
+
+    let (new_private, new_public) = signed_auth::generate_keypair();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_signing_key(&conn, "rotary-main", &new_public).unwrap();
+    drop(conn);
+
+    let response = call_tool(&fixture.router, 50, "blackboard_write", old_request).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "unauthorized");
+
+    let first = signed_write_arguments(
+        &new_private,
+        "rotary-main",
+        "signed-lifecycle",
+        "message",
+        "after rotation",
+        None,
+        "rotary-lifecycle-new",
+    );
+    let response = call_tool(&fixture.router, 51, "blackboard_write", first).await;
+    assert_eq!(response["result"]["isError"], false);
+
+    let conflict = signed_write_arguments(
+        &new_private,
+        "rotary-main",
+        "signed-lifecycle",
+        "message",
+        "different payload same nonce",
+        None,
+        "rotary-lifecycle-new",
+    );
+    let response = call_tool(&fixture.router, 52, "blackboard_write", conflict).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "nonce_conflict");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    assert!(identity::revoke_web_participant_signing_key(&conn, "rotary-main").unwrap());
+    drop(conn);
+
+    let revoked = signed_write_arguments(
+        &new_private,
+        "rotary-main",
+        "signed-lifecycle",
+        "message",
+        "must not append",
+        None,
+        "rotary-lifecycle-revoked",
+    );
+    let response = call_tool(&fixture.router, 53, "blackboard_write", revoked).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(tool_error_code(&response), "unauthorized");
 }
 
 #[tokio::test]
