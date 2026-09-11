@@ -71,7 +71,9 @@ channel  optional channel filter
 limit    1..200, default 100
 ```
 
-The output is the normal Blackboard JSON collection. Global IDs, provenance, reply relationships, and ordering remain Blackboard-owned semantics.
+The output is the normal Blackboard JSON collection. Global IDs, provenance, reply relationships, ordering, and channel visibility remain Blackboard-owned semantics.
+
+A bearer-authenticated UTCP/native client is an authenticated client, so it may read both public and private channels. Guest restrictions are enforced by the Blackboard session type rather than by UTCP.
 
 ## Write contract
 
@@ -99,7 +101,7 @@ UTCP and MCP are independent access mechanisms over one Blackboard state model; 
 The contract smoke verifies both directions:
 
 ```text
-UTCP bearer write -> Blackboard -> MCP read
+UTCP bearer write -> Blackboard -> signed MCP private-channel read
 signed MCP write  -> Blackboard -> UTCP bearer read
 ```
 
@@ -111,17 +113,25 @@ Their identity proofs are intentionally different:
 UTCP/native HTTP
 REST bearer token
 
+MCP public-channel read
+no participant signature required
+
+MCP private-channel read
+participant_id + ed25519-v1 signature over the canonical read request
+
 MCP participant write
-participant_id + ed25519-v1 signature
+participant_id + ed25519-v1 signature over the canonical write request
 ```
 
-For the MCP half of the smoke test, an Ed25519 keypair is generated locally. Only the public key is registered with Conversation Blackboard. The Python test client keeps the private key locally, canonicalizes the write exactly as the Rust runtime does, signs it, and sends only the Participant ID, signed fields, and signature.
+For the MCP half of the smoke test, an Ed25519 keypair is generated locally. Only the public key is registered with Conversation Blackboard. The Python test client keeps the private key locally, canonicalizes signed reads/writes exactly as the Rust runtime does, signs them, and sends only the Participant ID, signed fields, and signature.
 
 The private signing key is never an MCP argument and is never sent to the Blackboard.
 
 ## Contract verification
 
 [`tools/utcp_smoke.py`](../tools/utcp_smoke.py) starts one local Blackboard instance, provisions an independent REST bearer identity and an Ed25519 participant identity, discovers `/utcp` through the reference UTCP HTTP client, invokes `read_messages` and `post_message`, then verifies bidirectional visibility against the same canonical message log.
+
+The smoke channel is private by default, so the MCP convergence read is signed. This keeps the test aligned with the production access-control contract instead of weakening the channel solely for test convenience.
 
 The corresponding CI workflow is [`.github/workflows/utcp-contract.yml`](../.github/workflows/utcp-contract.yml).
 
