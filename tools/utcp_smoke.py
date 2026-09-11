@@ -155,6 +155,34 @@ def sign_write(
     return base64url_encode_unpadded(signature)
 
 
+def sign_read(
+    private_key: str,
+    participant_id: str,
+    channel: str,
+    after: int,
+    limit: int,
+) -> str:
+    key = Ed25519PrivateKey.from_private_bytes(ring_private_seed(private_key))
+    payload = {
+        "after": after,
+        "channel": channel,
+        "limit": limit,
+        "participant_id": participant_id,
+        "purpose": "blackboard-read-v1",
+        "signature_version": SIGNATURE_SCHEME,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    signature = key.sign(canonical)
+    if len(signature) != 64:
+        raise RuntimeError("unexpected Ed25519 signature length")
+    return base64url_encode_unpadded(signature)
+
+
 async def exercise_interfaces(
     base_url: str,
     bearer: str,
@@ -203,11 +231,20 @@ async def exercise_interfaces(
     assert utcp_message["body"] == "hello from UTCP", utcp_message
 
     # The independent MCP adapter must observe the exact same persisted message.
+    read_signature = sign_read(
+        private_key, participant_id, "utcp-ci", 0, 20
+    )
     mcp_observed = mcp_call(
         base_url,
         1,
         "blackboard_read",
-        {"channel": "utcp-ci", "after": 0, "limit": 20},
+        {
+            "participant_id": participant_id,
+            "auth": {"scheme": SIGNATURE_SCHEME, "signature": read_signature},
+            "channel": "utcp-ci",
+            "after": 0,
+            "limit": 20,
+        },
     )
     assert mcp_observed["count"] == 1, mcp_observed
     assert mcp_observed["messages"][0]["id"] == utcp_message["id"], mcp_observed

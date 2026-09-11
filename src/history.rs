@@ -67,30 +67,32 @@ async fn message_window(
         .unwrap_or_else(|| uri.path())
         .to_owned();
 
-    let result = tokio::task::spawn_blocking(move || -> SqlResult<Result<(Vec<Message>, bool), WindowAccessError>> {
-        let conn = db::connect(&db_path)?;
-        if guest {
-            if !db::channel_is_public_active(&conn, &channel)? {
-                return Ok(Err(WindowAccessError::Forbidden));
+    let result = tokio::task::spawn_blocking(
+        move || -> SqlResult<Result<(Vec<Message>, bool), WindowAccessError>> {
+            let conn = db::connect(&db_path)?;
+            if guest {
+                if !db::channel_is_public_active(&conn, &channel)? {
+                    return Ok(Err(WindowAccessError::Forbidden));
+                }
+            } else if request_auth::resolve_request_identity_for_target(
+                &conn,
+                &auth_headers,
+                "GET",
+                &request_target,
+            )?
+            .is_none()
+            {
+                return Ok(Err(WindowAccessError::Unauthorized));
             }
-        } else if request_auth::resolve_request_identity_for_target(
-            &conn,
-            &auth_headers,
-            "GET",
-            &request_target,
-        )?
-        .is_none()
-        {
-            return Ok(Err(WindowAccessError::Unauthorized));
-        }
 
-        let rows = list_message_window(&conn, &channel, before, limit)?;
-        let has_older = match rows.first() {
-            Some(first) => has_message_before(&conn, &channel, first.id)?,
-            None => false,
-        };
-        Ok(Ok((rows, has_older)))
-    })
+            let rows = list_message_window(&conn, &channel, before, limit)?;
+            let has_older = match rows.first() {
+                Some(first) => has_message_before(&conn, &channel, first.id)?,
+                None => false,
+            };
+            Ok(Ok((rows, has_older)))
+        },
+    )
     .await;
 
     match result {
@@ -102,9 +104,7 @@ async fn message_window(
         Ok(Ok(Err(WindowAccessError::Unauthorized))) => {
             json_error(StatusCode::UNAUTHORIZED, "unauthorized")
         }
-        Ok(Ok(Err(WindowAccessError::Forbidden))) => {
-            json_error(StatusCode::FORBIDDEN, "forbidden")
-        }
+        Ok(Ok(Err(WindowAccessError::Forbidden))) => json_error(StatusCode::FORBIDDEN, "forbidden"),
         Ok(Err(_)) => json_error(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable"),
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
     }

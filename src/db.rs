@@ -430,8 +430,24 @@ mod tests {
             label: None,
         };
 
-        append_message(&conn, &identity, "control-systems", "message", "private", None).unwrap();
-        append_message(&conn, &identity, "blackboard-lounge", "message", "public", None).unwrap();
+        append_message(
+            &conn,
+            &identity,
+            "control-systems",
+            "message",
+            "private",
+            None,
+        )
+        .unwrap();
+        append_message(
+            &conn,
+            &identity,
+            "blackboard-lounge",
+            "message",
+            "public",
+            None,
+        )
+        .unwrap();
 
         assert_eq!(
             channel_metadata(&conn, "control-systems")

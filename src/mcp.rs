@@ -416,7 +416,10 @@ async fn tool_call_result(
 }
 
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {
-    if !only_keys(arguments, &["channel", "after", "limit", "participant_id", "auth"]) {
+    if !only_keys(
+        arguments,
+        &["channel", "after", "limit", "participant_id", "auth"],
+    ) {
         return tool_error("invalid_arguments");
     }
     let channel = match arguments.get("channel").and_then(Value::as_str) {

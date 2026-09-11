@@ -109,7 +109,11 @@ pub fn matching_totp_step(secret: &str, code: &str, now: u64) -> Option<u64> {
 }
 
 pub fn issue_web_session(participant_id: &str) -> WebSession {
-    issue_web_session_at(participant_id, WebSessionKind::HumanWeb, current_unix_time())
+    issue_web_session_at(
+        participant_id,
+        WebSessionKind::HumanWeb,
+        current_unix_time(),
+    )
 }
 
 pub fn issue_guest_session() -> WebSession {

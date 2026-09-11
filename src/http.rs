@@ -82,10 +82,7 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/channels",
             get(admin_channels).post(admin_create_channel),
         )
-        .route(
-            "/api/admin/channels/{channel}",
-            patch(admin_update_channel),
-        )
+        .route("/api/admin/channels/{channel}", patch(admin_update_channel))
         .route("/api/register", post(register))
         .fallback(not_found)
         .with_state(state)
@@ -255,11 +252,7 @@ async fn navigation_write(
     let write_body = message_body.clone();
     let write_nonce = nonce.clone();
     let result = with_db(&state, move |conn| {
-        if !db::ensure_channel_for_write(
-            conn,
-            &write_channel,
-            Some(&write_identity.instance),
-        )? {
+        if !db::ensure_channel_for_write(conn, &write_channel, Some(&write_identity.instance))? {
             return Ok(None);
         }
         Ok(Some(db::append_navigation_message(
@@ -530,7 +523,10 @@ async fn admin_create_channel(
     })
     .await?
     .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "channel_exists"))?;
-    Ok(json_response(StatusCode::CREATED, json!({"channel": result})))
+    Ok(json_response(
+        StatusCode::CREATED,
+        json!({"channel": result}),
+    ))
 }
 
 async fn admin_update_channel(
@@ -946,10 +942,7 @@ async fn require_read_access_for_target(
     Ok(ReadAccess::Participant(identity))
 }
 
-async fn require_human_admin(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Identity, ApiError> {
+async fn require_human_admin(state: &AppState, headers: &HeaderMap) -> Result<Identity, ApiError> {
     let session = request_auth::verified_web_session(headers).ok_or_else(ApiError::unauthorized)?;
     if session.session_type != web_auth::WebSessionKind::HumanWeb {
         return Err(ApiError::forbidden());

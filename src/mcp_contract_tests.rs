@@ -86,7 +86,8 @@ fn signed_read_arguments(
     after: i64,
     limit: usize,
 ) -> Value {
-    let signature = signed_auth::sign_read(private_key, participant_id, channel, after, limit).unwrap();
+    let signature =
+        signed_auth::sign_read(private_key, participant_id, channel, after, limit).unwrap();
     json!({
         "participant_id": participant_id,
         "channel": channel,

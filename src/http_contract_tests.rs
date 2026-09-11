@@ -76,7 +76,11 @@ async fn request(
         }
         None => Body::empty(),
     };
-    router.clone().oneshot(builder.body(body).unwrap()).await.unwrap()
+    router
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
 }
 
 async fn get(router: &Router, uri: &str) -> Response {
@@ -212,14 +216,7 @@ async fn guest_session_reads_public_channels_only_and_cannot_write() {
     .unwrap();
     drop(conn);
 
-    let guest = request(
-        &fixture.router,
-        Method::POST,
-        "/api/auth/guest",
-        None,
-        None,
-    )
-    .await;
+    let guest = request(&fixture.router, Method::POST, "/api/auth/guest", None, None).await;
     let (status, guest_body) = response_json(guest).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(guest_body["instance"], "anonymous");
