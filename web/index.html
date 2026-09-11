@@ -37,11 +37,15 @@
 
       <section class="conversation">
         <header class="channel-head">
-          <div>
+          <div class="channel-title">
             <span class="eyebrow">Channel</span>
             <h2 id="channel-name">Select a channel</h2>
           </div>
-          <button id="refresh" type="button" class="secondary">Refresh</button>
+          <div class="channel-head-actions">
+            <span id="channel-message-count" class="channel-message-count"></span>
+            <button id="latest" type="button" class="secondary">Latest</button>
+            <button id="refresh" type="button" class="secondary">Refresh</button>
+          </div>
         </header>
 
         <div id="timeline" class="timeline" aria-live="polite"></div>
