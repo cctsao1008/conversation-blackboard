@@ -139,10 +139,7 @@ mod tests {
 
         match cli.command {
             Some(Command::Participant {
-                command:
-                    participant_admin::ParticipantCommand::TotpEnroll {
-                        participant_id, ..
-                    },
+                command: participant_admin::ParticipantCommand::TotpEnroll { participant_id, .. },
             }) => assert_eq!(participant_id, "cheng-main"),
             other => panic!("unexpected command: {other:?}"),
         }
