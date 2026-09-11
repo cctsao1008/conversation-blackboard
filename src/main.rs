@@ -15,6 +15,7 @@ mod participant_admin;
 mod participant_key;
 mod request_auth;
 mod runtime;
+mod signed_auth;
 mod web_admin;
 #[cfg(windows)]
 mod windows_service;
@@ -127,6 +128,28 @@ mod tests {
                 command:
                     participant_admin::ParticipantCommand::Generate {
                         scheme: participant_admin::GeneratorScheme::MiniRsa,
+                    },
+            }) => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_generate_cli_parses_ed25519() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "generate",
+            "--scheme",
+            "ed25519",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command:
+                    participant_admin::ParticipantCommand::Generate {
+                        scheme: participant_admin::GeneratorScheme::Ed25519,
                     },
             }) => {}
             other => panic!("unexpected command: {other:?}"),
