@@ -1,6 +1,6 @@
 use std::{env, future::Future, net::SocketAddr, path::PathBuf};
 
-use crate::{db, http, mcp};
+use crate::{db, history, http, mcp};
 use http::AppState;
 
 #[derive(Clone, Debug)]
@@ -58,7 +58,9 @@ where
         db_path: config.db_path,
         registration_key: config.registration_key,
     };
-    let app = http::app(state.clone()).merge(mcp::app(state));
+    let app = http::app(state.clone())
+        .merge(history::app(state.clone()))
+        .merge(mcp::app(state));
 
     println!("conversation-blackboard listening on http://{addr}");
     axum::serve(listener, app)
