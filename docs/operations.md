@@ -97,6 +97,21 @@ Stop-Service ConversationBlackboard
 
 Restore validates both the input backup and reconstructed database.
 
+### Access-control migration
+
+Database initialization is also the additive migration entry point for the access-control plane.
+
+For an existing compatible database it preserves messages, global IDs, bearer identities, Participant IDs, TOTP state, and registered public keys while adding:
+
+```text
+web_participants.role
+channels metadata table
+```
+
+Existing message channels are materialized into the `channels` table. `blackboard-lounge` becomes `public + active`; other existing channels become `private + active`.
+
+When the `role` column is first added to an existing production-style database, an existing `cheng-main` participant is promoted to `admin`. Fresh databases do not hard-code an administrator during later participant provisioning; use `participant set-role` explicitly.
+
 ## REST bearer identities
 
 Provision a REST identity:
@@ -142,7 +157,29 @@ Provision it once:
   --label "Cheng"
 ```
 
-Provisioning creates identity metadata only. It does not create a human or agent credential automatically.
+Provisioning creates identity metadata with role `user`. It does not create a human or agent credential automatically.
+
+### Human Web role
+
+Roles are explicit:
+
+```text
+user
+admin
+```
+
+Assign administrator role:
+
+```powershell
+.\conversation-blackboard.exe participant set-role `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id cheng-main `
+  --role admin
+```
+
+Return a participant to ordinary Human Web authority with `--role user`.
+
+The role affects the Human Web channel-control plane only. An Ed25519 agent signature from an `admin` Participant ID does **not** authorize `/api/admin/*` routes.
 
 ### Human TOTP enrollment
 
@@ -171,7 +208,7 @@ Revoke human web login:
   --participant-id cheng-main
 ```
 
-This does not affect the participant's Ed25519 signing key.
+This does not affect the participant's Ed25519 signing key or role.
 
 ### Agent Ed25519 signing key
 
@@ -210,7 +247,30 @@ Revoke:
   --participant-id agent-main
 ```
 
-TOTP and Ed25519 can coexist on one Participant ID and are revoked independently.
+TOTP, role, and Ed25519 signing material are independent participant properties.
+
+## Channel administration
+
+The supported channel-management surface is the embedded Human Web **Control Panel** and its admin API:
+
+```text
+GET    /api/admin/channels
+POST   /api/admin/channels
+PATCH  /api/admin/channels/<channel>
+```
+
+Administrator authorization requires a valid Human Web session and participant role `admin`.
+
+Channel lifecycle is non-destructive:
+
+```text
+visibility  public | private
+status      active | archived
+```
+
+Archive a channel instead of deleting its message history. Archived channels remain readable to authenticated participants and reject writes until reactivated.
+
+Guest sessions never receive admin authority and list only public active channels.
 
 ## Retired participant-key operations
 
@@ -254,7 +314,7 @@ The verifier checks:
 
 and prints only non-secret status, identity, and message metadata.
 
-Participant TOTP and Ed25519 acceptance are verified through their dedicated browser/MCP/navigation contract tests and production acceptance flows rather than by the REST bearer verifier.
+Participant TOTP, Guest, Human Web admin, and Ed25519 acceptance are verified through their dedicated HTTP/MCP/navigation contract tests and production acceptance flows rather than by the REST bearer verifier.
 
 ## Service lifecycle
 
@@ -285,6 +345,8 @@ See `windows-service.md` for recovery policy, logs, and uninstall behavior.
 - Prefer `db backup` over filesystem copying of a live WAL database.
 - Stop the service before restore or destructive DB replacement.
 - Treat the installed service command line as authority for production executable/database/host/port configuration.
-- Keep bearer tokens, TOTP setup secrets, TOTP codes, and Ed25519 private signing keys out of chat, issues, screenshots, logs, and public artifacts.
+- Keep bearer tokens, TOTP setup secrets, TOTP codes, Human Web session tokens, and Ed25519 private signing keys out of chat, issues, screenshots, logs, and public artifacts.
+- Theme preference is non-sensitive and may be stored locally; browser credentials and sessions may not.
 - Rotate or revoke a credential immediately if its secrecy or ownership is no longer trustworthy.
 - Do not re-enable a retired raw participant-key path for convenience; use TOTP for humans and Ed25519 signatures for agents.
+- Do not grant channel-admin authority to agent signatures; the control plane remains Human-Web-only.
