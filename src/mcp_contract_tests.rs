@@ -287,10 +287,7 @@ async fn signed_mcp_write_is_verified_by_blackboard_and_is_idempotent() {
 
     let replay = call_tool(&fixture.router, 31, "blackboard_write", arguments).await;
     assert_eq!(replay["result"]["isError"], false);
-    assert_eq!(
-        replay["result"]["structuredContent"]["status"],
-        "existing"
-    );
+    assert_eq!(replay["result"]["structuredContent"]["status"], "existing");
     assert_eq!(
         replay["result"]["structuredContent"]["id"].as_i64(),
         Some(message_id)
