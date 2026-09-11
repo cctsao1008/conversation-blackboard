@@ -34,7 +34,37 @@ pub fn connect(path: &Path) -> Result<Connection> {
 pub fn initialize(path: &Path) -> Result<()> {
     let conn = connect(path)?;
     conn.execute_batch(SCHEMA)?;
+    migrate_web_participant_signing_columns(&conn)?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_participants_public_key\n         ON web_participants(public_key)\n         WHERE public_key IS NOT NULL",
+        [],
+    )?;
     Ok(())
+}
+
+fn migrate_web_participant_signing_columns(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "web_participants", "public_key")? {
+        conn.execute("ALTER TABLE web_participants ADD COLUMN public_key TEXT", [])?;
+    }
+    if !table_has_column(conn, "web_participants", "signature_scheme")? {
+        conn.execute(
+            "ALTER TABLE web_participants ADD COLUMN signature_scheme TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn health(conn: &Connection) -> Result<()> {
@@ -193,6 +223,24 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn initialize_migrates_existing_web_participant_table() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE web_participants (\n                    participant_id TEXT PRIMARY KEY,\n                    source TEXT NOT NULL,\n                    label TEXT,\n                    key_hash TEXT UNIQUE,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())\n                );",
+            )
+            .unwrap();
+        }
+
+        initialize(&path).unwrap();
+        let conn = connect(&path).unwrap();
+        assert!(table_has_column(&conn, "web_participants", "public_key").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "signature_scheme").unwrap());
+    }
 
     #[test]
     fn navigation_write_is_idempotent_by_identity_and_nonce() {
