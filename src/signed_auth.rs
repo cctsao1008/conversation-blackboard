@@ -18,7 +18,10 @@ pub fn generate_keypair() -> (String, String) {
     let keypair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
         .expect("freshly generated Ed25519 PKCS#8 must parse");
 
-    let private_key = format!("{PRIVATE_KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(pkcs8.as_ref()));
+    let private_key = format!(
+        "{PRIVATE_KEY_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(pkcs8.as_ref())
+    );
     let public_key = format!(
         "{PUBLIC_KEY_PREFIX}{}",
         URL_SAFE_NO_PAD.encode(keypair.public_key().as_ref())
