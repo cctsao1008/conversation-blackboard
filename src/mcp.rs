@@ -569,6 +569,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_write_identity(
     state: &AppState,
     arguments: &Map<String, Value>,
