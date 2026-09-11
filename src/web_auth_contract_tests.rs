@@ -163,6 +163,7 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert_eq!(old_challenge, StatusCode::NOT_FOUND);
 
     let app = include_str!("../web/app.js");
+    let html = include_str!("../web/index.html");
     assert!(!app.contains("bbcred-v1"));
     assert!(!app.contains("crypto.subtle"));
     assert!(!app.contains("private_key"));
@@ -180,8 +181,22 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert_eq!(app.matches("storageGet(").count(), 2);
 
     assert!(app.contains("/api/auth/totp"));
+    assert!(app.contains("/api/auth/guest"));
     assert!(app.contains("Connecting…"));
+    assert!(app.contains("channelGroup(\"PUBLIC\", publicChannels)"));
+    assert!(app.contains("channelGroup(\"PRIVATE\", privateChannels)"));
+    assert!(app.contains("channelGroup(\"ARCHIVED\", archivedChannels)"));
+    assert!(app.contains("$(\"new-channel\").classList.toggle(\"hidden\", guest);"));
+    assert!(app.contains("$(\"composer\").classList.toggle(\"hidden\", !writable);"));
+    assert!(app.contains("$(\"control-panel-open\").classList.toggle(\"hidden\", !isAdmin());"));
     assert!(app.contains("$(\"connect\").addEventListener(\"click\", connect);"));
+
+    assert!(html.contains("Continue as Guest"));
+    assert!(html.contains("Guest access is read-only. Only public channels are visible."));
+    assert!(html.contains("Control Panel"));
+    assert!(html.contains("value=\"system\""));
+    assert!(html.contains("value=\"light\""));
+    assert!(html.contains("value=\"dracula\""));
 }
 
 #[tokio::test]
