@@ -2,6 +2,7 @@ mod admin;
 mod client;
 mod client_cli;
 mod db;
+mod history;
 mod http;
 #[cfg(test)]
 mod http_contract_tests;
