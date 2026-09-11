@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
-"""End-to-end UTCP smoke test for Conversation Blackboard.
+"""End-to-end UTCP and MCP convergence test for Conversation Blackboard.
 
-The test starts a local Blackboard instance, provisions one REST identity,
-discovers the provider manual through /utcp, and invokes read_messages and
-post_message through the official UTCP HTTP client.
+The test starts one local Blackboard instance, provisions independent REST and
+web identities, discovers the provider manual through /utcp, and proves that
+UTCP/native-HTTP and MCP access paths observe the same canonical message log.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import socket
 import subprocess
 import tempfile
 import time
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from utcp.data.utcp_client_config import UtcpClientConfig
 from utcp.utcp_client import UtcpClient
 from utcp_http.http_call_template import HttpCallTemplate
 
+MCP_PROTOCOL_VERSION = "2025-11-25"
+
 
 def parse_field(output: str, field: str) -> str:
-    prefix = f"{field}"
     for line in output.splitlines():
         stripped = line.strip()
-        if stripped.startswith(prefix) and ":" in stripped:
+        if stripped.startswith(field) and ":" in stripped:
             name, value = stripped.split(":", 1)
             if name.strip() == field and value.strip():
                 return value.strip()
@@ -53,7 +55,39 @@ def wait_for_health(base_url: str, timeout: float = 15.0) -> None:
     raise RuntimeError(f"Blackboard did not become healthy: {last_error}")
 
 
-async def exercise_utcp(base_url: str, bearer: str, expected_instance: str) -> None:
+def mcp_call(base_url: str, request_id: int, tool: str, arguments: dict) -> dict:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
+    request = Request(
+        f"{base_url}/mcp",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+        },
+    )
+    with urlopen(request, timeout=5.0) as response:
+        envelope = json.load(response)
+    if "error" in envelope:
+        raise RuntimeError(f"MCP JSON-RPC error: {envelope['error']}")
+    result = envelope["result"]
+    if result.get("isError"):
+        raise RuntimeError(f"MCP tool error: {result}")
+    return result["structuredContent"]
+
+
+async def exercise_interfaces(
+    base_url: str,
+    bearer: str,
+    rest_instance: str,
+    participant_id: str,
+    private_key: str,
+) -> None:
     manual = HttpCallTemplate(
         name="blackboard",
         call_template_type="http",
@@ -76,7 +110,8 @@ async def exercise_utcp(base_url: str, bearer: str, expected_instance: str) -> N
     )
     assert initial == {"messages": []}, initial
 
-    posted = await client.call_tool(
+    # UTCP -> native HTTP write.
+    utcp_posted = await client.call_tool(
         "blackboard.post_message",
         {
             "message": {
@@ -86,23 +121,57 @@ async def exercise_utcp(base_url: str, bearer: str, expected_instance: str) -> N
             }
         },
     )
-    message = posted["message"]
-    assert message["source"] == "utcp-ci", message
-    assert message["instance"] == expected_instance, message
-    assert message["channel"] == "utcp-ci", message
-    assert message["kind"] == "test", message
-    assert message["body"] == "hello from UTCP", message
+    utcp_message = utcp_posted["message"]
+    assert utcp_message["source"] == "utcp-ci", utcp_message
+    assert utcp_message["instance"] == rest_instance, utcp_message
+    assert utcp_message["channel"] == "utcp-ci", utcp_message
+    assert utcp_message["kind"] == "test", utcp_message
+    assert utcp_message["body"] == "hello from UTCP", utcp_message
 
-    observed = await client.call_tool(
+    # The independent MCP adapter must observe the exact same persisted message.
+    mcp_observed = mcp_call(
+        base_url,
+        1,
+        "blackboard_read",
+        {"channel": "utcp-ci", "after": 0, "limit": 20},
+    )
+    assert mcp_observed["count"] == 1, mcp_observed
+    assert mcp_observed["messages"][0]["id"] == utcp_message["id"], mcp_observed
+    assert mcp_observed["messages"][0]["source"] == "utcp-ci", mcp_observed
+    assert mcp_observed["messages"][0]["instance"] == rest_instance, mcp_observed
+
+    # MCP -> Blackboard write using its own participant identity path.
+    mcp_written = mcp_call(
+        base_url,
+        2,
+        "blackboard_write",
+        {
+            "participant_id": participant_id,
+            "private_key": private_key,
+            "channel": "utcp-ci",
+            "kind": "test",
+            "body": "hello from MCP",
+            "nonce": "utcp-mcp-convergence-001",
+        },
+    )
+    assert mcp_written["source"] == "mcp-ci", mcp_written
+    assert mcp_written["participant_id"] == participant_id, mcp_written
+    assert mcp_written["instance"] == participant_id, mcp_written
+
+    # UTCP/native HTTP must now observe both messages in canonical ID order.
+    utcp_observed = await client.call_tool(
         "blackboard.read_messages",
         {"after": 0, "channel": "utcp-ci", "limit": 20},
     )
-    messages = observed["messages"]
-    assert len(messages) == 1, observed
-    assert messages[0]["id"] == message["id"], observed
-    assert messages[0]["source"] == "utcp-ci", observed
-    assert messages[0]["instance"] == expected_instance, observed
-    assert messages[0]["body"] == "hello from UTCP", observed
+    messages = utcp_observed["messages"]
+    assert len(messages) == 2, utcp_observed
+    assert [row["id"] for row in messages] == sorted(row["id"] for row in messages), messages
+    assert messages[0]["id"] == utcp_message["id"], messages
+    assert messages[0]["body"] == "hello from UTCP", messages
+    assert messages[1]["id"] == mcp_written["id"], messages
+    assert messages[1]["source"] == "mcp-ci", messages
+    assert messages[1]["instance"] == participant_id, messages
+    assert messages[1]["body"] == "hello from MCP", messages
 
 
 def main() -> int:
@@ -121,7 +190,8 @@ def main() -> int:
             check=True,
             text=True,
         )
-        provision = subprocess.run(
+
+        rest_provision = subprocess.run(
             [
                 str(binary),
                 "identity",
@@ -137,8 +207,29 @@ def main() -> int:
             text=True,
             capture_output=True,
         ).stdout
-        bearer = parse_field(provision, "token")
-        instance = parse_field(provision, "instance")
+        bearer = parse_field(rest_provision, "token")
+        rest_instance = parse_field(rest_provision, "instance")
+
+        web_provision = subprocess.run(
+            [
+                str(binary),
+                "web",
+                "provision",
+                "--db",
+                str(db_path),
+                "--participant-id",
+                "mcp-ci-main",
+                "--source",
+                "mcp-ci",
+                "--label",
+                "MCP convergence smoke",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+        participant_id = parse_field(web_provision, "participant_id")
+        private_key = parse_field(web_provision, "private_key")
 
         port = free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -159,8 +250,16 @@ def main() -> int:
         )
         try:
             wait_for_health(base_url)
-            asyncio.run(exercise_utcp(base_url, bearer, instance))
-            print("UTCP discovery/read/write smoke: PASS")
+            asyncio.run(
+                exercise_interfaces(
+                    base_url,
+                    bearer,
+                    rest_instance,
+                    participant_id,
+                    private_key,
+                )
+            )
+            print("UTCP discovery + UTCP/MCP convergence: PASS")
         finally:
             server.terminate()
             try:
