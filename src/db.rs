@@ -44,7 +44,10 @@ pub fn initialize(path: &Path) -> Result<()> {
 
 fn migrate_web_participant_signing_columns(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "web_participants", "public_key")? {
-        conn.execute("ALTER TABLE web_participants ADD COLUMN public_key TEXT", [])?;
+        conn.execute(
+            "ALTER TABLE web_participants ADD COLUMN public_key TEXT",
+            [],
+        )?;
     }
     if !table_has_column(conn, "web_participants", "signature_scheme")? {
         conn.execute(
