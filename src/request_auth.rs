@@ -1,13 +1,60 @@
 use axum::http::{header, HeaderMap};
 use rusqlite::{Connection, OptionalExtension, Result};
 
-use crate::{identity, model::Identity};
+use crate::{identity, model::Identity, signed_auth, web_auth};
 
 /// Legacy marker retained so a stale/incomplete participant credential cannot
 /// silently downgrade to bearer authentication. Participant identity itself is
 /// resolved from the private key.
 pub const PARTICIPANT_ID_HEADER: &str = "x-blackboard-participant-id";
 pub const PRIVATE_KEY_HEADER: &str = "x-blackboard-private-key";
+pub const SIGNATURE_SCHEME_HEADER: &str = "x-blackboard-signature-scheme";
+pub const SIGNATURE_HEADER: &str = "x-blackboard-signature";
+
+pub fn resolve_request_identity_for_target(
+    conn: &Connection,
+    headers: &HeaderMap,
+    method: &str,
+    request_target: &str,
+) -> Result<Option<Identity>> {
+    let signed_attempt =
+        headers.contains_key(SIGNATURE_HEADER) || headers.contains_key(SIGNATURE_SCHEME_HEADER);
+    if !signed_attempt {
+        return resolve_request_identity(conn, headers);
+    }
+    if headers.contains_key(PRIVATE_KEY_HEADER) {
+        return Ok(None);
+    }
+
+    let Some(participant_id) = header_text(headers, PARTICIPANT_ID_HEADER) else {
+        return Ok(None);
+    };
+    let Some(scheme) = header_text(headers, SIGNATURE_SCHEME_HEADER) else {
+        return Ok(None);
+    };
+    let Some(signature) = header_text(headers, SIGNATURE_HEADER) else {
+        return Ok(None);
+    };
+    if scheme != signed_auth::SIGNATURE_SCHEME {
+        return Ok(None);
+    }
+    let Some(verification) = identity::get_web_participant_verification(conn, participant_id)?
+    else {
+        return Ok(None);
+    };
+    if verification.signature_scheme != scheme
+        || !web_auth::verify_http_request_signature(
+            &verification.public_key,
+            signature,
+            participant_id,
+            method,
+            request_target,
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(verification.identity))
+}
 
 pub fn resolve_request_identity(
     conn: &Connection,

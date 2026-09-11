@@ -5,7 +5,8 @@
   const HISTORY_PAGE_SIZE = 20;
 
   const state = {
-    privateKey: "",
+    participantId: "",
+    signingKey: null,
     identity: null,
     channel: localStorage.getItem("conversation-blackboard.channel") || "",
     channels: [],
@@ -17,17 +18,114 @@
     pollTimer: null,
   };
 
-  async function api(path, options = {}) {
-    const headers = new Headers(options.headers || {});
-    headers.set("Accept", "application/json");
-    if (state.privateKey) {
-      headers.set("X-Blackboard-Private-Key", state.privateKey);
+  function base64urlDecode(value) {
+    const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
     }
-    if (options.body && !headers.has("Content-Type")) {
+    return bytes;
+  }
+
+  function base64urlEncode(value) {
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  function canonicalJson(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+
+  function parseCredentialBundle(value) {
+    const prefix = "bbcred-v1:";
+    if (!value.startsWith(prefix)) throw new Error("Unsupported participant credential format.");
+    const decoded = new TextDecoder().decode(base64urlDecode(value.slice(prefix.length)));
+    const bundle = JSON.parse(decoded);
+    if (
+      bundle.version !== "bbcred-v1"
+      || typeof bundle.participant_id !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(bundle.participant_id)
+      || typeof bundle.private_key !== "string"
+      || !bundle.private_key.startsWith("ed25519-sk:")
+    ) {
+      throw new Error("Invalid participant credential.");
+    }
+    return bundle;
+  }
+
+  async function importSigningKey(privateKey) {
+    const encoded = privateKey.slice("ed25519-sk:".length);
+    const pkcs8 = base64urlDecode(encoded);
+    return crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
+  }
+
+  async function signObject(signingKey, value) {
+    const bytes = new TextEncoder().encode(canonicalJson(value));
+    const signature = await crypto.subtle.sign({ name: "Ed25519" }, signingKey, bytes);
+    return base64urlEncode(signature);
+  }
+
+  async function signedReadHeaders(method, requestTarget) {
+    const signature = await signObject(state.signingKey, {
+      method,
+      participant_id: state.participantId,
+      purpose: "http-request-auth-v1",
+      request_target: requestTarget,
+      signature_version: "ed25519-v1",
+    });
+    return {
+      "X-Blackboard-Participant-Id": state.participantId,
+      "X-Blackboard-Signature-Scheme": "ed25519-v1",
+      "X-Blackboard-Signature": signature,
+    };
+  }
+
+  async function signedWriteEnvelope(channel, kind, body, replyTo) {
+    const nonce = `web-${crypto.randomUUID()}`;
+    const payload = {
+      signature_version: "ed25519-v1",
+      participant_id: state.participantId,
+      channel,
+      kind,
+      body,
+      reply_to: replyTo,
+      nonce,
+    };
+    const signature = await signObject(state.signingKey, payload);
+    return {
+      participant_id: state.participantId,
+      channel,
+      kind,
+      body,
+      reply_to: replyTo,
+      nonce,
+      auth: {
+        scheme: "ed25519-v1",
+        signature,
+      },
+    };
+  }
+
+  async function api(path, options = {}) {
+    const { skipRequestAuth = false, ...fetchOptions } = options;
+    const method = (fetchOptions.method || "GET").toUpperCase();
+    const headers = new Headers(fetchOptions.headers || {});
+    headers.set("Accept", "application/json");
+    if (!skipRequestAuth && method === "GET" && state.participantId && state.signingKey) {
+      const authHeaders = await signedReadHeaders(method, path);
+      for (const [name, value] of Object.entries(authHeaders)) headers.set(name, value);
+    }
+    if (fetchOptions.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
 
-    const response = await fetch(path, { ...options, headers });
+    const response = await fetch(path, { ...fetchOptions, headers });
     let data = {};
     try {
       data = await response.json();
@@ -53,26 +151,57 @@
 
   async function connect() {
     $("connect-error").textContent = "";
-    const privateKey = $("private-key").value.trim();
-    if (!privateKey) {
-      $("connect-error").textContent = "Enter a private key.";
+    const credential = $("participant-credential").value.trim();
+    if (!credential) {
+      $("connect-error").textContent = "Enter a participant credential.";
       return;
     }
 
-    state.privateKey = privateKey;
     try {
-      state.identity = await api("/api/whoami");
+      const bundle = parseCredentialBundle(credential);
+      const signingKey = await importSigningKey(bundle.private_key);
+      const challenge = await api("/api/auth/challenge", {
+        method: "POST",
+        body: JSON.stringify({ participant_id: bundle.participant_id }),
+        skipRequestAuth: true,
+      });
+      const signature = await signObject(signingKey, {
+        challenge: challenge.challenge,
+        expires_at: challenge.expires_at,
+        participant_id: bundle.participant_id,
+        purpose: "browser-connect-v1",
+        signature_version: "ed25519-v1",
+      });
+      const identity = await api("/api/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({
+          participant_id: bundle.participant_id,
+          challenge: challenge.challenge,
+          expires_at: challenge.expires_at,
+          challenge_token: challenge.challenge_token,
+          auth: {
+            scheme: "ed25519-v1",
+            signature,
+          },
+        }),
+        skipRequestAuth: true,
+      });
+
+      state.participantId = bundle.participant_id;
+      state.signingKey = signingKey;
+      state.identity = identity;
       $("identity").textContent = identityText(state.identity);
-      $("private-key").value = "";
+      $("participant-credential").value = "";
       setConnected(true);
       await loadChannels();
       startPolling();
     } catch (error) {
-      state.privateKey = "";
+      state.participantId = "";
+      state.signingKey = null;
       state.identity = null;
       $("connect-error").textContent = error.status === 401
         ? "Participant credential was not accepted."
-        : "Could not connect.";
+        : (error.message || "Could not connect.");
     }
   }
 
@@ -259,7 +388,7 @@
   }
 
   async function poll() {
-    if (!state.privateKey || !state.channel || !state.followLatest) return;
+    if (!state.signingKey || !state.channel || !state.followLatest) return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
       for (const message of data.messages) appendMessage(message);
@@ -422,15 +551,16 @@
     $("send").disabled = true;
     $("status").textContent = "Posting…";
     try {
-      const payload = {
-        channel: state.channel,
-        kind: $("kind").value,
+      const payload = await signedWriteEnvelope(
+        state.channel,
+        $("kind").value,
         body,
-        reply_to: state.replyTo ? state.replyTo.id : null,
-      };
+        state.replyTo ? state.replyTo.id : null,
+      );
       const data = await api("/api/messages", {
         method: "POST",
         body: JSON.stringify(payload),
+        skipRequestAuth: true,
       });
       $("body").value = "";
       state.replyTo = null;
@@ -464,7 +594,8 @@
   }
 
   function disconnect(message) {
-    state.privateKey = "";
+    state.participantId = "";
+    state.signingKey = null;
     state.identity = null;
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = null;
@@ -474,7 +605,7 @@
   }
 
   $("connect").addEventListener("click", connect);
-  $("private-key").addEventListener("keydown", (event) => {
+  $("participant-credential").addEventListener("keydown", (event) => {
     if (event.key === "Enter") connect();
   });
   $("composer").addEventListener("submit", postMessage);

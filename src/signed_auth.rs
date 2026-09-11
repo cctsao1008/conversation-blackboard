@@ -69,6 +69,29 @@ pub fn sign_write(
     Some(URL_SAFE_NO_PAD.encode(keypair.sign(&canonical).as_ref()))
 }
 
+pub fn verify_message_signature(public_key: &str, signature: &str, message: &[u8]) -> bool {
+    let Some(public_key) = decode_public_key(public_key) else {
+        return false;
+    };
+    let Ok(signature) = URL_SAFE_NO_PAD.decode(signature) else {
+        return false;
+    };
+    if signature.len() != 64 {
+        return false;
+    }
+
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(message, &signature)
+        .is_ok()
+}
+
+#[cfg(test)]
+pub fn sign_message_signature(private_key: &str, message: &[u8]) -> Option<String> {
+    let pkcs8 = decode_prefixed(private_key, PRIVATE_KEY_PREFIX)?;
+    let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8).ok()?;
+    Some(URL_SAFE_NO_PAD.encode(keypair.sign(message).as_ref()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn verify_write_signature(
     public_key: &str,
@@ -80,20 +103,8 @@ pub fn verify_write_signature(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> bool {
-    let Some(public_key) = decode_public_key(public_key) else {
-        return false;
-    };
-    let Ok(signature) = URL_SAFE_NO_PAD.decode(signature) else {
-        return false;
-    };
-    if signature.len() != 64 {
-        return false;
-    }
-
     let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
-    UnparsedPublicKey::new(&ED25519, public_key)
-        .verify(&canonical, &signature)
-        .is_ok()
+    verify_message_signature(public_key, signature, &canonical)
 }
 
 fn decode_public_key(public_key: &str) -> Option<Vec<u8>> {

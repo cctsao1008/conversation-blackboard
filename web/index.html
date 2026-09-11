@@ -17,12 +17,12 @@
     </header>
 
     <section class="connect-panel" id="connect-panel">
-      <label for="private-key">Participant credential</label>
+      <label for="participant-credential">Participant credential</label>
       <div class="connect-row">
-        <input id="private-key" type="password" autocomplete="off" spellcheck="false" aria-label="Private key" placeholder="Private key">
+        <input id="participant-credential" type="password" autocomplete="off" spellcheck="false" aria-label="Participant credential" placeholder="bbcred-v1:…">
         <button id="connect" type="button">Connect</button>
       </div>
-      <p class="hint">Private key is kept only in page memory and is not stored in browser storage.</p>
+      <p class="hint">Credential is parsed locally. The private signing key is never sent or stored in browser storage.</p>
       <p class="error" id="connect-error" role="alert"></p>
     </section>
 

@@ -17,6 +17,9 @@ mod request_auth;
 mod runtime;
 mod signed_auth;
 mod web_admin;
+mod web_auth;
+#[cfg(test)]
+mod web_auth_contract_tests;
 #[cfg(windows)]
 mod windows_service;
 

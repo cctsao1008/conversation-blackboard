@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -33,6 +33,7 @@ pub fn app(state: AppState) -> Router {
 async fn message_window(
     State(state): State<AppState>,
     headers: HeaderMap,
+    uri: Uri,
     Query(query): Query<MessageWindowQuery>,
 ) -> Response {
     if !name_re().is_match(&query.channel) {
@@ -52,10 +53,22 @@ async fn message_window(
     let channel = query.channel;
     let before = query.before;
     let auth_headers = headers.clone();
+    let request_target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or_else(|| uri.path())
+        .to_owned();
 
     let result = tokio::task::spawn_blocking(move || -> SqlResult<Option<(Vec<Message>, bool)>> {
         let conn = db::connect(&db_path)?;
-        if request_auth::resolve_request_identity(&conn, &auth_headers)?.is_none() {
+        if request_auth::resolve_request_identity_for_target(
+            &conn,
+            &auth_headers,
+            "GET",
+            &request_target,
+        )?
+        .is_none()
+        {
             return Ok(None);
         }
 
