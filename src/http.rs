@@ -59,6 +59,7 @@ pub fn app(state: AppState) -> Router {
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
+        .route("/utcp", get(utcp_manual))
         .route("/r/{channel}", get(navigation_read))
         .route("/w/{participant_id}", get(navigation_write))
         .route("/api/health", get(health))
@@ -86,6 +87,13 @@ async fn app_js() -> Response {
 
 async fn style_css() -> Response {
     static_response("text/css; charset=utf-8", include_str!("../web/style.css"))
+}
+
+async fn utcp_manual() -> Response {
+    static_response(
+        "application/json; charset=utf-8",
+        include_str!("../integrations/utcp.json"),
+    )
 }
 
 async fn navigation_read(
