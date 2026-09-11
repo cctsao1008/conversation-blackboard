@@ -8,6 +8,11 @@ pub const SIGNATURE_SCHEME_HEADER: &str = "x-blackboard-signature-scheme";
 pub const SIGNATURE_HEADER: &str = "x-blackboard-signature";
 const RETIRED_PRIVATE_KEY_HEADER: &str = "x-blackboard-private-key";
 
+pub fn verified_web_session(headers: &HeaderMap) -> Option<web_auth::WebSession> {
+    let token = header_text(headers, web_auth::WEB_SESSION_HEADER)?;
+    web_auth::verify_web_session(token)
+}
+
 pub fn resolve_request_identity_for_target(
     conn: &Connection,
     headers: &HeaderMap,
@@ -63,10 +68,13 @@ pub fn resolve_request_identity(
         return Ok(None);
     }
 
-    if let Some(token) = header_text(headers, web_auth::WEB_SESSION_HEADER) {
-        let Some(session) = web_auth::verify_web_session(token) else {
+    if headers.contains_key(web_auth::WEB_SESSION_HEADER) {
+        let Some(session) = verified_web_session(headers) else {
             return Ok(None);
         };
+        if session.session_type != web_auth::WebSessionKind::HumanWeb {
+            return Ok(None);
+        }
         return identity::get_web_participant(conn, &session.participant_id);
     }
 
@@ -128,6 +136,17 @@ mod tests {
         headers.insert(web_auth::WEB_SESSION_HEADER, session.token.parse().unwrap());
         let resolved = resolve_request_identity(&conn, &headers).unwrap().unwrap();
         assert_eq!(resolved.instance, "operator-main");
+
+        let guest = web_auth::issue_guest_session();
+        let mut guest_headers = HeaderMap::new();
+        guest_headers.insert(web_auth::WEB_SESSION_HEADER, guest.token.parse().unwrap());
+        assert!(resolve_request_identity(&conn, &guest_headers)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            verified_web_session(&guest_headers).unwrap().session_type,
+            web_auth::WebSessionKind::Guest
+        );
 
         let mut retired = HeaderMap::new();
         retired.insert(RETIRED_PRIVATE_KEY_HEADER, "old-key".parse().unwrap());
