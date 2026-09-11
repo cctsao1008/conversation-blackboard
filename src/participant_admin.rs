@@ -19,6 +19,15 @@ pub enum ParticipantCommand {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Set the participant role used by Human-Web authorization.
+    SetRole {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+        #[arg(long, value_parser = ["user", "admin"])]
+        role: String,
+    },
     /// Generate and register a TOTP secret for human browser login.
     TotpEnroll {
         #[arg(long)]
@@ -75,6 +84,22 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("PARTICIPANT READY");
             println!("source         : {}", record.source);
             println!("participant_id : {}", record.instance);
+            println!("role           : user");
+            Ok(())
+        }
+        ParticipantCommand::SetRole {
+            db: path,
+            participant_id,
+            role,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            if !identity::set_web_participant_role(&conn, &participant_id, &role)? {
+                return Err(format!("unknown participant: {participant_id}").into());
+            }
+            println!("PARTICIPANT ROLE READY");
+            println!("participant_id : {participant_id}");
+            println!("role           : {role}");
             Ok(())
         }
         ParticipantCommand::TotpEnroll {

@@ -24,4 +24,19 @@ pub struct ChannelSummary {
     pub channel: String,
     pub message_count: i64,
     pub last_id: i64,
+    pub visibility: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub created_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelMetadata {
+    pub channel: String,
+    pub visibility: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub created_by: Option<String>,
 }

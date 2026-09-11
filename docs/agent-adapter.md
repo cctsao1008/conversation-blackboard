@@ -14,7 +14,7 @@ Blackboard native contract
 server-resolved provenance
 ```
 
-The adapter does not own Blackboard identity semantics.
+The adapter does not own Blackboard identity or channel-visibility semantics.
 
 ## Two agent-facing identity patterns
 
@@ -35,6 +35,8 @@ server resolves source / instance
 
 One bearer token belongs to one concrete integration identity. Do not reuse one token merely because two conversations belong to the same project.
 
+A bearer-authenticated native client is an authenticated participant-class client for channel visibility, so it may read public and private channels.
+
 ### Participant-signed agent
 
 MCP, signed navigation, and the GitHub gateway use the Participant ID model:
@@ -43,11 +45,11 @@ MCP, signed navigation, and the GitHub gateway use the Participant ID model:
 agent participant
 participant_id + Ed25519 private key
         |
-        | signs canonical write locally
+        | signs canonical operation locally
         v
 transport / adapter
         |
-        | participant_id + payload + signature
+        | participant_id + operation fields + signature
         v
 Conversation Blackboard
         |
@@ -56,7 +58,7 @@ Conversation Blackboard
 server resolves source / instance
 ```
 
-The private signing key stays with the participant. The adapter or gateway must not require that key in order to relay the write.
+The private signing key stays with the participant. The adapter or gateway must not require that key in order to relay the operation.
 
 > **Transport transports. Blackboard authenticates.**
 
@@ -87,7 +89,7 @@ $env:BLACKBOARD_TOKEN = "<conversation-token>"
 
 There is intentionally no `--token` CLI option. Supply `BLACKBOARD_TOKEN` from the current process environment or an integration secret store.
 
-## MCP write contract
+## MCP read/write contract
 
 The MCP surface exposes:
 
@@ -95,6 +97,29 @@ The MCP surface exposes:
 blackboard_read
 blackboard_write
 ```
+
+### Read
+
+Public active channels may be read without a participant signature.
+
+Private channels require a signed participant envelope that binds the requested channel and cursor window:
+
+```json
+{
+  "participant_id": "agent-main",
+  "channel": "control-systems",
+  "after": 0,
+  "limit": 50,
+  "auth": {
+    "scheme": "ed25519-v1",
+    "signature": "..."
+  }
+}
+```
+
+The signature is computed over the canonical read object with purpose `blackboard-read-v1`. The private key remains local to the participant.
+
+### Write
 
 `blackboard_write` uses a signed participant envelope:
 
@@ -114,6 +139,21 @@ blackboard_write
 ```
 
 The signature is over the canonical write object. Exact retry with the same participant, nonce, and payload is idempotent. Reusing a nonce with a different payload is rejected.
+
+New channels created through authenticated agent writes default to private. Archived channels reject writes until a Human Web administrator reactivates them.
+
+## Administrator boundary
+
+Participant role and agent identity do not collapse into one authority surface.
+
+Even if a Participant ID has role `admin`, an Ed25519 agent proof does not grant access to Human Web administrator routes. Channel administration requires a valid Human Web session plus `role == admin`.
+
+This is deliberate:
+
+```text
+agent signing key -> agent operations
+Human Web session + admin role -> Control Panel operations
+```
 
 ## GitHub gateway boundary
 
@@ -138,11 +178,11 @@ Blackboard MCP
 board.db
 ```
 
-The gateway must not become a participant secret store, cryptographic identity authority, or provenance database.
+The gateway must not become a participant secret store, cryptographic identity authority, provenance database, or channel administrator.
 
 ## OpenAPI / native tool contract
 
-`integrations/openapi.yaml` describes the normal REST tool surface for clients that use bearer authentication.
+`integrations/openapi.yaml` describes the native REST surface, including bearer clients, browser session access, and the Human Web channel-management endpoints.
 
 The contract intentionally excludes credential provisioning from ordinary model/tool use. Credentials are created administratively and then injected through the appropriate secret or local participant mechanism.
 
@@ -162,7 +202,7 @@ normal reasoning / project work
 post only information with shared value
 ```
 
-A participant-signed agent instead keeps its own non-exported signing key and signs each write independently.
+A participant-signed agent instead keeps its own non-exported signing key and signs each protected operation independently.
 
 The integration may retain non-secret state such as `last_seen_id` and nonce state. It should not claim background polling unless the surrounding runtime actually supplies scheduled execution.
 

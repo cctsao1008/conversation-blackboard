@@ -79,6 +79,24 @@ fn signed_write_arguments(
     })
 }
 
+fn signed_read_arguments(
+    private_key: &str,
+    participant_id: &str,
+    channel: &str,
+    after: i64,
+    limit: usize,
+) -> Value {
+    let signature =
+        signed_auth::sign_read(private_key, participant_id, channel, after, limit).unwrap();
+    json!({
+        "participant_id": participant_id,
+        "channel": channel,
+        "after": after,
+        "limit": limit,
+        "auth": {"scheme": signed_auth::SIGNATURE_SCHEME, "signature": signature}
+    })
+}
+
 async fn request(router: &Router, method: Method, body: Option<Value>) -> Response {
     let mut builder = Request::builder().method(method).uri("/mcp");
     if body.is_some() {
@@ -125,7 +143,7 @@ fn tool_error_code(value: &Value) -> &str {
 }
 
 #[tokio::test]
-async fn mcp_advertises_signed_only_write_contract() {
+async fn mcp_advertises_signed_private_read_and_signed_write_contracts() {
     let fixture = fixture();
     let response = request(
         &fixture.router,
@@ -141,19 +159,92 @@ async fn mcp_advertises_signed_only_write_contract() {
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 2);
+    let read = &tools[0];
+    assert_eq!(read["name"], "blackboard_read");
+    assert!(read["inputSchema"]["properties"]["participant_id"].is_object());
+    assert!(read["inputSchema"]["properties"]["auth"].is_object());
     let write = &tools[1];
     assert_eq!(write["name"], "blackboard_write");
     assert!(write["inputSchema"]["properties"]["auth"].is_object());
     assert!(write["inputSchema"]["properties"]["private_key"].is_null());
-    assert!(write["inputSchema"]["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|value| value == "auth"));
 }
 
 #[tokio::test]
-async fn signed_write_is_verified_idempotent_and_readable() {
+async fn public_read_is_unsigned_but_private_read_requires_valid_signature() {
+    let fixture = fixture();
+    let public_write = signed_write_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "blackboard-lounge",
+        "banter",
+        "public",
+        None,
+        "public-001",
+    );
+    assert_eq!(
+        call_tool(&fixture.router, 2, "blackboard_write", public_write).await["result"]["isError"],
+        false
+    );
+    let public_read = call_tool(
+        &fixture.router,
+        3,
+        "blackboard_read",
+        json!({"channel": "blackboard-lounge", "after": 0, "limit": 50}),
+    )
+    .await;
+    assert_eq!(public_read["result"]["structuredContent"]["count"], 1);
+
+    let private_write = signed_write_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "control-systems",
+        "insight",
+        "private",
+        None,
+        "private-001",
+    );
+    assert_eq!(
+        call_tool(&fixture.router, 4, "blackboard_write", private_write).await["result"]["isError"],
+        false
+    );
+    let unsigned = call_tool(
+        &fixture.router,
+        5,
+        "blackboard_read",
+        json!({"channel": "control-systems", "after": 0, "limit": 50}),
+    )
+    .await;
+    assert_eq!(tool_error_code(&unsigned), "forbidden");
+
+    let signed = call_tool(
+        &fixture.router,
+        6,
+        "blackboard_read",
+        signed_read_arguments(
+            &fixture.single_signing_private,
+            "single-main",
+            "control-systems",
+            0,
+            50,
+        ),
+    )
+    .await;
+    assert_eq!(signed["result"]["structuredContent"]["count"], 1);
+
+    let mut tampered = signed_read_arguments(
+        &fixture.single_signing_private,
+        "single-main",
+        "control-systems",
+        0,
+        50,
+    );
+    tampered["limit"] = json!(49);
+    let rejected = call_tool(&fixture.router, 7, "blackboard_read", tampered).await;
+    assert_eq!(tool_error_code(&rejected), "unauthorized");
+}
+
+#[tokio::test]
+async fn signed_write_is_verified_idempotent_and_privately_readable() {
     let fixture = fixture();
     let arguments = signed_write_arguments(
         &fixture.single_signing_private,
@@ -182,7 +273,13 @@ async fn signed_write_is_verified_idempotent_and_readable() {
         &fixture.router,
         12,
         "blackboard_read",
-        json!({"channel": "signed-architecture", "after": 0, "limit": 50}),
+        signed_read_arguments(
+            &fixture.single_signing_private,
+            "single-main",
+            "signed-architecture",
+            0,
+            50,
+        ),
     )
     .await;
     assert_eq!(read["result"]["structuredContent"]["count"], 1);

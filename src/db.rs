@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
-use crate::model::{ChannelSummary, Identity, Message};
+use crate::model::{ChannelMetadata, ChannelSummary, Identity, Message};
 
 const SCHEMA: &str = include_str!("../schema.sql");
 
@@ -36,6 +36,8 @@ pub fn initialize(path: &Path) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
     migrate_web_participant_signing_columns(&conn)?;
     migrate_web_participant_totp_columns(&conn)?;
+    migrate_web_participant_role(&conn)?;
+    migrate_channel_metadata(&conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_participants_public_key\n         ON web_participants(public_key)\n         WHERE public_key IS NOT NULL",
         [],
@@ -76,6 +78,29 @@ fn migrate_web_participant_totp_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_web_participant_role(conn: &Connection) -> Result<()> {
+    let added = !table_has_column(conn, "web_participants", "role")?;
+    if added {
+        conn.execute(
+            "ALTER TABLE web_participants ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE web_participants SET role = 'admin', updated_at = unixepoch()\n             WHERE participant_id = 'cheng-main'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_channel_metadata(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO channels\n             (name, visibility, status, created_at, updated_at, created_by)\n         SELECT channel,\n                CASE WHEN channel = 'blackboard-lounge' THEN 'public' ELSE 'private' END,\n                'active',\n                MIN(created_at),\n                MAX(created_at),\n                NULL\n         FROM messages\n         GROUP BY channel",
+        [],
+    )?;
+    Ok(())
+}
+
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let sql = format!("PRAGMA table_info({table})");
     let mut stmt = conn.prepare(&sql)?;
@@ -94,17 +119,123 @@ pub fn health(conn: &Connection) -> Result<()> {
 }
 
 pub fn list_channels(conn: &Connection) -> Result<Vec<ChannelSummary>> {
-    let mut stmt = conn.prepare(
-        "SELECT channel, COUNT(*) AS message_count, MAX(id) AS last_id\n         FROM messages\n         GROUP BY channel\n         ORDER BY last_id DESC",
-    )?;
+    list_channels_with_filter(conn, false)
+}
+
+pub fn list_public_channels(conn: &Connection) -> Result<Vec<ChannelSummary>> {
+    list_channels_with_filter(conn, true)
+}
+
+fn list_channels_with_filter(conn: &Connection, public_only: bool) -> Result<Vec<ChannelSummary>> {
+    let sql = if public_only {
+        "SELECT c.name, COUNT(m.id) AS message_count, COALESCE(MAX(m.id), 0) AS last_id,\n                c.visibility, c.status, c.created_at, c.updated_at, c.created_by\n         FROM channels c\n         LEFT JOIN messages m ON m.channel = c.name\n         WHERE c.visibility = 'public' AND c.status = 'active'\n         GROUP BY c.name, c.visibility, c.status, c.created_at, c.updated_at, c.created_by\n         ORDER BY last_id DESC, c.name ASC"
+    } else {
+        "SELECT c.name, COUNT(m.id) AS message_count, COALESCE(MAX(m.id), 0) AS last_id,\n                c.visibility, c.status, c.created_at, c.updated_at, c.created_by\n         FROM channels c\n         LEFT JOIN messages m ON m.channel = c.name\n         GROUP BY c.name, c.visibility, c.status, c.created_at, c.updated_at, c.created_by\n         ORDER BY CASE c.status WHEN 'active' THEN 0 ELSE 1 END, last_id DESC, c.name ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([], |row| {
         Ok(ChannelSummary {
             channel: row.get(0)?,
             message_count: row.get(1)?,
             last_id: row.get(2)?,
+            visibility: row.get(3)?,
+            status: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            created_by: row.get(7)?,
         })
     })?;
     rows.collect()
+}
+
+pub fn channel_metadata(conn: &Connection, channel: &str) -> Result<Option<ChannelMetadata>> {
+    conn.query_row(
+        "SELECT name, visibility, status, created_at, updated_at, created_by\n         FROM channels WHERE name = ?1 LIMIT 1",
+        [channel],
+        |row| {
+            Ok(ChannelMetadata {
+                channel: row.get(0)?,
+                visibility: row.get(1)?,
+                status: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                created_by: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn channel_is_public_active(conn: &Connection, channel: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM channels\n             WHERE name = ?1 AND visibility = 'public' AND status = 'active'",
+            [channel],
+            |_| Ok(1_i64),
+        )
+        .optional()?
+        .is_some())
+}
+
+pub fn ensure_channel(conn: &Connection, channel: &str, created_by: Option<&str>) -> Result<()> {
+    let visibility = if channel == "blackboard-lounge" {
+        "public"
+    } else {
+        "private"
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO channels (name, visibility, status, created_by)\n         VALUES (?1, ?2, 'active', ?3)",
+        params![channel, visibility, created_by],
+    )?;
+    Ok(())
+}
+
+pub fn ensure_channel_for_write(
+    conn: &Connection,
+    channel: &str,
+    created_by: Option<&str>,
+) -> Result<bool> {
+    ensure_channel(conn, channel, created_by)?;
+    Ok(channel_metadata(conn, channel)?
+        .map(|metadata| metadata.status == "active")
+        .unwrap_or(false))
+}
+
+pub fn create_channel(
+    conn: &Connection,
+    channel: &str,
+    visibility: &str,
+    created_by: Option<&str>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO channels (name, visibility, status, created_by)\n         VALUES (?1, ?2, 'active', ?3)",
+        params![channel, visibility, created_by],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn update_channel(
+    conn: &Connection,
+    channel: &str,
+    visibility: Option<&str>,
+    status: Option<&str>,
+) -> Result<bool> {
+    let changed = match (visibility, status) {
+        (Some(visibility), Some(status)) => conn.execute(
+            "UPDATE channels\n             SET visibility = ?1, status = ?2, updated_at = unixepoch()\n             WHERE name = ?3",
+            params![visibility, status, channel],
+        )?,
+        (Some(visibility), None) => conn.execute(
+            "UPDATE channels\n             SET visibility = ?1, updated_at = unixepoch()\n             WHERE name = ?2",
+            params![visibility, channel],
+        )?,
+        (None, Some(status)) => conn.execute(
+            "UPDATE channels\n             SET status = ?1, updated_at = unixepoch()\n             WHERE name = ?2",
+            params![status, channel],
+        )?,
+        (None, None) => 0,
+    };
+    Ok(changed == 1)
 }
 
 pub fn list_messages_after(
@@ -150,6 +281,7 @@ pub fn append_message(
     body: &str,
     reply_to: Option<i64>,
 ) -> Result<Message> {
+    ensure_channel(conn, channel, Some(&identity.instance))?;
     conn.execute(
         "INSERT INTO messages (channel, source, instance, kind, body, reply_to)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![channel, identity.source, identity.instance, kind, body, reply_to],
@@ -164,6 +296,16 @@ pub fn append_navigation_message(
     input: NavigationMessageInput<'_>,
 ) -> Result<NavigationAppendResult> {
     let tx = conn.unchecked_transaction()?;
+
+    let visibility = if input.channel == "blackboard-lounge" {
+        "public"
+    } else {
+        "private"
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO channels (name, visibility, status, created_by)\n         VALUES (?1, ?2, 'active', ?3)",
+        params![input.channel, visibility, identity.instance],
+    )?;
 
     let reserved = tx.execute(
         "INSERT OR IGNORE INTO navigation_writes\n             (instance, nonce, request_hash, message_id)\n         VALUES (?1, ?2, ?3, 0)",
@@ -252,7 +394,7 @@ mod tests {
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
-                "CREATE TABLE web_participants (\n                    participant_id TEXT PRIMARY KEY,\n                    source TEXT NOT NULL,\n                    label TEXT,\n                    key_hash TEXT UNIQUE,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())\n                );",
+                "CREATE TABLE web_participants (\n                    participant_id TEXT PRIMARY KEY,\n                    source TEXT NOT NULL,\n                    label TEXT,\n                    key_hash TEXT UNIQUE,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())\n                );\n                INSERT INTO web_participants (participant_id, source, label)\n                VALUES ('cheng-main', 'cheng', 'Cheng');",
             )
             .unwrap();
         }
@@ -265,6 +407,59 @@ mod tests {
         assert!(table_has_column(&conn, "web_participants", "totp_last_step").unwrap());
         assert!(table_has_column(&conn, "web_participants", "totp_fail_count").unwrap());
         assert!(table_has_column(&conn, "web_participants", "totp_locked_until").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "role").unwrap());
+        let role: String = conn
+            .query_row(
+                "SELECT role FROM web_participants WHERE participant_id = 'cheng-main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(role, "admin");
+    }
+
+    #[test]
+    fn channel_metadata_defaults_private_except_lounge_and_filters_guests() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        initialize(&path).unwrap();
+        let conn = connect(&path).unwrap();
+        let identity = Identity {
+            source: "test".into(),
+            instance: "test-main".into(),
+            label: None,
+        };
+
+        append_message(
+            &conn,
+            &identity,
+            "control-systems",
+            "message",
+            "private",
+            None,
+        )
+        .unwrap();
+        append_message(
+            &conn,
+            &identity,
+            "blackboard-lounge",
+            "message",
+            "public",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            channel_metadata(&conn, "control-systems")
+                .unwrap()
+                .unwrap()
+                .visibility,
+            "private"
+        );
+        assert!(channel_is_public_active(&conn, "blackboard-lounge").unwrap());
+        let guest = list_public_channels(&conn).unwrap();
+        assert_eq!(guest.len(), 1);
+        assert_eq!(guest[0].channel, "blackboard-lounge");
     }
 
     #[test]

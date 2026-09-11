@@ -46,6 +46,7 @@ jobs:
           .\target\release\conversation-blackboard.exe identity --help
           .\target\release\conversation-blackboard.exe participant --help
           .\target\release\conversation-blackboard.exe participant provision --help
+          .\target\release\conversation-blackboard.exe participant set-role --help
           .\target\release\conversation-blackboard.exe participant totp-enroll --help
           .\target\release\conversation-blackboard.exe participant totp-revoke --help
           .\target\release\conversation-blackboard.exe participant generate-signing-key --help
@@ -84,6 +85,15 @@ jobs:
             $participant = (& $exe participant provision --db $db --participant-id ci-participant-main --source ci-participant --label "CI participant") | Out-String
             if ($participant -notmatch 'participant_id\s*:\s*ci-participant-main') {
               throw "participant provisioning output mismatch"
+            }
+
+            $adminRole = (& $exe participant set-role --db $db --participant-id ci-participant-main --role admin) | Out-String
+            if ($adminRole -notmatch 'role\s*:\s*admin') {
+              throw "participant role update to admin failed"
+            }
+            $userRole = (& $exe participant set-role --db $db --participant-id ci-participant-main --role user) | Out-String
+            if ($userRole -notmatch 'role\s*:\s*user') {
+              throw "participant role update to user failed"
             }
 
             $totp = (& $exe participant totp-enroll --db $db --participant-id ci-participant-main) | Out-String

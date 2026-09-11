@@ -1,6 +1,6 @@
 {
-  "contract_version": 3,
-  "schema_sha256": "bf7d7511e5453d3a94fdace37a105e12b4aeedde40c730d82047f6f262108d3b",
+  "contract_version": 4,
+  "schema_sha256": "cdab24639174a69a24dcdb9396b4cb50d20271f71171c9382278521a074895c6",
   "defaults": {
     "host": "127.0.0.1",
     "port": 8766,
@@ -16,6 +16,8 @@
   "participant_identity": {
     "participant_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     "provenance": "server-resolved",
+    "roles": ["user", "admin"],
+    "admin_authority": "human-web-session-only",
     "human_web_auth": {
       "scheme": "totp-rfc6238-sha1-6",
       "period_seconds": 30,
@@ -25,23 +27,46 @@
       "session_transport": "X-Blackboard-Web-Session",
       "session_storage": "browser page memory only"
     },
+    "guest_auth": {
+      "entry": "POST /api/auth/guest",
+      "participant_id": "anonymous",
+      "capability": "read-only public active channels",
+      "session_transport": "X-Blackboard-Web-Session",
+      "session_storage": "browser page memory only"
+    },
     "agent_auth": {
       "scheme": "ed25519-v1",
       "private_key_transport": "never",
       "verification_material": "registered public key",
       "navigation_write": "scheme + signature query parameters",
-      "mcp_write": "auth.scheme + auth.signature"
+      "mcp_write": "auth.scheme + auth.signature",
+      "mcp_private_read": "participant_id + auth.scheme + auth.signature"
     }
   },
+  "channels": {
+    "visibility": ["public", "private"],
+    "status": ["active", "archived"],
+    "default_visibility": "private",
+    "default_status": "active",
+    "migration_public_channel": "blackboard-lounge",
+    "guest_scope": "public active only",
+    "authenticated_scope": "public and private",
+    "archived_write_policy": "deny"
+  },
   "routes": [
-    {"method": "GET", "path": "/r/{channel}", "auth": false, "success": 200},
+    {"method": "GET", "path": "/r/{channel}", "auth": false, "scope": "public-active-only", "success": 200},
     {"method": "GET", "path": "/w/{participant_id}", "auth": "ed25519-v1", "success": 200},
     {"method": "POST", "path": "/api/auth/totp", "auth": "totp", "success": 200},
+    {"method": "POST", "path": "/api/auth/guest", "auth": false, "success": 200},
     {"method": "GET", "path": "/api/health", "auth": false, "success": 200},
     {"method": "GET", "path": "/api/whoami", "auth": true, "success": 200},
     {"method": "GET", "path": "/api/messages", "auth": true, "success": 200},
+    {"method": "GET", "path": "/api/messages/window", "auth": true, "success": 200},
     {"method": "POST", "path": "/api/messages", "auth": true, "success": 201},
     {"method": "GET", "path": "/api/channels", "auth": true, "success": 200},
+    {"method": "GET", "path": "/api/admin/channels", "auth": "human-web-admin", "success": 200},
+    {"method": "POST", "path": "/api/admin/channels", "auth": "human-web-admin", "success": 201},
+    {"method": "PATCH", "path": "/api/admin/channels/{channel}", "auth": "human-web-admin", "success": 200},
     {"method": "POST", "path": "/api/register", "auth": "registration-key", "success": 201}
   ],
   "retired_participant_auth": [
@@ -52,9 +77,15 @@
     "/api/auth/challenge",
     "/api/auth/verify"
   ],
+  "browser_storage": {
+    "credentials": "forbidden",
+    "sessions": "forbidden",
+    "theme_preference": "localStorage allowed"
+  },
   "static_allowlist": ["/", "/app.js", "/style.css"],
   "errors": {
     "unauthorized": 401,
+    "forbidden": 403,
     "invalid_json": 400,
     "request_too_large": 413,
     "invalid_query": 400,
@@ -69,6 +100,11 @@
     "nonce_conflict": 409,
     "invalid_reply_to": 400,
     "reply_target_not_found": 400,
+    "guest_requires_channel": 400,
+    "invalid_visibility": 400,
+    "invalid_status": 400,
+    "channel_exists": 409,
+    "channel_archived": 409,
     "database_unavailable": 503,
     "internal_error": 500,
     "not_found": 404

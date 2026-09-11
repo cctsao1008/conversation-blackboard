@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{db, http::AppState, model::Message, request_auth};
+use crate::{db, http::AppState, model::Message, request_auth, web_auth};
 
 const DEFAULT_WINDOW_SIZE: usize = 20;
 const MAX_WINDOW_SIZE: usize = 200;
@@ -22,6 +22,12 @@ struct MessageWindowQuery {
     channel: String,
     before: Option<i64>,
     limit: Option<usize>,
+}
+
+#[derive(Debug)]
+enum WindowAccessError {
+    Unauthorized,
+    Forbidden,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -53,41 +59,52 @@ async fn message_window(
     let channel = query.channel;
     let before = query.before;
     let auth_headers = headers.clone();
+    let guest = request_auth::verified_web_session(&headers)
+        .is_some_and(|session| session.session_type == web_auth::WebSessionKind::Guest);
     let request_target = uri
         .path_and_query()
         .map(|value| value.as_str())
         .unwrap_or_else(|| uri.path())
         .to_owned();
 
-    let result = tokio::task::spawn_blocking(move || -> SqlResult<Option<(Vec<Message>, bool)>> {
-        let conn = db::connect(&db_path)?;
-        if request_auth::resolve_request_identity_for_target(
-            &conn,
-            &auth_headers,
-            "GET",
-            &request_target,
-        )?
-        .is_none()
-        {
-            return Ok(None);
-        }
+    let result = tokio::task::spawn_blocking(
+        move || -> SqlResult<Result<(Vec<Message>, bool), WindowAccessError>> {
+            let conn = db::connect(&db_path)?;
+            if guest {
+                if !db::channel_is_public_active(&conn, &channel)? {
+                    return Ok(Err(WindowAccessError::Forbidden));
+                }
+            } else if request_auth::resolve_request_identity_for_target(
+                &conn,
+                &auth_headers,
+                "GET",
+                &request_target,
+            )?
+            .is_none()
+            {
+                return Ok(Err(WindowAccessError::Unauthorized));
+            }
 
-        let rows = list_message_window(&conn, &channel, before, limit)?;
-        let has_older = match rows.first() {
-            Some(first) => has_message_before(&conn, &channel, first.id)?,
-            None => false,
-        };
-        Ok(Some((rows, has_older)))
-    })
+            let rows = list_message_window(&conn, &channel, before, limit)?;
+            let has_older = match rows.first() {
+                Some(first) => has_message_before(&conn, &channel, first.id)?,
+                None => false,
+            };
+            Ok(Ok((rows, has_older)))
+        },
+    )
     .await;
 
     match result {
-        Ok(Ok(Some((messages, has_older)))) => Json(json!({
+        Ok(Ok(Ok((messages, has_older)))) => Json(json!({
             "messages": messages,
             "has_older": has_older,
         }))
         .into_response(),
-        Ok(Ok(None)) => json_error(StatusCode::UNAUTHORIZED, "unauthorized"),
+        Ok(Ok(Err(WindowAccessError::Unauthorized))) => {
+            json_error(StatusCode::UNAUTHORIZED, "unauthorized")
+        }
+        Ok(Ok(Err(WindowAccessError::Forbidden))) => json_error(StatusCode::FORBIDDEN, "forbidden"),
         Ok(Err(_)) => json_error(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable"),
         Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
     }
@@ -157,7 +174,7 @@ fn json_error(status: StatusCode, code: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity;
+    use crate::{identity, web_auth};
     use axum::{
         body::{to_bytes, Body},
         http::{header, Request},
@@ -194,7 +211,15 @@ mod tests {
             .unwrap();
             ids.push(message.id);
         }
-        db::append_message(&conn, &writer, "other-channel", "message", "other", None).unwrap();
+        db::append_message(
+            &conn,
+            &writer,
+            "blackboard-lounge",
+            "message",
+            "public",
+            None,
+        )
+        .unwrap();
         drop(conn);
 
         let router = app(AppState {
@@ -218,6 +243,22 @@ mod tests {
                 Request::builder()
                     .uri(uri)
                     .header(header::AUTHORIZATION, format!("Bearer {}", fixture.bearer))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn guest_request(fixture: &Fixture, uri: &str) -> Response {
+        let session = web_auth::issue_guest_session();
+        fixture
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(web_auth::WEB_SESSION_HEADER, session.token)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -282,6 +323,29 @@ mod tests {
         let returned: Vec<i64> = rows.iter().map(|row| row["id"].as_i64().unwrap()).collect();
         assert_eq!(returned, fixture.ids[0..5]);
         assert_eq!(body["has_older"], Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn guest_can_read_public_window_but_not_private_window() {
+        let fixture = fixture();
+        assert_eq!(
+            guest_request(
+                &fixture,
+                "/api/messages/window?channel=blackboard-lounge&limit=5",
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            guest_request(
+                &fixture,
+                "/api/messages/window?channel=control-systems&limit=5",
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

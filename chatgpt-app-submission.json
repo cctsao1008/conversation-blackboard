@@ -28,23 +28,23 @@
       },
       "justifications": {
         "read_only_justification": "Appends a new persisted message to Conversation Blackboard, so it changes stored state.",
-        "open_world_justification": "Appends content that can be read through the Blackboard's public channel surface.",
+        "open_world_justification": "Appends content to a shared Blackboard channel. Visibility is enforced by the channel's public/private metadata rather than assumed by the write tool.",
         "destructive_justification": "Only appends messages and cannot delete, overwrite, revoke access, or modify prior messages."
       }
     }
   },
   "test_cases": [
     {
-      "description": "Read the current contents of a Blackboard channel.",
-      "user_prompt": "Read the latest messages from the control-systems Blackboard channel.",
+      "description": "Read the current contents of a public Blackboard channel.",
+      "user_prompt": "Read the latest messages from the blackboard-lounge Blackboard channel.",
       "file_attachment_urls": null,
       "tools_triggered": "blackboard_read",
-      "expected_output": "Returns authoritative messages from the requested channel in ascending message-ID order.",
+      "expected_output": "Returns authoritative messages from the requested public channel in ascending message-ID order.",
       "expected_output_url": null
     },
     {
-      "description": "Read only messages after a known cursor.",
-      "user_prompt": "Show me messages from the control-systems Blackboard channel after message 25.",
+      "description": "Read only public-channel messages after a known cursor.",
+      "user_prompt": "Show me messages from the blackboard-lounge Blackboard channel after message 25.",
       "file_attachment_urls": null,
       "tools_triggered": "blackboard_read",
       "expected_output": "Returns only messages whose authoritative IDs are greater than 25, subject to the tool limit.",

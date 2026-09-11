@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use regex::Regex;
@@ -39,6 +39,10 @@ impl ApiError {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
     }
 
+    fn forbidden() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden")
+    }
+
     fn database() -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
     }
@@ -54,6 +58,12 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[derive(Clone, Debug)]
+enum ReadAccess {
+    Guest,
+    Participant(Identity),
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
@@ -64,9 +74,15 @@ pub fn app(state: AppState) -> Router {
         .route("/w/{participant_id}", get(navigation_write))
         .route("/api/health", get(health))
         .route("/api/auth/totp", post(auth_totp))
+        .route("/api/auth/guest", post(auth_guest))
         .route("/api/whoami", get(whoami))
         .route("/api/messages", get(messages).post(post_message))
         .route("/api/channels", get(channels))
+        .route(
+            "/api/admin/channels",
+            get(admin_channels).post(admin_create_channel),
+        )
+        .route("/api/admin/channels/{channel}", patch(admin_update_channel))
         .route("/api/register", post(register))
         .fallback(not_found)
         .with_state(state)
@@ -111,9 +127,18 @@ async fn navigation_read(
     let limit = parse_limit(&params, 50)?;
     let query_channel = channel.clone();
     let rows = with_db(&state, move |conn| {
-        db::list_messages_after(conn, after, Some(&query_channel), limit)
+        if !db::channel_is_public_active(conn, &query_channel)? {
+            return Ok(None);
+        }
+        Ok(Some(db::list_messages_after(
+            conn,
+            after,
+            Some(&query_channel),
+            limit,
+        )?))
     })
-    .await?;
+    .await?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel_not_found"))?;
 
     let latest_id = rows.last().map(|row| row.id).unwrap_or(after);
     let mut body = format!(
@@ -227,7 +252,10 @@ async fn navigation_write(
     let write_body = message_body.clone();
     let write_nonce = nonce.clone();
     let result = with_db(&state, move |conn| {
-        db::append_navigation_message(
+        if !db::ensure_channel_for_write(conn, &write_channel, Some(&write_identity.instance))? {
+            return Ok(None);
+        }
+        Ok(Some(db::append_navigation_message(
             conn,
             &write_identity,
             db::NavigationMessageInput {
@@ -238,9 +266,10 @@ async fn navigation_write(
                 nonce: &write_nonce,
                 request_hash: &request_hash,
             },
-        )
+        )?))
     })
-    .await?;
+    .await?
+    .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "channel_archived"))?;
 
     let (status, persisted, idempotent) = match result {
         db::NavigationAppendResult::Created(message) => ("created", message, false),
@@ -309,6 +338,12 @@ async fn auth_totp(
     .await?
     .ok_or_else(ApiError::unauthorized)?;
 
+    let role_lookup = participant_id.clone();
+    let role = with_db(&state, move |conn| {
+        identity::get_web_participant_role(conn, &role_lookup)
+    })
+    .await?
+    .unwrap_or_else(|| "user".to_owned());
     let session = web_auth::issue_web_session(&participant_id);
     Ok(json_response(
         StatusCode::OK,
@@ -316,13 +351,64 @@ async fn auth_totp(
             "source": verified.source,
             "instance": verified.instance,
             "label": verified.label,
+            "role": role,
+            "session_type": session.session_type.as_str(),
             "session_token": session.token,
             "expires_at": session.expires_at,
         }),
     ))
 }
 
+async fn auth_guest() -> Response {
+    let session = web_auth::issue_guest_session();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "source": "anonymous",
+            "instance": web_auth::GUEST_PARTICIPANT_ID,
+            "label": "Guest",
+            "role": "guest",
+            "session_type": session.session_type.as_str(),
+            "session_token": session.token,
+            "expires_at": session.expires_at,
+        }),
+    )
+}
+
 async fn whoami(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    if let Some(session) = request_auth::verified_web_session(&headers) {
+        if session.session_type == web_auth::WebSessionKind::Guest {
+            return Ok(json_response(
+                StatusCode::OK,
+                json!({
+                    "source": "anonymous",
+                    "instance": web_auth::GUEST_PARTICIPANT_ID,
+                    "label": "Guest",
+                    "role": "guest",
+                    "session_type": "guest",
+                }),
+            ));
+        }
+        let participant_id = session.participant_id.clone();
+        let record = with_db(&state, move |conn| {
+            let identity = identity::get_web_participant(conn, &participant_id)?;
+            let role = identity::get_web_participant_role(conn, &participant_id)?;
+            Ok(identity.map(|identity| (identity, role.unwrap_or_else(|| "user".to_owned()))))
+        })
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+        return Ok(json_response(
+            StatusCode::OK,
+            json!({
+                "source": record.0.source,
+                "instance": record.0.instance,
+                "label": record.0.label,
+                "role": record.1,
+                "session_type": "human-web",
+            }),
+        ));
+    }
+
     let identity = require_identity(&state, &headers).await?;
     Ok(json_response(
         StatusCode::OK,
@@ -330,6 +416,8 @@ async fn whoami(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
             "source": identity.source,
             "instance": identity.instance,
             "label": identity.label,
+            "role": "user",
+            "session_type": "client",
         }),
     ))
 }
@@ -344,7 +432,7 @@ async fn messages(
         .map(|value| value.as_str())
         .unwrap_or_else(|| uri.path())
         .to_owned();
-    let _identity = require_identity_for_target(&state, &headers, "GET", &request_target).await?;
+    let access = require_read_access_for_target(&state, &headers, "GET", &request_target).await?;
     let params = first_query_values(&uri);
 
     let after = parse_after(&params)?;
@@ -354,6 +442,22 @@ async fn messages(
     if let Some(value) = &channel {
         if !name_re().is_match(value) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_channel"));
+        }
+    }
+    if matches!(access, ReadAccess::Guest) && channel.is_none() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "guest_requires_channel",
+        ));
+    }
+    if let (ReadAccess::Guest, Some(channel)) = (&access, &channel) {
+        let check = channel.clone();
+        let public = with_db(&state, move |conn| {
+            db::channel_is_public_active(conn, &check)
+        })
+        .await?;
+        if !public {
+            return Err(ApiError::forbidden());
         }
     }
 
@@ -366,9 +470,103 @@ async fn messages(
 }
 
 async fn channels(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let _identity = require_identity_for_target(&state, &headers, "GET", "/api/channels").await?;
+    let access = require_read_access_for_target(&state, &headers, "GET", "/api/channels").await?;
+    let rows = match access {
+        ReadAccess::Guest => with_db(&state, db::list_public_channels).await?,
+        ReadAccess::Participant(identity) => {
+            let _ = identity.instance;
+            with_db(&state, db::list_channels).await?
+        }
+    };
+    Ok(json_response(StatusCode::OK, json!({"channels": rows})))
+}
+
+async fn admin_channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let _admin = require_human_admin(&state, &headers).await?;
     let rows = with_db(&state, db::list_channels).await?;
     Ok(json_response(StatusCode::OK, json!({"channels": rows})))
+}
+
+async fn admin_create_channel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let admin = require_human_admin(&state, &headers).await?;
+    let body = read_json_object(request).await?;
+    if !only_keys(&body, &["name", "visibility"]) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_arguments"));
+    }
+    let channel = body
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| name_re().is_match(value))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_channel"))?
+        .to_owned();
+    let visibility = match body.get("visibility") {
+        None => "private".to_owned(),
+        Some(Value::String(value)) if matches!(value.as_str(), "public" | "private") => {
+            value.clone()
+        }
+        _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_visibility")),
+    };
+    let created_by = admin.instance.clone();
+    let lookup = channel.clone();
+    let result = with_db(&state, move |conn| {
+        if !db::create_channel(conn, &channel, &visibility, Some(&created_by))? {
+            return Ok(None);
+        }
+        db::channel_metadata(conn, &lookup)
+    })
+    .await?
+    .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "channel_exists"))?;
+    Ok(json_response(
+        StatusCode::CREATED,
+        json!({"channel": result}),
+    ))
+}
+
+async fn admin_update_channel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(channel): Path<String>,
+    request: Request<Body>,
+) -> Result<Response, ApiError> {
+    let _admin = require_human_admin(&state, &headers).await?;
+    if !name_re().is_match(&channel) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_channel"));
+    }
+    let body = read_json_object(request).await?;
+    if body.is_empty() || !only_keys(&body, &["visibility", "status"]) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_arguments"));
+    }
+    let visibility = match body.get("visibility") {
+        None => None,
+        Some(Value::String(value)) if matches!(value.as_str(), "public" | "private") => {
+            Some(value.clone())
+        }
+        _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_visibility")),
+    };
+    let status = match body.get("status") {
+        None => None,
+        Some(Value::String(value)) if matches!(value.as_str(), "active" | "archived") => {
+            Some(value.clone())
+        }
+        _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_status")),
+    };
+    let lookup = channel.clone();
+    let result = with_db(&state, move |conn| {
+        if !db::update_channel(conn, &channel, visibility.as_deref(), status.as_deref())? {
+            return Ok(None);
+        }
+        db::channel_metadata(conn, &lookup)
+    })
+    .await?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel_not_found"))?;
+    Ok(json_response(StatusCode::OK, json!({"channel": result})))
 }
 
 async fn register(
@@ -436,6 +634,12 @@ async fn post_message(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Result<Response, ApiError> {
+    if request_auth::verified_web_session(&headers)
+        .is_some_and(|session| session.session_type == web_auth::WebSessionKind::Guest)
+    {
+        return Err(ApiError::forbidden());
+    }
+
     let body = read_json_object(request).await?;
 
     if body.contains_key("source") || body.contains_key("instance") {
@@ -498,6 +702,16 @@ async fn post_message(
                 "reply_target_not_found",
             ));
         }
+    }
+
+    let metadata_channel = channel.clone();
+    let creator = identity.instance.clone();
+    let active = with_db(&state, move |conn| {
+        db::ensure_channel_for_write(conn, &metadata_channel, Some(&creator))
+    })
+    .await?;
+    if !active {
+        return Err(ApiError::new(StatusCode::CONFLICT, "channel_archived"));
     }
 
     let row = with_db(&state, move |conn| {
@@ -617,6 +831,16 @@ async fn post_signed_message(
     .await?
     .ok_or_else(ApiError::unauthorized)?;
 
+    let metadata_channel = channel.clone();
+    let creator = writer.instance.clone();
+    let active = with_db(state, move |conn| {
+        db::ensure_channel_for_write(conn, &metadata_channel, Some(&creator))
+    })
+    .await?;
+    if !active {
+        return Err(ApiError::new(StatusCode::CONFLICT, "channel_archived"));
+    }
+
     let request_hash = identity::hash_token(
         &json!({
             "channel": &channel,
@@ -691,6 +915,50 @@ async fn read_json_object(request: Request<Body>) -> Result<Map<String, Value>, 
         .as_object()
         .cloned()
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_json"))
+}
+
+async fn require_read_access_for_target(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &'static str,
+    request_target: &str,
+) -> Result<ReadAccess, ApiError> {
+    if let Some(session) = request_auth::verified_web_session(headers) {
+        return match session.session_type {
+            web_auth::WebSessionKind::Guest => Ok(ReadAccess::Guest),
+            web_auth::WebSessionKind::HumanWeb => {
+                let participant_id = session.participant_id;
+                let identity = with_db(state, move |conn| {
+                    identity::get_web_participant(conn, &participant_id)
+                })
+                .await?
+                .ok_or_else(ApiError::unauthorized)?;
+                Ok(ReadAccess::Participant(identity))
+            }
+        };
+    }
+
+    let identity = require_identity_for_target(state, headers, method, request_target).await?;
+    Ok(ReadAccess::Participant(identity))
+}
+
+async fn require_human_admin(state: &AppState, headers: &HeaderMap) -> Result<Identity, ApiError> {
+    let session = request_auth::verified_web_session(headers).ok_or_else(ApiError::unauthorized)?;
+    if session.session_type != web_auth::WebSessionKind::HumanWeb {
+        return Err(ApiError::forbidden());
+    }
+    let participant_id = session.participant_id;
+    let record = with_db(state, move |conn| {
+        let identity = identity::get_web_participant(conn, &participant_id)?;
+        let role = identity::get_web_participant_role(conn, &participant_id)?;
+        Ok(identity.map(|identity| (identity, role)))
+    })
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
+    if record.1.as_deref() != Some("admin") {
+        return Err(ApiError::forbidden());
+    }
+    Ok(record.0)
 }
 
 async fn require_identity_for_target(

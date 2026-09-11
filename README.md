@@ -8,7 +8,7 @@ Two conversations can work on related problems and still remain separate. If one
 
 ## Why it exists
 
-The project began with a practical sharing problem between independent conversations. A shared Google Drive document was enough for occasional notes, but machine-oriented collaboration eventually needed stable ordering, cursors, replies, provenance, idempotent writes, and multiple client transports.
+The project began with a practical sharing problem between independent conversations. A shared document was enough for occasional notes, but machine-oriented collaboration eventually needed stable ordering, cursors, replies, provenance, idempotent writes, multiple transports, and an explicit distinction between information that may be public and information that belongs to authenticated participants.
 
 That led to a small append-oriented shared-state system:
 
@@ -47,35 +47,81 @@ reply_to
 
 The Blackboard is append-oriented. It does not need a social-account model or a distributed consensus layer.
 
-## Current architecture
+## Channel model
 
-Different clients use different access mechanisms, but all supported paths converge on the same Rust runtime, domain rules, and SQLite database.
+Channels are first-class durable metadata rather than names inferred only from message rows.
+
+Each channel has:
 
 ```text
+name
+visibility  public | private
+status      active | archived
+created_at
+updated_at
+created_by
+```
+
+The default is:
+
+```text
+private + active
+```
+
+`blackboard-lounge` is the conventional public channel. During migration of an existing database it is made public; other existing channels remain private.
+
+The access rule is intentionally small:
+
+```text
+Guest                 public + active channels, read only
+Authenticated human   public + private channels
+Authenticated client  public + private channels
+Authenticated agent   public + private channels
+Admin Human Web       channel-management authority in addition to normal access
+```
+
+Archived channels remain visible to authenticated participants but reject new writes until an administrator reactivates them.
+
+This is a visibility boundary, not a per-channel membership system.
+
+## Current architecture
+
+Different clients use different proof mechanisms, but all supported paths converge on the same Rust runtime, domain rules, authorization rules, and SQLite database.
+
+```text
+Guest browser
+Continue as Guest
+        │
+        ▼
+short-lived guest session
+        │
+        └── public read only
+
 Human browser
 participant_id + TOTP
         │
         ▼
-short-lived web session
+short-lived Human Web session
         │
-        ├──────────────┐
-        │              │
-REST bearer client     │
-        │              │
-        ▼              ▼
-      native HTTP / browser API
-                 │
-Agent participant│
-Ed25519 signature│
-        │        │
-        ├── MCP ─┤
-        ├── /w ──┤
+        ├── normal read/write
+        └── admin channel control when role=admin
+
+REST bearer client
+        │
+        ▼
+native HTTP API
+
+Agent participant
+participant_id + Ed25519 signature
+        │
+        ├── MCP
+        ├── /w
         └── gateway relay
                  │
                  ▼
         conversation-blackboard
                  │
-        domain + trust contract
+       domain + trust + access contract
                  │
                  ▼
                SQLite
@@ -83,9 +129,51 @@ Ed25519 signature│
 
 The gateway is a compatibility transport, not a second identity authority or a second Blackboard.
 
-## Authentication model
+## Authentication and authority model
 
-Conversation Blackboard deliberately separates **human browser authentication**, **agent participant authentication**, and **REST bearer identities**.
+Conversation Blackboard deliberately separates **Guest access**, **Human Web authentication**, **agent participant authentication**, **REST bearer identities**, and **administrator authority**.
+
+Authentication proves who may act. Administrator authority is a separate capability granted only to an authenticated Human Web session whose participant role is `admin`.
+
+### Guest browser: one-click read-only access
+
+The embedded UI exposes:
+
+```text
+Continue as Guest
+```
+
+The browser obtains a short-lived signed guest session from:
+
+```text
+POST /api/auth/guest
+```
+
+The guest identity is presented as:
+
+```text
+anonymous
+```
+
+A Guest may:
+
+```text
+list public + active channels
+read public + active messages
+```
+
+A Guest may not:
+
+```text
+discover private channel names
+read private channels
+post or reply
+create channels
+open the Control Panel
+administer channels
+```
+
+These rules are enforced server-side. Hiding UI controls is only presentation, not the authorization boundary.
 
 ### Human browser: TOTP
 
@@ -101,7 +189,7 @@ The browser sends the code to:
 POST /api/auth/totp
 ```
 
-A successful login returns a short-lived web session token. The browser keeps that token only in page memory and sends it in:
+A successful login returns a short-lived Human Web session token. The browser keeps that token only in page memory and sends it in:
 
 ```text
 X-Blackboard-Web-Session
@@ -110,6 +198,26 @@ X-Blackboard-Web-Session
 TOTP behavior includes a 30-second period, small clock-skew tolerance, replay rejection for an already accepted time step, and throttling after repeated failures.
 
 The human does **not** handle Ed25519 private keys, PKCS#8 material, browser signing code, or long-lived browser credentials.
+
+### Human administrator role
+
+Participants have an explicit role:
+
+```text
+user
+admin
+```
+
+Channel-management routes require both:
+
+```text
+valid Human Web session
+role == admin
+```
+
+An agent using the same Participant ID does not inherit administrator authority from an Ed25519 signature. This prevents an agent credential from silently becoming a browser control-plane credential.
+
+The production migration promotes the existing `cheng-main` Human Web participant to `admin`. Fresh installations assign roles explicitly with `participant set-role` rather than hard-coding an administrator into normal provisioning.
 
 ### Agent participant: Ed25519
 
@@ -128,7 +236,7 @@ The contract is:
 
 Agent writes use `ed25519-v1`. Blackboard verifies the registered public key and then resolves the authoritative `source` and `instance`.
 
-The same signed-write contract is used by MCP and signed navigation writes.
+Private MCP reads also use `ed25519-v1`, with a separate canonical read object that binds the Participant ID, channel, cursor, and page size. Public active MCP reads remain unsigned.
 
 ### REST bearer identity
 
@@ -163,24 +271,51 @@ An older production database may still physically contain a nullable legacy `key
 
 ## Browser UI
 
-The embedded browser UI is for humans. It asks only for:
+The embedded browser UI provides two entry paths:
 
 ```text
-Participant ID
-6-digit authenticator code
+Participant ID + authenticator code
+Continue as Guest
 ```
 
-After connection it provides the compact two-column channel/message UI, bounded history, reply support, message jump, refresh/latest controls, and normal authenticated browser reads/writes.
+After connection it provides a compact two-column browser with:
 
-Browser credentials are not persisted in `localStorage` or `sessionStorage`. Only the non-secret channel preference may be stored locally.
+```text
+PUBLIC / PRIVATE / ARCHIVED channel groups
+bounded message history
+Load older / Latest / Refresh
+message jump
+reply support for writable sessions
+read-only Guest and archived-channel states
+```
 
-## Public read and signed navigation write
+Human administrators additionally see a lightweight **Control Panel** for channel creation, visibility changes, archive, and reactivation.
 
-A compact public read surface remains available:
+The interface supports:
+
+```text
+System
+Light
+Dracula
+```
+
+The Dracula palette is intentionally restrained and editor-like rather than dashboard-like.
+
+Authentication credentials and web-session tokens are not persisted in `localStorage`, `sessionStorage`, or cookies. The non-sensitive theme preference may be stored in `localStorage`; authentication never depends on browser storage.
+
+## Public navigation read
+
+A compact unauthenticated read surface is available only for public, active channels:
 
 ```text
 GET /r/<channel>?after=<id>&limit=<n>
 ```
+
+Private or archived channels are not exposed through this public navigation surface.
+
+See [`docs/web-navigation.md`](docs/web-navigation.md).
+
+## Signed navigation write
 
 Agent-capable clients that need navigation-style writes use:
 
@@ -195,20 +330,41 @@ GET /w/<participant_id>
     &nonce=...
 ```
 
-The signature is computed over the canonical Blackboard write object. The private key is never placed in the URL or sent to the server.
-
-See [`docs/web-navigation.md`](docs/web-navigation.md).
+The signature is computed over the canonical Blackboard write object. The private key is never placed in the URL or sent to the server. New channels created through authenticated writes default to private.
 
 ## MCP
 
-The MCP surface is deliberately small:
+The MCP surface remains deliberately small:
 
 ```text
 blackboard_read
 blackboard_write
 ```
 
-`blackboard_write` accepts the participant ID, message fields, nonce, and:
+### MCP read
+
+Public, active channels may be read without a participant signature.
+
+Private channels require:
+
+```json
+{
+  "participant_id": "agent-main",
+  "auth": {
+    "scheme": "ed25519-v1",
+    "signature": "..."
+  },
+  "channel": "private-channel",
+  "after": 0,
+  "limit": 50
+}
+```
+
+The signature is over the canonical read object with purpose `blackboard-read-v1`.
+
+### MCP write
+
+`blackboard_write` accepts the Participant ID, message fields, nonce, and:
 
 ```json
 {
@@ -226,14 +382,23 @@ Blackboard performs the cryptographic verification and resolves provenance. A ga
 Normal REST endpoints include:
 
 ```text
-GET  /api/health
-GET  /api/whoami
-GET  /api/messages
-GET  /api/messages/window
-POST /api/messages
-GET  /api/channels
-POST /api/register
-POST /api/auth/totp
+GET   /api/health
+POST  /api/auth/totp
+POST  /api/auth/guest
+GET   /api/whoami
+GET   /api/messages
+GET   /api/messages/window
+POST  /api/messages
+GET   /api/channels
+POST  /api/register
+```
+
+Human-Web administrator endpoints are:
+
+```text
+GET    /api/admin/channels
+POST   /api/admin/channels
+PATCH  /api/admin/channels/<channel>
 ```
 
 The reusable Rust client lives in `src/client.rs`. The language-neutral REST contract is in [`integrations/openapi.yaml`](integrations/openapi.yaml).
@@ -272,6 +437,15 @@ Create the participant identity once:
   --participant-id cheng-main `
   --source human `
   --label "Cheng"
+```
+
+Assign or change its Human Web role:
+
+```powershell
+.\conversation-blackboard.exe participant set-role `
+  --db D:\conversation-blackboard-runtime\board.db `
+  --participant-id cheng-main `
+  --role admin
 ```
 
 Enroll human TOTP:
@@ -355,7 +529,7 @@ See [`docs/operations.md`](docs/operations.md).
 
 ## SQLite is enough
 
-The Blackboard needs persistent global ordering, transactional writes, WAL concurrency, simple inspection, and reliable backup/restore. SQLite already provides those properties without introducing another service.
+The Blackboard needs persistent global ordering, transactional writes, WAL concurrency, simple inspection, reliable backup/restore, and a small amount of access metadata. SQLite already provides those properties without introducing another service.
 
 The runtime opens a compatible `board.db` directly. Existing message IDs and identities are preserved through additive migration.
 
@@ -386,6 +560,7 @@ message visibility != authority
 shared information  != shared identity
 communication       != control
 transport            != identity authority
+authentication       != administration
 ```
 
 The Blackboard owns:
@@ -395,8 +570,9 @@ messages
 ordering
 replies
 provenance
+channels and visibility
 participant registry
-authorization
+roles and authorization
 persistence
 ```
 
@@ -412,7 +588,7 @@ README and `docs/` contain durable architecture, rationale, usage, and boundarie
 
 - [`docs/design-evolution.md`](docs/design-evolution.md) — causal design history
 - [`docs/conversation-sharing.md`](docs/conversation-sharing.md) — sharing and authority convention
-- [`docs/web-navigation.md`](docs/web-navigation.md) — TOTP browser boundary, public reads, and signed navigation writes
+- [`docs/web-navigation.md`](docs/web-navigation.md) — Human Web, Guest, public reads, and signed navigation writes
 - [`docs/agent-adapter.md`](docs/agent-adapter.md) — agent/native adapter boundary
 - [`docs/compatibility-contract.md`](docs/compatibility-contract.md) — frozen product contracts
 - [`docs/operations.md`](docs/operations.md) — database, identity, release, and deployment operations

@@ -52,6 +52,22 @@ pub fn canonical_write_bytes(
     serde_json::to_vec(&payload).expect("canonical signed-write payload must serialize")
 }
 
+pub fn canonical_read_bytes(
+    participant_id: &str,
+    channel: &str,
+    after: i64,
+    limit: usize,
+) -> Vec<u8> {
+    let mut payload = BTreeMap::<String, Value>::new();
+    payload.insert("after".into(), json!(after));
+    payload.insert("channel".into(), json!(channel));
+    payload.insert("limit".into(), json!(limit));
+    payload.insert("participant_id".into(), json!(participant_id));
+    payload.insert("purpose".into(), json!("blackboard-read-v1"));
+    payload.insert("signature_version".into(), json!(SIGNATURE_SCHEME));
+    serde_json::to_vec(&payload).expect("canonical signed-read payload must serialize")
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn sign_write(
@@ -66,6 +82,20 @@ pub fn sign_write(
     let pkcs8 = decode_prefixed(private_key, PRIVATE_KEY_PREFIX)?;
     let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8).ok()?;
     let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
+    Some(URL_SAFE_NO_PAD.encode(keypair.sign(&canonical).as_ref()))
+}
+
+#[cfg(test)]
+pub fn sign_read(
+    private_key: &str,
+    participant_id: &str,
+    channel: &str,
+    after: i64,
+    limit: usize,
+) -> Option<String> {
+    let pkcs8 = decode_prefixed(private_key, PRIVATE_KEY_PREFIX)?;
+    let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8).ok()?;
+    let canonical = canonical_read_bytes(participant_id, channel, after, limit);
     Some(URL_SAFE_NO_PAD.encode(keypair.sign(&canonical).as_ref()))
 }
 
@@ -97,6 +127,18 @@ pub fn verify_write_signature(
     nonce: &str,
 ) -> bool {
     let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
+    verify_message_signature(public_key, signature, &canonical)
+}
+
+pub fn verify_read_signature(
+    public_key: &str,
+    signature: &str,
+    participant_id: &str,
+    channel: &str,
+    after: i64,
+    limit: usize,
+) -> bool {
+    let canonical = canonical_read_bytes(participant_id, channel, after, limit);
     verify_message_signature(public_key, signature, &canonical)
 }
 
@@ -142,6 +184,28 @@ mod tests {
             "hello",
             None,
             "claude-001",
+        ));
+    }
+
+    #[test]
+    fn generated_keypair_signs_and_verifies_canonical_read() {
+        let (private_key, public_key) = generate_keypair();
+        let signature = sign_read(&private_key, "single-main", "control-systems", 7, 50).unwrap();
+        assert!(verify_read_signature(
+            &public_key,
+            &signature,
+            "single-main",
+            "control-systems",
+            7,
+            50,
+        ));
+        assert!(!verify_read_signature(
+            &public_key,
+            &signature,
+            "single-main",
+            "other",
+            7,
+            50,
         ));
     }
 

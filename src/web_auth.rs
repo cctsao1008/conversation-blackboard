@@ -18,14 +18,39 @@ pub const TOTP_PERIOD_SECS: u64 = 30;
 pub const TOTP_DIGITS: u32 = 6;
 pub const TOTP_MAX_FAILURES: i64 = 5;
 pub const TOTP_LOCK_SECS: u64 = 60;
+pub const GUEST_PARTICIPANT_ID: &str = "anonymous";
 const WEB_SESSION_PREFIX: &str = "bbsess-v1";
 const WEB_SESSION_PURPOSE: &str = "human-web-session-v1";
 const WEB_SESSION_TTL_SECS: u64 = 8 * 60 * 60;
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebSessionKind {
+    HumanWeb,
+    Guest,
+}
+
+impl WebSessionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HumanWeb => "human-web",
+            Self::Guest => "guest",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "human-web" => Some(Self::HumanWeb),
+            "guest" => Some(Self::Guest),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebSession {
     pub participant_id: String,
+    pub session_type: WebSessionKind,
     pub expires_at: u64,
     pub token: String,
 }
@@ -84,7 +109,19 @@ pub fn matching_totp_step(secret: &str, code: &str, now: u64) -> Option<u64> {
 }
 
 pub fn issue_web_session(participant_id: &str) -> WebSession {
-    issue_web_session_at(participant_id, current_unix_time())
+    issue_web_session_at(
+        participant_id,
+        WebSessionKind::HumanWeb,
+        current_unix_time(),
+    )
+}
+
+pub fn issue_guest_session() -> WebSession {
+    issue_web_session_at(
+        GUEST_PARTICIPANT_ID,
+        WebSessionKind::Guest,
+        current_unix_time(),
+    )
 }
 
 pub fn verify_web_session(token: &str) -> Option<WebSession> {
@@ -116,12 +153,17 @@ pub fn verify_http_request_signature(
     signed_auth::verify_message_signature(public_key, signature, &payload)
 }
 
-fn issue_web_session_at(participant_id: &str, now: u64) -> WebSession {
+fn issue_web_session_at(
+    participant_id: &str,
+    session_type: WebSessionKind,
+    now: u64,
+) -> WebSession {
     let expires_at = now.saturating_add(WEB_SESSION_TTL_SECS);
     let payload = canonical_json([
         ("expires_at", json!(expires_at)),
         ("participant_id", json!(participant_id)),
         ("purpose", json!(WEB_SESSION_PURPOSE)),
+        ("session_type", json!(session_type.as_str())),
         ("version", json!(WEB_SESSION_PREFIX)),
     ]);
     let payload_encoded = URL_SAFE_NO_PAD.encode(&payload);
@@ -132,6 +174,7 @@ fn issue_web_session_at(participant_id: &str, now: u64) -> WebSession {
     );
     WebSession {
         participant_id: participant_id.to_owned(),
+        session_type,
         expires_at,
         token,
     }
@@ -158,11 +201,19 @@ fn verify_web_session_at(token: &str, now: u64) -> Option<WebSession> {
     }
     let participant_id = value.get("participant_id")?.as_str()?.to_owned();
     let expires_at = value.get("expires_at")?.as_u64()?;
+    let session_type = match value.get("session_type") {
+        None => WebSessionKind::HumanWeb,
+        Some(value) => WebSessionKind::parse(value.as_str()?)?,
+    };
     if participant_id.is_empty() || participant_id.len() > 64 || expires_at < now {
+        return None;
+    }
+    if session_type == WebSessionKind::Guest && participant_id != GUEST_PARTICIPANT_ID {
         return None;
     }
     Some(WebSession {
         participant_id,
+        session_type,
         expires_at,
         token: token.to_owned(),
     })
@@ -285,12 +336,22 @@ mod tests {
     #[test]
     fn web_session_is_authenticated_and_expires() {
         let now = 1_700_000_000;
-        let session = issue_web_session_at("single-main", now);
+        let session = issue_web_session_at("single-main", WebSessionKind::HumanWeb, now);
         let verified = verify_web_session_at(&session.token, now + 10).unwrap();
         assert_eq!(verified.participant_id, "single-main");
+        assert_eq!(verified.session_type, WebSessionKind::HumanWeb);
         assert!(verify_web_session_at(&session.token, session.expires_at + 1).is_none());
         let mut tampered = session.token;
         tampered.push('x');
         assert!(verify_web_session_at(&tampered, now).is_none());
+    }
+
+    #[test]
+    fn guest_session_is_distinct_from_human_web_session() {
+        let now = 1_700_000_000;
+        let session = issue_web_session_at(GUEST_PARTICIPANT_ID, WebSessionKind::Guest, now);
+        let verified = verify_web_session_at(&session.token, now + 10).unwrap();
+        assert_eq!(verified.participant_id, GUEST_PARTICIPANT_ID);
+        assert_eq!(verified.session_type, WebSessionKind::Guest);
     }
 }
