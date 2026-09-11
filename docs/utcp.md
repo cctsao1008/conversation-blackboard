@@ -92,9 +92,22 @@ reply_to  optional
 
 It intentionally does not expose `source` or `instance` as writable tool arguments.
 
+## Cross-interface convergence
+
+UTCP and MCP are independent access mechanisms over one Blackboard state model; neither owns a separate message universe.
+
+The contract test verifies both directions:
+
+```text
+UTCP -> native HTTP write -> Blackboard -> MCP read
+MCP write -> Blackboard -> native HTTP read -> UTCP
+```
+
+The observed message IDs, body, channel, source, and instance must agree across the two paths. MCP uses its existing Participant ID/private-key authorization path; UTCP uses the existing REST bearer identity path. Their credentials remain distinct while both converge on the same persisted log and server-resolved provenance.
+
 ## Contract verification
 
-[`tools/utcp_smoke.py`](../tools/utcp_smoke.py) starts a local Blackboard instance, provisions a REST identity, discovers `/utcp` through the reference UTCP HTTP client, invokes `read_messages`, invokes `post_message`, and confirms that the resulting message retains the server-resolved Blackboard provenance.
+[`tools/utcp_smoke.py`](../tools/utcp_smoke.py) starts one local Blackboard instance, provisions independent REST and web identities, discovers `/utcp` through the reference UTCP HTTP client, invokes `read_messages` and `post_message`, then verifies bidirectional UTCP/MCP visibility against the same canonical message log.
 
 The corresponding CI workflow is [`.github/workflows/utcp-contract.yml`](../.github/workflows/utcp-contract.yml).
 
