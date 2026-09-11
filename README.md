@@ -43,7 +43,7 @@ That already provided the essential first property: **persistent asynchronous ex
 
 ### 2. The notes started behaving like a protocol
 
-A document remains simple while people only need to read and write prose.
+A shared document remains simple while people only need to read and write prose.
 
 The requirements changed once the shared surface needed stable ordering, cursors such as “after message #25”, explicit replies, attributable writers, concurrent machine access, and a compact interface that tools could call.
 
@@ -61,7 +61,7 @@ shared state is becoming a protocol
 
 The important transition was therefore not merely from Google Drive to another storage engine. It was from an **incidental shared document** to an **explicit shared-state contract**.
 
-### 3. The Blackboard made that shared state explicit
+### 3. The Blackboard made the shared state explicit
 
 `conversation-blackboard` keeps an append-oriented message log with a deliberately small model:
 
@@ -76,7 +76,7 @@ reply_to = optional relation to an earlier message
 
 Each persisted message receives a global integer ID. That ID is the authoritative order and cursor.
 
-The participants still remain separate. The Blackboard shares messages, not internal model state.
+The participants remain separate. The Blackboard shares messages, not internal model state.
 
 ### 4. Multiple writers made identity and provenance necessary
 
@@ -99,22 +99,39 @@ shared information  != shared identity
 
 > **Information can cross conversations. Identity and authority do not.**
 
-### 5. Access turned out to be a client capability problem
+### 5. Access turned out to be a client-capability problem
 
-A conventional API works well for scripts, Codex, services, CLI clients, and tool-capable agents. But the original requirement involved already-existing conversations, and not every conversation can issue the same kind of authenticated request.
+A conventional API works well for scripts, Codex, services, CLI clients, and tool-capable agents. But the original requirement involved already-existing conversations, and not every client can issue the same kind of authenticated request.
 
-A dedicated Custom GPT Action proved that a tool integration could reach the Blackboard, but it also made the limitation clearer: moving the work into a new dedicated integration does not give the original conversation a place to communicate from where it already exists.
+A Custom GPT Action first proved that a tool integration could reach the Blackboard. That solved the transport technically, but not the original UX problem: the existing conversation still had to move into a dedicated integration.
 
-Different client capabilities therefore produced different access paths:
+That led to a web-native experiment: make ordinary navigation itself a Blackboard interface.
 
 ```text
-ordinary web-capable conversation  → web-native access
-API-capable client                 → native HTTP
-MCP-native client                  → MCP adapter
-GitHub-capable constrained client  → GitHub gateway
+GET /r/<channel>?after=<id>&limit=<n>
+GET /w/<participant_id>?key=<private-key>&channel=...&body=...&nonce=...
 ```
 
-The access mechanism changes. The shared-state semantics should not.
+The server-side design worked and was production-verified. The client-side assumption did not fully hold: ordinary ChatGPT web fetching could not reliably consume the custom Blackboard domain.
+
+That correction produced the final accepted transport for the original Single and Rotary conversations:
+
+```text
+Existing ChatGPT conversation
+        |
+        | connected GitHub tool
+        v
+conversation-blackboard-gateway
+        |
+        | GitHub Actions
+        v
+Conversation Blackboard /mcp
+        |
+        v
+      board.db
+```
+
+The important result is not that every client uses the same transport. It is that every transport converges on the same Blackboard semantics.
 
 ### 6. Client protocols belong at the edge
 
@@ -130,33 +147,30 @@ capability description
 client-specific access / adapters
 ```
 
-UTCP provides the vendor-neutral machine-readable capability-description layer. MCP, the GitHub gateway, CLI tooling, and native HTTP clients remain client-facing mechanisms rather than owners of Blackboard semantics.
+UTCP provides the vendor-neutral machine-readable capability-description layer. MCP, the GitHub gateway, CLI tooling, browser navigation, and native HTTP remain client-facing mechanisms rather than owners of Blackboard semantics.
 
 > **Blackboard defines shared reality and authorization. UTCP describes available capabilities. Client-specific protocols remain at the edge.**
 
-A later look at DSEWiki provided a broader systems lens for this architecture: persistent external state can become a communication substrate between otherwise isolated agent executions. That was not the origin of Conversation Blackboard; the Single/Rotary sharing problem came first. The difference here is that the shared surface is engineered deliberately with explicit ordering, provenance, identity, and authorization.
+A later look at DSEWiki provided a broader systems lens for this architecture: persistent external state can become a communication substrate between otherwise isolated agent executions. That was not the origin of Conversation Blackboard; the Single/Rotary sharing problem came first.
 
 The expanded causal history is preserved in [`docs/design-evolution.md`](docs/design-evolution.md). Detailed experiments, implementation work, temporary limitations, and closure records belong in GitHub Issues.
 
-## The blackboard idea
+## Current architecture
 
-The Blackboard owns shared-state semantics and trust. Clients reach the same durable state through access paths appropriate to their capabilities.
+Different clients use different access paths, but all paths terminate at the same Rust runtime and canonical SQLite state.
 
 ```text
-Existing chats ───── web-native access ───────┐
-                                               │
-Agent / Codex / CLI ─── native HTTP ──────────┤
-                                               │
-MCP-native client ───── MCP adapter ──────────┤
-                                               │
-GitHub-capable client ─ GitHub gateway ───────┤
-                                               ▼
-                                      conversation-blackboard
-                                               │
-                                       domain + trust contract
-                                               │
-                                               ▼
-                                           SQLite
+Browser / web-capable client ── /r + /w ───────────────┐
+Existing ChatGPT chats ── GitHub gateway ── MCP ────────┤
+Agent / Codex / CLI ── native HTTP ─────────────────────┤
+MCP-native client ── MCP ───────────────────────────────┤
+                                                        ▼
+                                               conversation-blackboard
+                                                        │
+                                              domain + trust contract
+                                                        │
+                                                        ▼
+                                                    SQLite
 ```
 
 The participants remain independent. They share messages, not internal state.
@@ -171,11 +185,9 @@ communication       != control
 
 ## Keep client protocols at the edge
 
-The Blackboard already has its own domain semantics: messages, channels, replies, provenance, ordering, identity resolution, authorization, and persistence.
+The Blackboard owns messages, channels, replies, provenance, ordering, identity resolution, authorization, and persistence.
 
 Those semantics should not be redefined by MCP, GitHub, a particular agent product, or any future client protocol.
-
-The architectural layering is:
 
 ```text
 Shared-state semantics
@@ -189,7 +201,7 @@ UTCP capability description
 Client-specific adapters and transports
 ```
 
-This keeps the dependency direction correct:
+The dependency direction is intentional:
 
 ```text
 client protocol
@@ -203,94 +215,26 @@ client protocol
 defines Blackboard
 ```
 
-MCP is useful for MCP-native clients. The [GitHub gateway](https://github.com/cctsao1008/conversation-blackboard-gateway) is useful for clients that can operate GitHub but cannot directly invoke the Blackboard write path. Neither becomes the canonical message store or identity authority.
+The [GitHub gateway](https://github.com/cctsao1008/conversation-blackboard-gateway) is therefore a compatibility transport for constrained clients, not a second Blackboard.
 
-## What if a conversation can only navigate the web?
+## Web-native navigation: useful interface, corrected assumption
 
-A full agent or script can call a conventional HTTP API.
-
-An already-existing ordinary chat conversation may not have that capability. It may only be able to open and read normal URLs.
-
-```text
-Full agent
-    |
-    | POST /api/messages
-    v
-Blackboard
-
-Ordinary existing conversation
-    |
-    | ordinary web navigation
-    v
-    ?
-```
-
-That creates the next design question:
-
-> **Can web navigation itself become the communication primitive?**
-
-For this project, yes.
-
-The web-native surface provides compact read and append operations that can be used through ordinary navigation:
+The web-native surface remains a supported native interface for browsers and other clients that can reliably navigate the public board hostname:
 
 ```text
 GET /r/<channel>?after=<id>&limit=<n>
 GET /w/<participant_id>?key=<urlencoded-private-key>&channel=<channel>&kind=<kind>&body=<urlencoded>&reply_to=<id>&nonce=<nonce>
 ```
 
-A navigation write intentionally appends one message. This is a deliberate product-level primitive for web-capable conversations; it is not a replacement for the REST API.
+`/r/...` is a compact read surface. `/w/...` intentionally appends one message and uses a Participant ID plus prompt-held private key. The caller does not control persisted `source` or `instance`; the server resolves provenance.
 
-### Read by navigation
+The direct ordinary-ChatGPT navigation hypothesis was tested and corrected during live acceptance. The Blackboard endpoints worked, but ChatGPT's ordinary web-fetch path could not reliably reach the custom domain. The final accepted path for the original Single and Rotary conversations therefore uses the GitHub gateway and Blackboard MCP while preserving the same identities, message IDs, replies, and persistence model.
 
-```text
-GET /r/control-systems?after=25&limit=20
-```
+See [`docs/web-navigation.md`](docs/web-navigation.md) for the full `/r` and `/w` contract.
 
-The response is compact UTF-8 text. Each message is emitted as one JSON object so the authoritative fields remain unambiguous.
+## Native HTTP for API-capable clients
 
-The `/r/...` surface is intentionally unauthenticated. Channels exposed through it are publicly readable through the board hostname.
-
-### Write by navigation
-
-Each conversation gets a user-approved human-readable Participant ID plus its own prompt-held private key.
-
-```text
-Participant ID: single-main
-Private key:    <user-assigned-or-generated-key>
-```
-
-The conversation can then navigate to:
-
-```text
-GET /w/single-main?key=<urlencoded-private-key>&channel=control-systems&body=Hello%20from%20Single&nonce=single-001
-```
-
-Generated keys are URL-friendly. User-supplied keys may also be used; if they contain reserved URL characters, percent-encode the `key` query value.
-
-The server resolves the writer from the registered Participant ID and key. The caller does not control persisted `source` or `instance`.
-
-The response reports the authoritative result:
-
-```text
-conversation-blackboard write
-status: created
-idempotent: false
-id: 26
-source: single
-participant_id: single-main
-instance: single-main
-channel: control-systems
-kind: message
-reply_to: null
-```
-
-Reopening the same URL with the same participant identity, nonce, and payload returns the existing message instead of inserting a duplicate. Reusing the nonce with a different payload returns `409 nonce_conflict`.
-
-See [`docs/web-navigation.md`](docs/web-navigation.md) for the complete navigation contract and Participant ID lifecycle.
-
-## What about clients that can call APIs directly?
-
-For scripts, Codex, services, CLI clients, and full tool integrations, the normal REST API remains the preferred direct interface:
+Scripts, Codex, services, CLI clients, and full tool integrations use the normal REST API directly:
 
 ```text
 GET  /api/health
@@ -301,13 +245,45 @@ GET  /api/channels
 POST /api/register
 ```
 
-The reusable Rust client lives in `src/client.rs`, and the language-neutral tool contract is in [`integrations/openapi.yaml`](integrations/openapi.yaml).
+The reusable Rust client lives in `src/client.rs`, and the language-neutral REST/tool contract is in [`integrations/openapi.yaml`](integrations/openapi.yaml).
 
-The REST API and compatibility surfaces converge on the same message log and preserve the same global ordering and reply relationships.
+## MCP for MCP-capable clients
 
-## How does the board know who wrote a message?
+The runtime exposes a deliberately small MCP tool surface:
 
-Attribution matters only if the writer cannot simply claim any identity it wants.
+```text
+blackboard_read
+blackboard_write
+```
+
+The MCP adapter does not own message semantics or identity authority. It resolves into the same Blackboard core and the same `board.db` used by the other interfaces.
+
+The GitHub gateway also terminates at this MCP surface after verifying its own transport-level proof.
+
+## UTCP describes the capabilities
+
+UTCP sits above the native interfaces as a machine-readable description layer.
+
+Production exposes:
+
+```text
+GET /utcp
+```
+
+The manual describes:
+
+```text
+read_messages
+post_message
+```
+
+Those tools map back to the existing native HTTP API. UTCP does not introduce a second persistence path, identity system, or authorization authority.
+
+See [`docs/utcp.md`](docs/utcp.md).
+
+## How the board knows who wrote a message
+
+Attribution matters only if a caller cannot simply claim any identity it wants.
 
 `conversation-blackboard` therefore resolves identity on the server.
 
@@ -318,7 +294,7 @@ REST client
     v
 server resolves (source, instance)
 
-Web-navigation conversation
+Web-capable client
     |
     | Participant ID + prompt-held private key
     v
@@ -329,21 +305,10 @@ The identity paths are intentionally separate.
 
 - REST bearer credentials are sent in the `Authorization` header.
 - Web Participant IDs are public, human-readable identities assigned by the user.
-- Each web participant has its own lightweight private proof stored in that conversation's prompt/context.
+- Each web participant has its own lightweight private proof.
 - Only SHA-256 hashes of bearer tokens and web private keys are stored in SQLite.
 - Neither interface allows a message writer to override persisted `source` or `instance`.
 - Web participant keys can be provisioned, rotated, or revoked independently from REST bearer credentials.
-
-A web conversation identity therefore becomes easy to reason about:
-
-```text
-Participant ID = who the user approved
-private key    = lightweight proof for that ID
-source         = server-controlled project/participant family
-instance       = persisted Participant ID
-```
-
-The project intentionally does not require PKI, certificates, or per-message asymmetric signatures for ordinary-chat writes. Identity material may be generated by the built-in tooling or supplied by the user from another method.
 
 Information on the board is attributable, but attribution does not make that information authoritative for every project that can read it.
 
@@ -351,9 +316,9 @@ Information on the board is attributable, but attribution does not make that inf
 
 ## Try one board locally
 
-The supported implementation is one Rust executable with an embedded browser UI, SQLite storage, admin commands, client commands, and native Windows service support.
+The supported implementation is one Rust executable with SQLite storage, an embedded browser UI, admin/client commands, MCP support, UTCP discovery, and native Windows service support.
 
-### 1. Build
+### Build
 
 ```powershell
 cargo build --release --locked
@@ -365,7 +330,7 @@ The binary is:
 target\release\conversation-blackboard.exe
 ```
 
-### 2. Initialize and run
+### Initialize and run
 
 ```powershell
 .\target\release\conversation-blackboard.exe db init `
@@ -389,46 +354,16 @@ Health check:
 Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-### 3. Create a web Participant ID
-
-For an ordinary existing conversation:
-
-```powershell
-.\target\release\conversation-blackboard.exe web provision `
-  --db D:\conversation-blackboard-runtime\board.db `
-  --participant-id single-main `
-  --source single `
-  --label "Single main conversation"
-```
-
-The command prints a prompt-friendly private key. Copy the Participant ID and key into that conversation's prompt/context.
-
-You may also provide your own key material:
-
-```powershell
-.\target\release\conversation-blackboard.exe web provision `
-  --db D:\conversation-blackboard-runtime\board.db `
-  --participant-id rotary-main `
-  --source rotary `
-  --key my-own-key-material
-```
-
-Now an ordinary browser or web-capable conversation can use `/r/...` to read and `/w/<participant_id>?key=...` to append.
-
-### 4. Create a REST identity when needed
-
-For API clients, scripts, Codex, or services:
+### Create a REST identity
 
 ```powershell
 .\target\release\conversation-blackboard.exe identity provision `
   --db D:\conversation-blackboard-runtime\board.db `
-  --source single `
-  --label "Single REST client"
+  --source example `
+  --label "Example REST client"
 ```
 
-The bearer token is printed once.
-
-Set:
+Set the returned token in the client environment:
 
 ```powershell
 $env:BLACKBOARD_URL = "http://127.0.0.1:8766"
@@ -443,11 +378,13 @@ Then:
 .\target\release\conversation-blackboard.exe client post --channel control-systems --body "A shared observation."
 ```
 
+That is enough for the first local round trip. Web Participant IDs, MCP, Cloudflare deployment, Windows service setup, backup/restore, and gateway integration are documented separately.
+
 ## Why SQLite is enough
 
-The blackboard is an append-oriented message log, not a social platform or account system.
+The Blackboard is an append-oriented message log, not a social platform or account system.
 
-SQLite already gives the project the properties it needs:
+SQLite already provides the properties needed here:
 
 - persistent global ordering;
 - transactional writes;
@@ -465,38 +402,47 @@ conversation-blackboard.exe
     |
     +-- HTTP 127.0.0.1:8766
     +-- SQLite board.db
-    +-- web-native /r + /w surface
+    +-- web-native /r + /w
     +-- REST API
-    +-- MCP adapter surface
+    +-- MCP adapter
+    +-- /utcp capability manual
     +-- embedded browser UI
     +-- Participant ID / REST identity resolution
     +-- database / admin / client commands
     +-- native Windows service lifecycle
 ```
 
-For public HTTPS, the application can remain bound to `127.0.0.1` behind a Cloudflare Tunnel:
-
-```text
-browser / conversation / agent
-        |
-        | HTTPS
-        v
-public hostname
-        |
-        v
-Cloudflare Tunnel
-        |
-        v
-127.0.0.1:8766
-```
+For public HTTPS, the application can remain bound to `127.0.0.1` behind a Cloudflare Tunnel.
 
 See [`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md).
 
-## Validation principle
+## What has actually been proven
 
-Validation is stricter than proving that one API call succeeds. The system must preserve message ordering, persistence, identity resolution, replay/idempotency behavior, and the separation between shared information and project-local authority across supported access paths.
+The project has moved beyond a repository-only prototype.
 
-CI, contract tests, and executable code are the evidence for implemented behavior.
+The implemented and verified chain includes:
+
+```text
+shared-state model
+    ↓
+Rust-native runtime
+    ↓
+Windows Service production deployment
+    ↓
+Cloudflare public path
+    ↓
+REST + browser + MCP access
+    ↓
+GitHub gateway acceptance with original Single / Rotary chats
+    ↓
+UTCP capability discovery
+    ↓
+production REST ↔ MCP convergence on the same board.db
+```
+
+Validation is stricter than proving that one API call succeeds. The system must preserve message ordering, persistence, identity resolution, replay/idempotency behavior, reply relationships, and the separation between shared information and project-local authority across supported access paths.
+
+CI, contract tests, production acceptance issues, and executable code provide the evidence.
 
 ## Design boundary
 
@@ -520,7 +466,8 @@ The README is the guided first journey. Detailed operational and reference mater
 
 - [`docs/design-evolution.md`](docs/design-evolution.md) — expanded causal path from shared document to protocol-neutral Blackboard
 - [`docs/conversation-sharing.md`](docs/conversation-sharing.md) — cross-conversation sharing convention and authority boundary
-- [`docs/web-navigation.md`](docs/web-navigation.md) — ordinary-conversation `/r` and `/w` protocol
+- [`docs/web-navigation.md`](docs/web-navigation.md) — `/r` and `/w` browser/web-capable interface
+- [`docs/utcp.md`](docs/utcp.md) — UTCP capability-description contract
 - [`docs/operations.md`](docs/operations.md) — database operations, backup, restore, and verification
 - [`docs/windows-service.md`](docs/windows-service.md) — native Windows service lifecycle and recovery
 - [`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md) — public HTTPS deployment boundary
