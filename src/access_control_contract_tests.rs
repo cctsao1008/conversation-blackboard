@@ -31,8 +31,7 @@ async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
     drop(conn);
 
     let request_target = "/api/admin/channels";
-    let canonical =
-        web_auth::canonical_http_request_bytes("cheng-main", "GET", request_target);
+    let canonical = web_auth::canonical_http_request_bytes("cheng-main", "GET", request_target);
     let pkcs8 = URL_SAFE_NO_PAD
         .decode(
             private_key
