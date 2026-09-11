@@ -6,7 +6,14 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use sha2::{Digest, Sha256};
 
-use crate::{model::Identity, participant_key};
+use crate::{model::Identity, participant_key, signed_auth};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParticipantVerification {
+    pub identity: Identity,
+    pub signature_scheme: String,
+    pub public_key: String,
+}
 
 fn source_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -96,6 +103,62 @@ pub fn get_web_participant(conn: &Connection, participant_id: &str) -> Result<Op
         },
     )
     .optional()
+}
+
+pub fn get_web_participant_verification(
+    conn: &Connection,
+    participant_id: &str,
+) -> Result<Option<ParticipantVerification>> {
+    if validate_participant_id(participant_id).is_none() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT source, participant_id, label, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND signature_scheme IS NOT NULL\n           AND public_key IS NOT NULL\n         LIMIT 1",
+        [participant_id],
+        |row| {
+            Ok(ParticipantVerification {
+                identity: Identity {
+                    source: row.get(0)?,
+                    instance: row.get(1)?,
+                    label: row.get(2)?,
+                },
+                signature_scheme: row.get(3)?,
+                public_key: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn set_web_participant_signing_key(
+    conn: &Connection,
+    participant_id: &str,
+    public_key: &str,
+) -> Result<bool> {
+    if validate_participant_id(participant_id).is_none()
+        || !signed_auth::validate_public_key(public_key)
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let changed = conn.execute(
+        "UPDATE web_participants\n         SET public_key = ?1, signature_scheme = ?2, updated_at = unixepoch()\n         WHERE participant_id = ?3",
+        params![public_key, signed_auth::SIGNATURE_SCHEME, participant_id],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn revoke_web_participant_signing_key(
+    conn: &Connection,
+    participant_id: &str,
+) -> Result<bool> {
+    if validate_participant_id(participant_id).is_none() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let changed = conn.execute(
+        "UPDATE web_participants\n         SET public_key = NULL, signature_scheme = NULL, updated_at = unixepoch()\n         WHERE participant_id = ?1 AND public_key IS NOT NULL",
+        [participant_id],
+    )?;
+    Ok(changed == 1)
 }
 
 pub fn validate_source(source: &str) -> Option<String> {
@@ -366,5 +429,53 @@ mod tests {
                 .is_none()
         );
         assert!(resolve_identity(&conn, &bearer).unwrap().is_some());
+    }
+
+    #[test]
+    fn signing_key_registry_is_rotatable_revocable_and_independent_of_bearer_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        provision_web_participant(
+            &conn,
+            "claude-main",
+            "claude",
+            Some("Claude"),
+            "legacy-key",
+        )
+        .unwrap()
+        .unwrap();
+
+        let (_, public_a) = signed_auth::generate_keypair();
+        let (_, public_b) = signed_auth::generate_keypair();
+        assert!(set_web_participant_signing_key(&conn, "claude-main", &public_a).unwrap());
+        let registered = get_web_participant_verification(&conn, "claude-main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(registered.identity.instance, "claude-main");
+        assert_eq!(registered.identity.source, "claude");
+        assert_eq!(registered.signature_scheme, signed_auth::SIGNATURE_SCHEME);
+        assert_eq!(registered.public_key, public_a);
+        assert!(resolve_web_participant(&conn, "claude-main", "legacy-key")
+            .unwrap()
+            .is_some());
+
+        assert!(set_web_participant_signing_key(&conn, "claude-main", &public_b).unwrap());
+        assert_eq!(
+            get_web_participant_verification(&conn, "claude-main")
+                .unwrap()
+                .unwrap()
+                .public_key,
+            public_b
+        );
+
+        assert!(revoke_web_participant_signing_key(&conn, "claude-main").unwrap());
+        assert!(get_web_participant_verification(&conn, "claude-main")
+            .unwrap()
+            .is_none());
+        assert!(resolve_web_participant(&conn, "claude-main", "legacy-key")
+            .unwrap()
+            .is_some());
     }
 }
