@@ -10,8 +10,8 @@ pub fn resolve_request_identity(
     conn: &Connection,
     headers: &HeaderMap,
 ) -> Result<Option<Identity>> {
-    let participant_header_present = headers.contains_key(PARTICIPANT_ID_HEADER)
-        || headers.contains_key(PRIVATE_KEY_HEADER);
+    let participant_header_present =
+        headers.contains_key(PARTICIPANT_ID_HEADER) || headers.contains_key(PRIVATE_KEY_HEADER);
 
     if participant_header_present {
         let Some(participant_id) = header_text(headers, PARTICIPANT_ID_HEADER) else {
@@ -30,7 +30,11 @@ pub fn resolve_request_identity(
 }
 
 fn header_text<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
-    headers.get(name)?.to_str().ok().filter(|value| !value.is_empty())
+    headers
+        .get(name)?
+        .to_str()
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -112,15 +116,9 @@ mod tests {
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
 
-        identity::provision_web_participant(
-            &conn,
-            "operator-main",
-            "operator",
-            None,
-            "wk_old",
-        )
-        .unwrap()
-        .unwrap();
+        identity::provision_web_participant(&conn, "operator-main", "operator", None, "wk_old")
+            .unwrap()
+            .unwrap();
 
         let headers_for = |key: &'static str| {
             let mut headers = HeaderMap::new();

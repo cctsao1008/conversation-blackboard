@@ -144,11 +144,11 @@ fn json_error(status: StatusCode, code: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity;
     use axum::{
         body::{to_bytes, Body},
         http::{header, Request},
     };
-    use crate::identity;
     use serde_json::Value;
     use tempfile::{tempdir, TempDir};
     use tower::ServiceExt;
