@@ -22,6 +22,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Make helper substitutions literal
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/implement_totp_human_auth.py')
+          text = path.read_text(encoding='utf-8')
+          needle = 'import re\n'
+          shim = '''import re\n\n_original_subn = re.subn\ndef _literal_subn(pattern, repl, string, *args, **kwargs):\n    if isinstance(repl, str):\n        literal = repl\n        repl = lambda _match, literal=literal: literal\n    return _original_subn(pattern, repl, string, *args, **kwargs)\nre.subn = _literal_subn\n'''
+          if '_literal_subn' not in text:
+              text = text.replace(needle, shim, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
       - name: Apply TOTP migration
         run: python .github/scripts/implement_totp_human_auth.py
       - name: Format
