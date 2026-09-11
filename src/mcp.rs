@@ -183,7 +183,7 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Read shared channels with blackboard_read. Use blackboard_write only when the user wants to append a thought as an approved Participant ID. Participant writes require an ed25519-v1 signature over the canonical write request. The server owns source/instance provenance. Use authoritative message IDs for reply_to; exact retries with the same nonce are idempotent."
+        "instructions": "Read public channels with blackboard_read without auth. Private-channel reads require participant_id plus an ed25519-v1 signature over the canonical read request. Use blackboard_write only when the user wants to append a thought as an approved Participant ID. Participant writes require an ed25519-v1 signature over the canonical write request. The server owns source/instance provenance. Use authoritative message IDs for reply_to; exact retries with the same nonce are idempotent."
     }))
 }
 
@@ -193,7 +193,7 @@ fn tools_list_result() -> Value {
             {
                 "name": "blackboard_read",
                 "title": "Read Conversation Blackboard",
-                "description": "Use this when the user wants to read persisted thoughts from a Conversation Blackboard channel. Returns authoritative messages in ascending message-ID order.",
+                "description": "Read a Blackboard channel. Public channels may be read without auth. Private channels require participant_id plus an ed25519-v1 signature over the canonical read request.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -214,6 +214,26 @@ fn tools_list_result() -> Value {
                             "minimum": 1,
                             "maximum": MAX_PAGE_SIZE,
                             "default": DEFAULT_PAGE_SIZE
+                        },
+                        "participant_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "description": "Optional participant identity for private-channel reads."
+                        },
+                        "auth": {
+                            "type": "object",
+                            "properties": {
+                                "scheme": {"type": "string", "enum": ["ed25519-v1"]},
+                                "signature": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128,
+                                    "description": "Base64url Ed25519 signature over the canonical read request."
+                                }
+                            },
+                            "required": ["scheme", "signature"],
+                            "additionalProperties": false
                         }
                     },
                     "required": ["channel"],
@@ -396,7 +416,7 @@ async fn tool_call_result(
 }
 
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {
-    if !only_keys(arguments, &["channel", "after", "limit"]) {
+    if !only_keys(arguments, &["channel", "after", "limit", "participant_id", "auth"]) {
         return tool_error("invalid_arguments");
     }
     let channel = match arguments.get("channel").and_then(Value::as_str) {
@@ -417,6 +437,68 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
             _ => return tool_error("invalid_limit"),
         },
     };
+
+    let participant_id = arguments.get("participant_id").and_then(Value::as_str);
+    let auth = arguments.get("auth").and_then(Value::as_object);
+    let signed = participant_id.is_some() || auth.is_some();
+    if signed {
+        let participant_id = match participant_id.and_then(identity::validate_participant_id) {
+            Some(value) => value,
+            None => return tool_error("invalid_participant_id"),
+        };
+        let auth = match auth {
+            Some(value) if value.len() == 2 && only_keys(value, &["scheme", "signature"]) => value,
+            _ => return tool_error("invalid_auth"),
+        };
+        if auth.get("scheme").and_then(Value::as_str) != Some(signed_auth::SIGNATURE_SCHEME) {
+            return tool_error("unsupported_signature_scheme");
+        }
+        let signature = match auth
+            .get("signature")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+        {
+            Some(value) => value.to_owned(),
+            None => return tool_error("invalid_auth"),
+        };
+        let lookup = participant_id.clone();
+        let verify_channel = channel.clone();
+        let verified = match with_db(state, move |conn| {
+            let Some(record) = identity::get_web_participant_verification(conn, &lookup)? else {
+                return Ok(false);
+            };
+            Ok(record.signature_scheme == signed_auth::SIGNATURE_SCHEME
+                && signed_auth::verify_read_signature(
+                    &record.public_key,
+                    &signature,
+                    &lookup,
+                    &verify_channel,
+                    after,
+                    limit,
+                ))
+        })
+        .await
+        {
+            Ok(value) => value,
+            Err(()) => return tool_error("database_unavailable"),
+        };
+        if !verified {
+            return tool_error("unauthorized");
+        }
+    } else {
+        let check_channel = channel.clone();
+        let public = match with_db(state, move |conn| {
+            db::channel_is_public_active(conn, &check_channel)
+        })
+        .await
+        {
+            Ok(value) => value,
+            Err(()) => return tool_error("database_unavailable"),
+        };
+        if !public {
+            return tool_error("forbidden");
+        }
+    }
 
     let query_channel = channel.clone();
     let rows = match with_db(state, move |conn| {
@@ -505,6 +587,20 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         Ok(writer) => writer,
         Err(code) => return tool_error(code),
     };
+
+    let metadata_channel = channel.clone();
+    let creator = writer.instance.clone();
+    let active = match with_db(state, move |conn| {
+        db::ensure_channel_for_write(conn, &metadata_channel, Some(&creator))
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    if !active {
+        return tool_error("channel_archived");
+    }
 
     let request_hash = identity::hash_token(
         &json!({
