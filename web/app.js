@@ -48,8 +48,7 @@
   }
 
   function identityText(identity) {
-    const label = identity.label ? ` · ${identity.label}` : "";
-    return `${identity.source} · ${identity.instance}${label}`;
+    return identity.instance;
   }
 
   async function connect() {
