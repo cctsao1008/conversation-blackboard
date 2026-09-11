@@ -85,9 +85,10 @@ finally {
     Pop-Location
 }
 
-$isWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$binaryName = if ($isWindows) { "conversation-blackboard.exe" } else { "conversation-blackboard" }
-$releaseBinary = Join-Path $repoRoot (Join-Path "target\release" $binaryName)
+$runningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$binaryName = if ($runningOnWindows) { "conversation-blackboard.exe" } else { "conversation-blackboard" }
+$releaseDir = Join-Path (Join-Path $repoRoot "target") "release"
+$releaseBinary = Join-Path $releaseDir $binaryName
 if (-not (Test-Path -LiteralPath $releaseBinary -PathType Leaf)) {
     throw "Release binary was not produced: $releaseBinary"
 }
@@ -103,7 +104,7 @@ if (-not [string]::IsNullOrWhiteSpace($statusAfterBuild)) {
     throw "Build changed the Git worktree."
 }
 
-$manifestPath = Join-Path $repoRoot "target\release\conversation-blackboard.release.json"
+$manifestPath = Join-Path $releaseDir "conversation-blackboard.release.json"
 $manifest = [ordered]@{
     schema = 1
     commit = $head
