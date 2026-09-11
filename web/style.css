@@ -24,6 +24,7 @@ button { cursor: pointer; }
 
 .topbar,
 .channel-head,
+.channel-head-actions,
 .sidebar-head,
 .composer-actions,
 .connect-row,
@@ -104,6 +105,11 @@ button.secondary {
   color: CanvasText;
 }
 
+button:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
 button.link-button {
   border: 0;
   padding: 0;
@@ -164,8 +170,26 @@ button.link-button {
   overflow: hidden;
 }
 
-.channel-head { padding: 14px 16px; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }
+.channel-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+}
 .channel-head .eyebrow { margin-bottom: 2px; }
+.channel-title { min-width: 0; }
+.channel-title h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-head-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+.channel-message-count {
+  font-size: .82rem;
+  opacity: .6;
+  white-space: nowrap;
+}
 
 .timeline {
   min-height: 0;
@@ -219,6 +243,12 @@ button.link-button {
   margin-top: 9px;
 }
 .message-actions button { font-size: .78rem; }
+.history-nav {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 2px;
+}
+.history-nav button { font-size: .82rem; }
 
 .empty {
   display: none;
@@ -265,5 +295,14 @@ button.link-button {
   .channel-button { width: auto; min-width: max-content; }
   .channel-name-text { overflow: visible; text-overflow: clip; }
   .conversation { min-height: 68vh; }
+  .channel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .channel-head-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
   .connect-row { align-items: stretch; flex-direction: column; }
 }
