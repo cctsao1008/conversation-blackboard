@@ -208,6 +208,8 @@ reply_to           optional positive Blackboard message ID
 
 `conversation_ref` is deliberately provider-neutral and is not required to be an RFC UUID. If present, the server trims it, requires a non-empty printable value, rejects control characters, and limits it to 256 UTF-8 bytes.
 
+The active payload contract recognizes `conversation_ref` only. The former `conversation_uuid` name is retained only inside database migration compatibility logic so development databases created during #66 can be upgraded without losing provenance values.
+
 Unknown fields are rejected. In particular, the caller cannot override:
 
 ```text
