@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS web_participants (
     source             TEXT NOT NULL,
     label              TEXT,
     role               TEXT NOT NULL DEFAULT 'user',
+    status             TEXT NOT NULL DEFAULT 'active',
     public_key         TEXT,
     signature_scheme   TEXT,
     totp_secret        TEXT,
@@ -43,7 +44,8 @@ CREATE TABLE IF NOT EXISTS web_participants (
     totp_locked_until  INTEGER,
     created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
-    CHECK (role IN ('user', 'admin'))
+    CHECK (role IN ('user', 'admin')),
+    CHECK (status IN ('active', 'inactive'))
 );
 
 CREATE TABLE IF NOT EXISTS channels (
