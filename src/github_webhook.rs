@@ -18,7 +18,7 @@ use crate::{db, identity, model::Identity};
 
 const GITHUB_PROVIDER: &str = "github";
 const TITLE_PREFIX: &str = "[blackboard]";
-const MAX_CONVERSATION_UUID_BYTES: usize = 256;
+const MAX_CONVERSATION_REF_BYTES: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct GithubWebhookState {
@@ -316,7 +316,7 @@ fn normalize_conversation_ref(value: Option<&str>) -> Result<Option<String>, ()>
     };
     let value = value.trim();
     if value.is_empty()
-        || value.len() > MAX_CONVERSATION_UUID_BYTES
+        || value.len() > MAX_CONVERSATION_REF_BYTES
         || value.chars().any(char::is_control)
     {
         return Err(());
@@ -584,7 +584,7 @@ mod tests {
     async fn invalid_conversation_references_are_rejected() {
         for (index, value) in [
             "   ".to_owned(),
-            "x".repeat(MAX_CONVERSATION_UUID_BYTES + 1),
+            "x".repeat(MAX_CONVERSATION_REF_BYTES + 1),
             "bad\nreference".to_owned(),
         ]
         .into_iter()
