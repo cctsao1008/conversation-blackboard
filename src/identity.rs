@@ -95,6 +95,21 @@ pub fn get_web_participant_role(conn: &Connection, participant_id: &str) -> Resu
     .optional()
 }
 
+pub fn get_web_participant_status(
+    conn: &Connection,
+    participant_id: &str,
+) -> Result<Option<String>> {
+    if validate_participant_id(participant_id).is_none() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT status FROM web_participants WHERE participant_id = ?1 LIMIT 1",
+        [participant_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 pub fn set_web_participant_role(
     conn: &Connection,
     participant_id: &str,
@@ -106,6 +121,23 @@ pub fn set_web_participant_role(
     let changed = conn.execute(
         "UPDATE web_participants\n         SET role = ?1, updated_at = unixepoch()\n         WHERE participant_id = ?2",
         params![role, participant_id],
+    )?;
+    Ok(changed == 1)
+}
+
+pub fn set_web_participant_status(
+    conn: &Connection,
+    participant_id: &str,
+    status: &str,
+) -> Result<bool> {
+    if validate_participant_id(participant_id).is_none()
+        || !matches!(status, "active" | "inactive")
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let changed = conn.execute(
+        "UPDATE web_participants\n         SET status = ?1, updated_at = unixepoch()\n         WHERE participant_id = ?2",
+        params![status, participant_id],
     )?;
     Ok(changed == 1)
 }
@@ -194,7 +226,9 @@ pub fn authenticate_web_totp(
         .query_row(
             "SELECT source, label, totp_secret, totp_last_step, totp_fail_count, totp_locked_until
              FROM web_participants
-             WHERE participant_id = ?1 AND totp_secret IS NOT NULL
+             WHERE participant_id = ?1
+               AND status = 'active'
+               AND totp_secret IS NOT NULL
              LIMIT 1",
             [participant_id],
             |row| {
@@ -275,7 +309,7 @@ pub fn get_web_participant_verification(
         return Ok(None);
     }
     conn.query_row(
-        "SELECT source, participant_id, label, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND signature_scheme IS NOT NULL\n           AND public_key IS NOT NULL\n         LIMIT 1",
+        "SELECT source, participant_id, label, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND status = 'active'\n           AND signature_scheme IS NOT NULL\n           AND public_key IS NOT NULL\n         LIMIT 1",
         [participant_id],
         |row| {
             Ok(ParticipantVerification {
@@ -462,6 +496,62 @@ mod tests {
                 .as_deref(),
             Some("admin")
         );
+    }
+
+    #[test]
+    fn participant_lifecycle_disables_totp_and_signing_without_erasing_credentials() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        provision_web_participant_identity(&conn, "lifecycle-main", "test", None)
+            .unwrap()
+            .unwrap();
+
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        assert!(set_web_participant_totp(&conn, "lifecycle-main", secret).unwrap());
+        let (_, public_key) = signed_auth::generate_keypair();
+        assert!(set_web_participant_signing_key(&conn, "lifecycle-main", &public_key).unwrap());
+
+        assert_eq!(
+            get_web_participant_status(&conn, "lifecycle-main")
+                .unwrap()
+                .as_deref(),
+            Some("active")
+        );
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59)
+            .unwrap()
+            .is_some());
+        assert!(get_web_participant_verification(&conn, "lifecycle-main")
+            .unwrap()
+            .is_some());
+
+        assert!(set_web_participant_status(&conn, "lifecycle-main", "inactive").unwrap());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89)
+            .unwrap()
+            .is_none());
+        assert!(get_web_participant_verification(&conn, "lifecycle-main")
+            .unwrap()
+            .is_none());
+
+        let stored: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT totp_secret, signature_scheme, public_key\n                 FROM web_participants WHERE participant_id = 'lifecycle-main'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stored.0.as_deref(), Some(secret));
+        assert_eq!(stored.1.as_deref(), Some(signed_auth::SIGNATURE_SCHEME));
+        assert_eq!(stored.2.as_deref(), Some(public_key.as_str()));
+
+        assert!(set_web_participant_status(&conn, "lifecycle-main", "active").unwrap());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89)
+            .unwrap()
+            .is_some());
+        assert!(get_web_participant_verification(&conn, "lifecycle-main")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
