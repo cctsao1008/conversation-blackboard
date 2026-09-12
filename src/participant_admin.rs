@@ -108,19 +108,11 @@ pub enum ParticipantCommand {
 
 pub fn dispatch(command: ParticipantCommand) -> DynResult {
     match command {
-        ParticipantCommand::Provision {
-            db: path,
-            participant_id,
-            source,
-            label,
-        } => {
+        ParticipantCommand::Provision { db: path, participant_id, source, label } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             let record = identity::provision_web_participant_identity(
-                &conn,
-                &participant_id,
-                &source,
-                label.as_deref(),
+                &conn, &participant_id, &source, label.as_deref(),
             )?
             .ok_or_else(|| format!("participant already exists: {participant_id}"))?;
             println!("PARTICIPANT READY");
@@ -130,10 +122,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("status         : active");
             Ok(())
         }
-        ParticipantCommand::Show {
-            db: path,
-            participant_id,
-        } => {
+        ParticipantCommand::Show { db: path, participant_id } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             let record = inspect_participant(&conn, &participant_id)?
@@ -161,10 +150,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             }
             Ok(())
         }
-        ParticipantCommand::Deactivate {
-            db: path,
-            participant_id,
-        } => {
+        ParticipantCommand::Deactivate { db: path, participant_id } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if !identity::set_web_participant_status(&conn, &participant_id, "inactive")? {
@@ -175,10 +161,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("status         : inactive");
             Ok(())
         }
-        ParticipantCommand::Reactivate {
-            db: path,
-            participant_id,
-        } => {
+        ParticipantCommand::Reactivate { db: path, participant_id } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if !identity::set_web_participant_status(&conn, &participant_id, "active")? {
@@ -189,11 +172,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("status         : active");
             Ok(())
         }
-        ParticipantCommand::SetRole {
-            db: path,
-            participant_id,
-            role,
-        } => {
+        ParticipantCommand::SetRole { db: path, participant_id, role } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if !identity::set_web_participant_role(&conn, &participant_id, &role)? {
@@ -204,11 +183,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("role           : {role}");
             Ok(())
         }
-        ParticipantCommand::TotpEnroll {
-            db: path,
-            participant_id,
-            issuer,
-        } => {
+        ParticipantCommand::TotpEnroll { db: path, participant_id, issuer } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if identity::get_web_participant(&conn, &participant_id)?.is_none() {
@@ -227,10 +202,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("otpauth_uri    : {uri}");
             Ok(())
         }
-        ParticipantCommand::TotpRevoke {
-            db: path,
-            participant_id,
-        } => {
+        ParticipantCommand::TotpRevoke { db: path, participant_id } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if !identity::revoke_web_participant_totp(&conn, &participant_id)? {
@@ -239,21 +211,16 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("revoked TOTP login: {participant_id}");
             Ok(())
         }
-        ParticipantCommand::AuthGenerate {
-            db: path,
-            participant_id,
-        } => provision_auth(&path, &participant_id, false),
-        ParticipantCommand::AuthRotate {
-            db: path,
-            participant_id,
-        } => provision_auth(&path, &participant_id, true),
-        ParticipantCommand::AuthRevoke {
-            db: path,
-            participant_id,
-        } => {
+        ParticipantCommand::AuthGenerate { db: path, participant_id } => {
+            provision_auth(&path, &participant_id, false)
+        }
+        ParticipantCommand::AuthRotate { db: path, participant_id } => {
+            provision_auth(&path, &participant_id, true)
+        }
+        ParticipantCommand::AuthRevoke { db: path, participant_id } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
-            if !identity::revoke_web_participant_signing_key(&conn, &participant_id)? {
+            if !identity::revoke_web_participant_auth(&conn, &participant_id)? {
                 return Err(format!("no active participant auth for: {participant_id}").into());
             }
             println!("PARTICIPANT AUTH REVOKED");
@@ -277,7 +244,7 @@ fn provision_auth(path: &std::path::Path, participant_id: &str, rotate: bool) ->
 
     let (secret, registered_secret) = signed_auth::generate_keypair();
     debug_assert_eq!(secret, registered_secret);
-    if !identity::set_web_participant_signing_key(&conn, participant_id, &registered_secret)? {
+    if !identity::set_web_participant_auth_secret(&conn, participant_id, &registered_secret)? {
         return Err(format!("unknown participant: {participant_id}").into());
     }
 
@@ -294,59 +261,41 @@ fn inspect_participant(
     participant_id: &str,
 ) -> rusqlite::Result<Option<ParticipantInspection>> {
     conn.query_row(
-        "SELECT participant_id, source, label, role, status, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
+        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
         [participant_id],
-        |row| {
-            let totp_secret: Option<String> = row.get(5)?;
-            let auth_scheme: Option<String> = row.get(6)?;
-            let auth_secret: Option<String> = row.get(7)?;
-            Ok(ParticipantInspection {
-                participant_id: row.get(0)?,
-                source: row.get(1)?,
-                label: row.get(2)?,
-                role: row.get(3)?,
-                lifecycle_status: row.get(4)?,
-                totp_status: if totp_secret.is_some() { "active" } else { "not-configured" },
-                auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
-                    && auth_secret.as_deref().is_some_and(signed_auth::validate_public_key)
-                {
-                    "active"
-                } else {
-                    "not-configured"
-                },
-                auth_scheme,
-            })
-        },
+        participant_row,
     )
     .optional()
 }
 
 fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspection>> {
     let mut stmt = conn.prepare(
-        "SELECT participant_id, source, label, role, status, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         ORDER BY participant_id ASC",
+        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret\n         FROM web_participants\n         ORDER BY participant_id ASC",
     )?;
-    let rows = stmt.query_map([], |row| {
-        let totp_secret: Option<String> = row.get(5)?;
-        let auth_scheme: Option<String> = row.get(6)?;
-        let auth_secret: Option<String> = row.get(7)?;
-        Ok(ParticipantInspection {
-            participant_id: row.get(0)?,
-            source: row.get(1)?,
-            label: row.get(2)?,
-            role: row.get(3)?,
-            lifecycle_status: row.get(4)?,
-            totp_status: if totp_secret.is_some() { "active" } else { "not-configured" },
-            auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
-                && auth_secret.as_deref().is_some_and(signed_auth::validate_public_key)
-            {
-                "active"
-            } else {
-                "not-configured"
-            },
-            auth_scheme,
-        })
-    })?;
+    let rows = stmt.query_map([], participant_row)?;
     rows.collect()
+}
+
+fn participant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ParticipantInspection> {
+    let totp_secret: Option<String> = row.get(5)?;
+    let auth_scheme: Option<String> = row.get(6)?;
+    let auth_secret: Option<String> = row.get(7)?;
+    Ok(ParticipantInspection {
+        participant_id: row.get(0)?,
+        source: row.get(1)?,
+        label: row.get(2)?,
+        role: row.get(3)?,
+        lifecycle_status: row.get(4)?,
+        totp_status: if totp_secret.is_some() { "active" } else { "not-configured" },
+        auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
+            && auth_secret.as_deref().is_some_and(signed_auth::validate_public_key)
+        {
+            "active"
+        } else {
+            "not-configured"
+        },
+        auth_scheme,
+    })
 }
 
 fn print_participant(record: &ParticipantInspection) {
@@ -388,7 +337,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let (_, secret) = signed_auth::generate_keypair();
-        identity::set_web_participant_signing_key(&conn, "maker-main", &secret).unwrap();
+        identity::set_web_participant_auth_secret(&conn, "maker-main", &secret).unwrap();
 
         let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
         assert_eq!(record.auth_status, "active");
