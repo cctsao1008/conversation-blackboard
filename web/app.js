@@ -18,6 +18,7 @@
     oldestId: 0,
     hasOlder: false,
     followLatest: true,
+    historyTargetId: null,
     replyTo: null,
     pollTimer: null,
     editChannel: "",
@@ -216,6 +217,8 @@
     state.channels = [];
     state.replyTo = null;
     state.order = "desc";
+    state.followLatest = true;
+    state.historyTargetId = null;
     $("message-order").value = state.order;
     resetHistory();
   }
@@ -315,17 +318,28 @@
     return empty;
   }
 
+  function updateNavigationState() {
+    const historical = !state.followLatest;
+    $("latest").classList.toggle("hidden", !historical);
+    $("history-state").classList.toggle("hidden", !historical);
+    $("history-state").textContent = historical
+      ? (state.historyTargetId ? `Viewing around #${state.historyTargetId}` : "Historical view")
+      : "";
+  }
+
   function resetHistory() {
     state.lastId = 0;
     state.oldestId = 0;
     state.hasOlder = false;
     const timeline = $("timeline");
     if (timeline) timeline.replaceChildren(emptyElement());
+    updateNavigationState();
   }
 
   async function selectChannel(channel, refreshChannels = true) {
     state.channel = channel;
     state.followLatest = state.order === "desc";
+    state.historyTargetId = null;
     state.replyTo = null;
     $("channel-name").textContent = channel;
     resetHistory();
@@ -345,6 +359,7 @@
     if (!state.channel) return;
 
     state.followLatest = state.order === "desc";
+    state.historyTargetId = null;
     resetHistory();
     try {
       const data = await api(
@@ -354,6 +369,7 @@
       state.hasOlder = Boolean(data.has_more);
       updateHistoryNav();
       updateEmpty();
+      updateNavigationState();
       $("timeline").scrollTop = 0;
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
@@ -431,13 +447,15 @@
         return;
       }
       state.followLatest = false;
+      state.historyTargetId = id;
       resetHistory();
       for (const message of data.messages) appendMessage(message);
       state.hasOlder = Boolean(data.has_more);
       updateHistoryNav();
       updateEmpty();
+      updateNavigationState();
       requestAnimationFrame(() => focusMessage(id));
-      boardStatus(`Showing #${id}. Select Latest to return to the live window.`);
+      boardStatus(`Showing #${id}. Use Back to latest to return to the live window.`);
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
       else boardStatus(`Could not find #${id}: ${error.message}`);
@@ -793,9 +811,18 @@
   $("new-channel").addEventListener("click", createEphemeralChannel);
   $("refresh").addEventListener("click", async () => {
     await refreshChannelCounts();
-    await loadLatestHistory();
+    if (state.historyTargetId) {
+      const target = state.historyTargetId;
+      resetHistory();
+      $("jump-id").value = String(target);
+      await jumpToMessage({ preventDefault() {} });
+    } else {
+      await loadLatestHistory();
+    }
   });
   $("latest").addEventListener("click", async () => {
+    // Live polling is defined only for newest-first windows, so returning to
+    // the live/latest window explicitly restores descending order.
     state.order = "desc";
     $("message-order").value = state.order;
     await loadLatestHistory();
