@@ -50,7 +50,7 @@ enum Command {
         #[command(subcommand)]
         command: admin::IdentityCommand,
     },
-    /// Provision participant identities and manage human TOTP / agent signing keys.
+    /// Provision participant identities and manage human TOTP / participant HMAC auth.
     Participant {
         #[command(subcommand)]
         command: participant_admin::ParticipantCommand,
@@ -110,18 +110,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn participant_generate_signing_key_cli_parses() {
+    fn participant_auth_generate_cli_parses() {
         let cli = Cli::try_parse_from([
             "conversation-blackboard",
             "participant",
-            "generate-signing-key",
+            "auth-generate",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
         ])
         .unwrap();
 
         match cli.command {
             Some(Command::Participant {
-                command: participant_admin::ParticipantCommand::GenerateSigningKey,
-            }) => {}
+                command: participant_admin::ParticipantCommand::AuthGenerate { participant_id, .. },
+            }) => assert_eq!(participant_id, "maker-main"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_auth_rotate_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "auth-rotate",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::AuthRotate { participant_id, .. },
+            }) => assert_eq!(participant_id, "maker-main"),
             other => panic!("unexpected command: {other:?}"),
         }
     }
