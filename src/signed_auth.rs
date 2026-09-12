@@ -13,14 +13,14 @@ pub const SECRET_PREFIX: &str = "hmac-sha256-secret:";
 /// The tuple shape is retained only as an internal call-site convenience while the
 /// authentication model is HMAC-only: both values are the same shared secret.
 /// There is no asymmetric keypair and no public key in this scheme.
-pub fn generate_keypair() -> (String, String) {
+pub fn generate_secret() -> (String, String) {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let secret = format!("{SECRET_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes));
     (secret.clone(), secret)
 }
 
-pub fn validate_public_key(secret: &str) -> bool {
+pub fn validate_secret(secret: &str) -> bool {
     decode_secret(secret).is_some()
 }
 
@@ -61,7 +61,7 @@ pub fn canonical_read_bytes(
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub fn sign_write(
+pub fn compute_write_proof(
     secret: &str,
     participant_id: &str,
     channel: &str,
@@ -71,11 +71,11 @@ pub fn sign_write(
     nonce: &str,
 ) -> Option<String> {
     let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
-    sign_message(secret, &canonical)
+    compute_message_proof(secret, &canonical)
 }
 
 #[cfg(test)]
-pub fn sign_read(
+pub fn compute_read_proof(
     secret: &str,
     participant_id: &str,
     channel: &str,
@@ -83,17 +83,17 @@ pub fn sign_read(
     limit: usize,
 ) -> Option<String> {
     let canonical = canonical_read_bytes(participant_id, channel, after, limit);
-    sign_message(secret, &canonical)
+    compute_message_proof(secret, &canonical)
 }
 
 #[cfg(test)]
-pub fn sign_message(secret: &str, message: &[u8]) -> Option<String> {
+pub fn compute_message_proof(secret: &str, message: &[u8]) -> Option<String> {
     let secret = decode_secret(secret)?;
     let key = hmac::Key::new(hmac::HMAC_SHA256, &secret);
     Some(URL_SAFE_NO_PAD.encode(hmac::sign(&key, message).as_ref()))
 }
 
-pub fn verify_message_signature(secret: &str, proof: &str, message: &[u8]) -> bool {
+pub fn verify_message_proof(secret: &str, proof: &str, message: &[u8]) -> bool {
     let Some(secret) = decode_secret(secret) else {
         return false;
     };
@@ -108,7 +108,7 @@ pub fn verify_message_signature(secret: &str, proof: &str, message: &[u8]) -> bo
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_write_signature(
+pub fn verify_write_proof(
     secret: &str,
     proof: &str,
     participant_id: &str,
@@ -119,10 +119,10 @@ pub fn verify_write_signature(
     nonce: &str,
 ) -> bool {
     let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
-    verify_message_signature(secret, proof, &canonical)
+    verify_message_proof(secret, proof, &canonical)
 }
 
-pub fn verify_read_signature(
+pub fn verify_read_proof(
     secret: &str,
     proof: &str,
     participant_id: &str,
@@ -131,7 +131,7 @@ pub fn verify_read_signature(
     limit: usize,
 ) -> bool {
     let canonical = canonical_read_bytes(participant_id, channel, after, limit);
-    verify_message_signature(secret, proof, &canonical)
+    verify_message_proof(secret, proof, &canonical)
 }
 
 fn decode_secret(secret: &str) -> Option<Vec<u8>> {
@@ -149,12 +149,12 @@ mod tests {
 
     #[test]
     fn generated_secret_authenticates_canonical_write() {
-        let (secret, registered) = generate_keypair();
+        let (secret, registered) = generate_secret();
         assert_eq!(secret, registered);
         assert!(secret.starts_with(SECRET_PREFIX));
-        assert!(validate_public_key(&registered));
+        assert!(validate_secret(&registered));
 
-        let proof = sign_write(
+        let proof = compute_write_proof(
             &secret,
             "maker-main",
             "blackboard-lounge",
@@ -164,7 +164,7 @@ mod tests {
             "maker-001",
         )
         .unwrap();
-        assert!(verify_write_signature(
+        assert!(verify_write_proof(
             &registered,
             &proof,
             "maker-main",
@@ -178,8 +178,8 @@ mod tests {
 
     #[test]
     fn proof_binds_every_persisted_write_field() {
-        let (secret, registered) = generate_keypair();
-        let proof = sign_write(
+        let (secret, registered) = generate_secret();
+        let proof = compute_write_proof(
             &secret,
             "single-main",
             "control-systems",
@@ -190,7 +190,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!verify_write_signature(
+        assert!(!verify_write_proof(
             &registered,
             &proof,
             "rotary-main",
@@ -200,7 +200,7 @@ mod tests {
             Some(7),
             "single-001",
         ));
-        assert!(!verify_write_signature(
+        assert!(!verify_write_proof(
             &registered,
             &proof,
             "single-main",
@@ -210,7 +210,7 @@ mod tests {
             Some(7),
             "single-001",
         ));
-        assert!(!verify_write_signature(
+        assert!(!verify_write_proof(
             &registered,
             &proof,
             "single-main",
@@ -224,9 +224,9 @@ mod tests {
 
     #[test]
     fn wrong_secret_and_malformed_proof_are_rejected() {
-        let (secret, registered) = generate_keypair();
-        let (_, other) = generate_keypair();
-        let proof = sign_write(
+        let (secret, registered) = generate_secret();
+        let (_, other) = generate_secret();
+        let proof = compute_write_proof(
             &secret,
             "single-main",
             "control-systems",
@@ -236,7 +236,7 @@ mod tests {
             "nonce-1",
         )
         .unwrap();
-        assert!(!verify_write_signature(
+        assert!(!verify_write_proof(
             &other,
             &proof,
             "single-main",
@@ -246,8 +246,8 @@ mod tests {
             None,
             "nonce-1",
         ));
-        assert!(!validate_public_key("not-a-secret"));
-        assert!(!verify_write_signature(
+        assert!(!validate_secret("not-a-secret"));
+        assert!(!verify_write_proof(
             &registered,
             "not-base64url",
             "single-main",
@@ -261,9 +261,9 @@ mod tests {
 
     #[test]
     fn generated_secret_authenticates_private_read() {
-        let (secret, registered) = generate_keypair();
-        let proof = sign_read(&secret, "single-main", "control-systems", 7, 50).unwrap();
-        assert!(verify_read_signature(
+        let (secret, registered) = generate_secret();
+        let proof = compute_read_proof(&secret, "single-main", "control-systems", 7, 50).unwrap();
+        assert!(verify_read_proof(
             &registered,
             &proof,
             "single-main",
@@ -271,7 +271,7 @@ mod tests {
             7,
             50,
         ));
-        assert!(!verify_read_signature(
+        assert!(!verify_read_proof(
             &registered,
             &proof,
             "single-main",

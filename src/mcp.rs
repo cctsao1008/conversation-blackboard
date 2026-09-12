@@ -358,7 +358,10 @@ fn parse_auth(arguments: &Map<String, Value>) -> Result<(&str, &str), &'static s
 }
 
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {
-    if !only_keys(arguments, &["channel", "after", "limit", "participant_id", "auth"]) {
+    if !only_keys(
+        arguments,
+        &["channel", "after", "limit", "participant_id", "auth"],
+    ) {
         return tool_error("invalid_arguments");
     }
     let channel = match arguments.get("channel").and_then(Value::as_str) {
@@ -399,7 +402,7 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
                 return Ok(false);
             };
             Ok(auth.auth_scheme == signed_auth::SIGNATURE_SCHEME
-                && signed_auth::verify_read_signature(
+                && signed_auth::verify_read_proof(
                     &auth.auth_secret,
                     &proof,
                     &lookup,
@@ -456,7 +459,15 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
     }
     if !only_keys(
         arguments,
-        &["participant_id", "auth", "channel", "kind", "body", "reply_to", "nonce"],
+        &[
+            "participant_id",
+            "auth",
+            "channel",
+            "kind",
+            "body",
+            "reply_to",
+            "nonce",
+        ],
     ) {
         return tool_error("invalid_arguments");
     }
@@ -478,7 +489,9 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         _ => return tool_error("invalid_kind"),
     };
     let message_body = match arguments.get("body").and_then(Value::as_str) {
-        Some(value) if !value.trim().is_empty() && value.len() <= MAX_MESSAGE_BODY_BYTES => value.to_owned(),
+        Some(value) if !value.trim().is_empty() && value.len() <= MAX_MESSAGE_BODY_BYTES => {
+            value.to_owned()
+        }
         _ => return tool_error("invalid_body"),
     };
     let reply_to = match arguments.get("reply_to") {
@@ -561,7 +574,9 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         db::NavigationAppendResult::Created(message) => ("created", message, false),
         db::NavigationAppendResult::Existing(message) => ("existing", message, true),
         db::NavigationAppendResult::NonceConflict => return tool_error("nonce_conflict"),
-        db::NavigationAppendResult::ReplyTargetNotFound => return tool_error("reply_target_not_found"),
+        db::NavigationAppendResult::ReplyTargetNotFound => {
+            return tool_error("reply_target_not_found")
+        }
     };
 
     tool_success(json!({
@@ -603,7 +618,7 @@ async fn resolve_write_identity(
     if auth.auth_scheme != signed_auth::SIGNATURE_SCHEME {
         return Err("unsupported_auth_scheme");
     }
-    if !signed_auth::verify_write_signature(
+    if !signed_auth::verify_write_proof(
         &auth.auth_secret,
         &proof,
         participant_id,
@@ -728,7 +743,10 @@ fn plain_status(status: StatusCode) -> Response {
 }
 
 fn jsonrpc_result_response(id: Value, result: Value) -> Response {
-    json_response(StatusCode::OK, json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    json_response(
+        StatusCode::OK,
+        json!({"jsonrpc": "2.0", "id": id, "result": result}),
+    )
 }
 
 fn jsonrpc_error_response(id: Value, code: i64, message: &'static str) -> Response {

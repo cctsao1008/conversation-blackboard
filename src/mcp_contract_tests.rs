@@ -31,8 +31,8 @@ fn fixture() -> Fixture {
     identity::provision_web_participant_identity(&conn, "rotary-main", "rotary", Some("Rotary"))
         .unwrap()
         .unwrap();
-    let (single_secret, _) = signed_auth::generate_keypair();
-    let (rotary_secret, _) = signed_auth::generate_keypair();
+    let (single_secret, _) = signed_auth::generate_secret();
+    let (rotary_secret, _) = signed_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, "single-main", &single_secret).unwrap();
     identity::set_web_participant_auth_secret(&conn, "rotary-main", &rotary_secret).unwrap();
     drop(conn);
@@ -58,7 +58,7 @@ fn write_arguments(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Value {
-    let proof = signed_auth::sign_write(
+    let proof = signed_auth::compute_write_proof(
         secret,
         participant_id,
         channel,
@@ -86,7 +86,8 @@ fn read_arguments(
     after: i64,
     limit: usize,
 ) -> Value {
-    let proof = signed_auth::sign_read(secret, participant_id, channel, after, limit).unwrap();
+    let proof =
+        signed_auth::compute_read_proof(secret, participant_id, channel, after, limit).unwrap();
     json!({
         "participant_id": participant_id,
         "channel": channel,
@@ -182,10 +183,11 @@ async fn public_read_is_unsigned_private_read_requires_valid_hmac() {
         None,
         "public-001",
     );
-    assert!(!call_tool(&fixture.router, 2, "blackboard_write", public_write).await["result"]
-        ["isError"]
-        .as_bool()
-        .unwrap());
+    assert!(
+        !call_tool(&fixture.router, 2, "blackboard_write", public_write).await["result"]["isError"]
+            .as_bool()
+            .unwrap()
+    );
 
     let public_read = call_tool(
         &fixture.router,
@@ -205,10 +207,12 @@ async fn public_read_is_unsigned_private_read_requires_valid_hmac() {
         None,
         "private-001",
     );
-    assert!(!call_tool(&fixture.router, 4, "blackboard_write", private_write).await["result"]
-        ["isError"]
-        .as_bool()
-        .unwrap());
+    assert!(
+        !call_tool(&fixture.router, 4, "blackboard_write", private_write).await["result"]
+            ["isError"]
+            .as_bool()
+            .unwrap()
+    );
 
     let unsigned = call_tool(
         &fixture.router,
@@ -311,7 +315,9 @@ async fn hmac_write_is_idempotent_and_nonce_conflict_is_preserved() {
     );
     let created = call_tool(&fixture.router, 20, "blackboard_write", first.clone()).await;
     assert_eq!(created["result"]["structuredContent"]["status"], "created");
-    let id = created["result"]["structuredContent"]["id"].as_i64().unwrap();
+    let id = created["result"]["structuredContent"]["id"]
+        .as_i64()
+        .unwrap();
 
     let replay = call_tool(&fixture.router, 21, "blackboard_write", first).await;
     assert_eq!(replay["result"]["structuredContent"]["status"], "existing");
@@ -356,7 +362,7 @@ async fn inactive_revoke_and_rotate_change_hmac_authority_immediately() {
 
     let conn = db::connect(&fixture.db_path).unwrap();
     identity::set_web_participant_status(&conn, "rotary-main", "active").unwrap();
-    let (new_secret, _) = signed_auth::generate_keypair();
+    let (new_secret, _) = signed_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, "rotary-main", &new_secret).unwrap();
     drop(conn);
 
@@ -383,10 +389,11 @@ async fn inactive_revoke_and_rotate_change_hmac_authority_immediately() {
         None,
         "new-001",
     );
-    assert!(!call_tool(&fixture.router, 32, "blackboard_write", fresh).await["result"]
-        ["isError"]
-        .as_bool()
-        .unwrap());
+    assert!(
+        !call_tool(&fixture.router, 32, "blackboard_write", fresh).await["result"]["isError"]
+            .as_bool()
+            .unwrap()
+    );
 
     let conn = db::connect(&fixture.db_path).unwrap();
     identity::revoke_web_participant_auth(&conn, "rotary-main").unwrap();

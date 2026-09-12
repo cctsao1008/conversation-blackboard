@@ -130,7 +130,8 @@ pub fn set_web_participant_status(
     participant_id: &str,
     status: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !matches!(status, "active" | "inactive") {
+    if validate_participant_id(participant_id).is_none() || !matches!(status, "active" | "inactive")
+    {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
@@ -146,7 +147,8 @@ pub fn provision_web_participant_identity(
     source: &str,
     label: Option<&str>,
 ) -> Result<Option<Identity>> {
-    let participant_id = validate_participant_id(participant_id).ok_or(rusqlite::Error::InvalidQuery)?;
+    let participant_id =
+        validate_participant_id(participant_id).ok_or(rusqlite::Error::InvalidQuery)?;
     let source = validate_source(source).ok_or(rusqlite::Error::InvalidQuery)?;
     let label = normalize_label(label).map_err(|_| rusqlite::Error::InvalidQuery)?;
     if get_web_participant(conn, &participant_id)?.is_some() {
@@ -168,7 +170,8 @@ pub fn set_web_participant_totp(
     participant_id: &str,
     secret: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !web_auth::validate_totp_secret(secret) {
+    if validate_participant_id(participant_id).is_none() || !web_auth::validate_totp_secret(secret)
+    {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
@@ -268,7 +271,11 @@ pub fn authenticate_web_totp(
         }));
     }
 
-    let effective_fail_count = if locked_until.is_some() { 0 } else { fail_count };
+    let effective_fail_count = if locked_until.is_some() {
+        0
+    } else {
+        fail_count
+    };
     let new_fail_count = effective_fail_count.saturating_add(1);
     if new_fail_count >= web_auth::TOTP_MAX_FAILURES {
         let locked_until = now.saturating_add(web_auth::TOTP_LOCK_SECS);
@@ -276,7 +283,10 @@ pub fn authenticate_web_totp(
             "UPDATE web_participants
              SET totp_fail_count = 0, totp_locked_until = ?1, updated_at = unixepoch()
              WHERE participant_id = ?2",
-            params![i64::try_from(locked_until).unwrap_or(i64::MAX), participant_id],
+            params![
+                i64::try_from(locked_until).unwrap_or(i64::MAX),
+                participant_id
+            ],
         )?;
     } else {
         tx.execute(
@@ -320,7 +330,7 @@ pub fn set_web_participant_auth_secret(
     participant_id: &str,
     secret: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !signed_auth::validate_public_key(secret) {
+    if validate_participant_id(participant_id).is_none() || !signed_auth::validate_secret(secret) {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
@@ -470,9 +480,19 @@ mod tests {
         provision_web_participant_identity(&conn, "operator-main", "operator", None)
             .unwrap()
             .unwrap();
-        assert_eq!(get_web_participant_role(&conn, "operator-main").unwrap().as_deref(), Some("user"));
+        assert_eq!(
+            get_web_participant_role(&conn, "operator-main")
+                .unwrap()
+                .as_deref(),
+            Some("user")
+        );
         assert!(set_web_participant_role(&conn, "operator-main", "admin").unwrap());
-        assert_eq!(get_web_participant_role(&conn, "operator-main").unwrap().as_deref(), Some("admin"));
+        assert_eq!(
+            get_web_participant_role(&conn, "operator-main")
+                .unwrap()
+                .as_deref(),
+            Some("admin")
+        );
     }
 
     #[test]
@@ -487,15 +507,23 @@ mod tests {
 
         let totp = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
         assert!(set_web_participant_totp(&conn, "lifecycle-main", totp).unwrap());
-        let (_, secret) = signed_auth::generate_keypair();
+        let (_, secret) = signed_auth::generate_secret();
         assert!(set_web_participant_auth_secret(&conn, "lifecycle-main", &secret).unwrap());
 
-        assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59).unwrap().is_some());
-        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_some());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59)
+            .unwrap()
+            .is_some());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main")
+            .unwrap()
+            .is_some());
 
         assert!(set_web_participant_status(&conn, "lifecycle-main", "inactive").unwrap());
-        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89).unwrap().is_none());
-        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_none());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89)
+            .unwrap()
+            .is_none());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main")
+            .unwrap()
+            .is_none());
 
         let stored: (Option<String>, Option<String>, Option<String>) = conn
             .query_row(
@@ -509,7 +537,9 @@ mod tests {
         assert_eq!(stored.2.as_deref(), Some(secret.as_str()));
 
         assert!(set_web_participant_status(&conn, "lifecycle-main", "active").unwrap());
-        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_some());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -522,7 +552,10 @@ mod tests {
         assert!(resolve_identity(&conn, &original).unwrap().is_some());
         let rotated = rotate_token(&conn, &identity.instance).unwrap().unwrap();
         assert!(resolve_identity(&conn, &original).unwrap().is_none());
-        assert_eq!(resolve_identity(&conn, &rotated).unwrap().unwrap().instance, identity.instance);
+        assert_eq!(
+            resolve_identity(&conn, &rotated).unwrap().unwrap().instance,
+            identity.instance
+        );
         assert!(revoke_token(&conn, &identity.instance).unwrap());
         assert!(resolve_identity(&conn, &rotated).unwrap().is_none());
     }
@@ -536,13 +569,27 @@ mod tests {
         provision_web_participant_identity(&conn, "maker-main", "maker", Some("Maker"))
             .unwrap()
             .unwrap();
-        let (_, secret_a) = signed_auth::generate_keypair();
-        let (_, secret_b) = signed_auth::generate_keypair();
+        let (_, secret_a) = signed_auth::generate_secret();
+        let (_, secret_b) = signed_auth::generate_secret();
         assert!(set_web_participant_auth_secret(&conn, "maker-main", &secret_a).unwrap());
-        assert_eq!(get_web_participant_auth(&conn, "maker-main").unwrap().unwrap().auth_secret, secret_a);
+        assert_eq!(
+            get_web_participant_auth(&conn, "maker-main")
+                .unwrap()
+                .unwrap()
+                .auth_secret,
+            secret_a
+        );
         assert!(set_web_participant_auth_secret(&conn, "maker-main", &secret_b).unwrap());
-        assert_eq!(get_web_participant_auth(&conn, "maker-main").unwrap().unwrap().auth_secret, secret_b);
+        assert_eq!(
+            get_web_participant_auth(&conn, "maker-main")
+                .unwrap()
+                .unwrap()
+                .auth_secret,
+            secret_b
+        );
         assert!(revoke_web_participant_auth(&conn, "maker-main").unwrap());
-        assert!(get_web_participant_auth(&conn, "maker-main").unwrap().is_none());
+        assert!(get_web_participant_auth(&conn, "maker-main")
+            .unwrap()
+            .is_none());
     }
 }

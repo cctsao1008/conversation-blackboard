@@ -18,7 +18,8 @@ pub fn resolve_request_identity_for_target(
     method: &str,
     request_target: &str,
 ) -> Result<Option<Identity>> {
-    let auth_attempt = headers.contains_key(AUTH_PROOF_HEADER) || headers.contains_key(AUTH_SCHEME_HEADER);
+    let auth_attempt =
+        headers.contains_key(AUTH_PROOF_HEADER) || headers.contains_key(AUTH_SCHEME_HEADER);
     if !auth_attempt {
         return resolve_request_identity(conn, headers);
     }
@@ -131,7 +132,9 @@ mod tests {
         let guest = web_auth::issue_guest_session();
         let mut guest_headers = HeaderMap::new();
         guest_headers.insert(web_auth::WEB_SESSION_HEADER, guest.token.parse().unwrap());
-        assert!(resolve_request_identity(&conn, &guest_headers).unwrap().is_none());
+        assert!(resolve_request_identity(&conn, &guest_headers)
+            .unwrap()
+            .is_none());
 
         let mut bearer_headers = HeaderMap::new();
         bearer_headers.insert(

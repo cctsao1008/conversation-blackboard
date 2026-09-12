@@ -203,8 +203,8 @@ async fn navigation_write(
         .filter(|value| value.as_str() == signed_auth::SIGNATURE_SCHEME)
         .ok_or_else(ApiError::unauthorized)?
         .clone();
-    let signature = params
-        .get("sig")
+    let proof = params
+        .get("proof")
         .filter(|value| !value.is_empty() && value.len() <= 256)
         .cloned()
         .ok_or_else(ApiError::unauthorized)?;
@@ -214,14 +214,13 @@ async fn navigation_write(
     let verify_body = message_body.clone();
     let verify_nonce = nonce.clone();
     let write_identity = with_db(&state, move |conn| {
-        let Some(record) = identity::get_web_participant_verification(conn, &lookup_participant)?
-        else {
+        let Some(record) = identity::get_web_participant_auth(conn, &lookup_participant)? else {
             return Ok(None);
         };
-        if record.signature_scheme != scheme
-            || !signed_auth::verify_write_signature(
-                &record.public_key,
-                &signature,
+        if record.auth_scheme != scheme
+            || !signed_auth::verify_write_proof(
+                &record.auth_secret,
+                &proof,
                 &lookup_participant,
                 &verify_channel,
                 &verify_kind,
@@ -787,16 +786,16 @@ async fn post_signed_message(
     let auth = body
         .get("auth")
         .and_then(Value::as_object)
-        .filter(|value| only_keys(value, &["scheme", "signature"]))
+        .filter(|value| only_keys(value, &["scheme", "proof"]))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?;
     let scheme = auth
         .get("scheme")
         .and_then(Value::as_str)
         .filter(|value| *value == signed_auth::SIGNATURE_SCHEME)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unsupported_signature_scheme"))?
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unsupported_auth_scheme"))?
         .to_owned();
-    let signature = auth
-        .get("signature")
+    let proof = auth
+        .get("proof")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.len() <= 256)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid_auth"))?
@@ -808,14 +807,13 @@ async fn post_signed_message(
     let verify_body = message_body.clone();
     let verify_nonce = nonce.clone();
     let writer = with_db(state, move |conn| {
-        let Some(record) = identity::get_web_participant_verification(conn, &lookup_participant)?
-        else {
+        let Some(record) = identity::get_web_participant_auth(conn, &lookup_participant)? else {
             return Ok(None);
         };
-        if record.signature_scheme != scheme
-            || !signed_auth::verify_write_signature(
-                &record.public_key,
-                &signature,
+        if record.auth_scheme != scheme
+            || !signed_auth::verify_write_proof(
+                &record.auth_secret,
+                &proof,
                 &lookup_participant,
                 &verify_channel,
                 &verify_kind,

@@ -41,8 +41,8 @@ fn fixture(source: &str) -> Fixture {
     )
     .unwrap()
     .unwrap();
-    let (signing_private, signing_public) = signed_auth::generate_keypair();
-    identity::set_web_participant_signing_key(&conn, &participant_id, &signing_public).unwrap();
+    let (signing_private, signing_public) = signed_auth::generate_secret();
+    identity::set_web_participant_auth_secret(&conn, &participant_id, &signing_public).unwrap();
     drop(conn);
     let router = http::app(AppState {
         db_path: db_path.clone(),
@@ -126,7 +126,7 @@ fn signed_uri(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> String {
-    let signature = signed_auth::sign_write(
+    let signature = signed_auth::compute_write_proof(
         &fixture.signing_private,
         &fixture.participant_id,
         channel,
@@ -137,7 +137,7 @@ fn signed_uri(
     )
     .unwrap();
     let mut uri = format!(
-        "/w/{}?scheme={}&sig={}&channel={}&kind={}&body={}&nonce={}",
+        "/w/{}?scheme={}&proof={}&channel={}&kind={}&body={}&nonce={}",
         fixture.participant_id,
         signed_auth::SIGNATURE_SCHEME,
         signature,
@@ -339,7 +339,7 @@ async fn human_admin_can_manage_channels_while_normal_human_cannot() {
 }
 
 #[tokio::test]
-async fn signed_navigation_write_is_idempotent_and_raw_key_auth_is_retired() {
+async fn hmac_navigation_write_is_idempotent_and_raw_key_auth_is_retired() {
     let fixture = fixture("single");
     let uri = signed_uri(&fixture, "general", "insight", "hello", None, "nav-001");
     let response = get(&fixture.router, &uri).await;
@@ -368,7 +368,7 @@ async fn signed_navigation_write_is_idempotent_and_raw_key_auth_is_retired() {
 }
 
 #[tokio::test]
-async fn signed_navigation_write_validates_reply_targets_and_nonce_conflicts() {
+async fn hmac_navigation_write_validates_reply_targets_and_nonce_conflicts() {
     let fixture = fixture("rotary");
     let conn = db::connect(&fixture.db_path).unwrap();
     let target_writer = Identity {
@@ -435,14 +435,14 @@ async fn signed_navigation_write_validates_reply_targets_and_nonce_conflicts() {
 }
 
 #[tokio::test]
-async fn distinct_signed_participants_keep_provenance_separate() {
+async fn distinct_hmac_participants_keep_provenance_separate() {
     let single = fixture("single");
     let conn = db::connect(&single.db_path).unwrap();
     identity::provision_web_participant_identity(&conn, "rotary-main", "rotary", Some("Rotary"))
         .unwrap()
         .unwrap();
-    let (rotary_private, rotary_public) = signed_auth::generate_keypair();
-    identity::set_web_participant_signing_key(&conn, "rotary-main", &rotary_public).unwrap();
+    let (rotary_private, rotary_public) = signed_auth::generate_secret();
+    identity::set_web_participant_auth_secret(&conn, "rotary-main", &rotary_public).unwrap();
     drop(conn);
 
     let single_uri = signed_uri(
@@ -458,7 +458,7 @@ async fn distinct_signed_participants_keep_provenance_separate() {
         StatusCode::OK
     );
 
-    let rotary_signature = signed_auth::sign_write(
+    let rotary_signature = signed_auth::compute_write_proof(
         &rotary_private,
         "rotary-main",
         "general",
@@ -469,7 +469,7 @@ async fn distinct_signed_participants_keep_provenance_separate() {
     )
     .unwrap();
     let rotary_uri = format!(
-        "/w/rotary-main?scheme={}&sig={}&channel=general&kind=message&body=from-rotary&nonce=rotary-001",
+        "/w/rotary-main?scheme={}&proof={}&channel=general&kind=message&body=from-rotary&nonce=rotary-001",
         signed_auth::SIGNATURE_SCHEME,
         rotary_signature
     );
