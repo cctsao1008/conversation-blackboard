@@ -1,0 +1,48 @@
+name: one-shot-conversation-ref-constant
+
+on:
+  push:
+    paths:
+      - .github/workflows/rename-conversation-ref-constant.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Clean remaining UUID identifier spelling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          workflow = Path('.github/workflows/rename-conversation-ref-constant.yml')
+          files = subprocess.check_output(
+              ['git', 'grep', '-Il', 'CONVERSATION_UUID', '--', '.'],
+              text=True,
+          ).splitlines()
+          for name in files:
+              path = Path(name)
+              if path == workflow:
+                  continue
+              text = path.read_text(encoding='utf-8')
+              path.write_text(text.replace('CONVERSATION_UUID', 'CONVERSATION_REF'), encoding='utf-8')
+          PY
+          cargo fmt --all
+          cargo test --locked --all-targets
+          git rm .github/workflows/rename-conversation-ref-constant.yml
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add -A
+          git commit -m "#67 Clean remaining conversation_ref identifiers"
+          git push origin HEAD:main
