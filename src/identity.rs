@@ -9,10 +9,10 @@ use sha2::{Digest, Sha256};
 use crate::{model::Identity, signed_auth, web_auth};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParticipantVerification {
+pub struct ParticipantAuth {
     pub identity: Identity,
-    pub signature_scheme: String,
-    pub public_key: String,
+    pub auth_scheme: String,
+    pub auth_secret: String,
 }
 
 fn source_re() -> &'static Regex {
@@ -88,7 +88,7 @@ pub fn get_web_participant_role(conn: &Connection, participant_id: &str) -> Resu
         return Ok(None);
     }
     conn.query_row(
-        "SELECT role FROM web_participants WHERE participant_id = ?1 LIMIT 1",
+        "SELECT role FROM web_participants WHERE participant_id = ?1 AND status = 'active' LIMIT 1",
         [participant_id],
         |row| row.get(0),
     )
@@ -130,8 +130,7 @@ pub fn set_web_participant_status(
     participant_id: &str,
     status: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !matches!(status, "active" | "inactive")
-    {
+    if validate_participant_id(participant_id).is_none() || !matches!(status, "active" | "inactive") {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
@@ -147,8 +146,7 @@ pub fn provision_web_participant_identity(
     source: &str,
     label: Option<&str>,
 ) -> Result<Option<Identity>> {
-    let participant_id =
-        validate_participant_id(participant_id).ok_or(rusqlite::Error::InvalidQuery)?;
+    let participant_id = validate_participant_id(participant_id).ok_or(rusqlite::Error::InvalidQuery)?;
     let source = validate_source(source).ok_or(rusqlite::Error::InvalidQuery)?;
     let label = normalize_label(label).map_err(|_| rusqlite::Error::InvalidQuery)?;
     if get_web_participant(conn, &participant_id)?.is_some() {
@@ -170,8 +168,7 @@ pub fn set_web_participant_totp(
     participant_id: &str,
     secret: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !web_auth::validate_totp_secret(secret)
-    {
+    if validate_participant_id(participant_id).is_none() || !web_auth::validate_totp_secret(secret) {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
@@ -271,11 +268,7 @@ pub fn authenticate_web_totp(
         }));
     }
 
-    let effective_fail_count = if locked_until.is_some() {
-        0
-    } else {
-        fail_count
-    };
+    let effective_fail_count = if locked_until.is_some() { 0 } else { fail_count };
     let new_fail_count = effective_fail_count.saturating_add(1);
     if new_fail_count >= web_auth::TOTP_MAX_FAILURES {
         let locked_until = now.saturating_add(web_auth::TOTP_LOCK_SECS);
@@ -283,10 +276,7 @@ pub fn authenticate_web_totp(
             "UPDATE web_participants
              SET totp_fail_count = 0, totp_locked_until = ?1, updated_at = unixepoch()
              WHERE participant_id = ?2",
-            params![
-                i64::try_from(locked_until).unwrap_or(i64::MAX),
-                participant_id
-            ],
+            params![i64::try_from(locked_until).unwrap_or(i64::MAX), participant_id],
         )?;
     } else {
         tx.execute(
@@ -300,54 +290,52 @@ pub fn authenticate_web_totp(
     Ok(None)
 }
 
-pub fn get_web_participant_verification(
+pub fn get_web_participant_auth(
     conn: &Connection,
     participant_id: &str,
-) -> Result<Option<ParticipantVerification>> {
+) -> Result<Option<ParticipantAuth>> {
     if validate_participant_id(participant_id).is_none() {
         return Ok(None);
     }
     conn.query_row(
-        "SELECT source, participant_id, label, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND status = 'active'\n           AND signature_scheme IS NOT NULL\n           AND public_key IS NOT NULL\n         LIMIT 1",
-        [participant_id],
+        "SELECT source, participant_id, label, auth_scheme, auth_secret\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND status = 'active'\n           AND auth_scheme = ?2\n           AND auth_secret IS NOT NULL\n         LIMIT 1",
+        params![participant_id, signed_auth::SIGNATURE_SCHEME],
         |row| {
-            Ok(ParticipantVerification {
+            Ok(ParticipantAuth {
                 identity: Identity {
                     source: row.get(0)?,
                     instance: row.get(1)?,
                     label: row.get(2)?,
                 },
-                signature_scheme: row.get(3)?,
-                public_key: row.get(4)?,
+                auth_scheme: row.get(3)?,
+                auth_secret: row.get(4)?,
             })
         },
     )
     .optional()
 }
 
-pub fn set_web_participant_signing_key(
+pub fn set_web_participant_auth_secret(
     conn: &Connection,
     participant_id: &str,
-    public_key: &str,
+    secret: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none()
-        || !signed_auth::validate_public_key(public_key)
-    {
+    if validate_participant_id(participant_id).is_none() || !signed_auth::validate_public_key(secret) {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
-        "UPDATE web_participants\n         SET public_key = ?1, signature_scheme = ?2, updated_at = unixepoch()\n         WHERE participant_id = ?3",
-        params![public_key, signed_auth::SIGNATURE_SCHEME, participant_id],
+        "UPDATE web_participants\n         SET auth_secret = ?1, auth_scheme = ?2, updated_at = unixepoch()\n         WHERE participant_id = ?3",
+        params![secret, signed_auth::SIGNATURE_SCHEME, participant_id],
     )?;
     Ok(changed == 1)
 }
 
-pub fn revoke_web_participant_signing_key(conn: &Connection, participant_id: &str) -> Result<bool> {
+pub fn revoke_web_participant_auth(conn: &Connection, participant_id: &str) -> Result<bool> {
     if validate_participant_id(participant_id).is_none() {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
-        "UPDATE web_participants\n         SET public_key = NULL, signature_scheme = NULL, updated_at = unixepoch()\n         WHERE participant_id = ?1 AND public_key IS NOT NULL",
+        "UPDATE web_participants\n         SET auth_secret = NULL, auth_scheme = NULL, updated_at = unixepoch()\n         WHERE participant_id = ?1 AND auth_secret IS NOT NULL",
         [participant_id],
     )?;
     Ok(changed == 1)
@@ -482,23 +470,13 @@ mod tests {
         provision_web_participant_identity(&conn, "operator-main", "operator", None)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            get_web_participant_role(&conn, "operator-main")
-                .unwrap()
-                .as_deref(),
-            Some("user")
-        );
+        assert_eq!(get_web_participant_role(&conn, "operator-main").unwrap().as_deref(), Some("user"));
         assert!(set_web_participant_role(&conn, "operator-main", "admin").unwrap());
-        assert_eq!(
-            get_web_participant_role(&conn, "operator-main")
-                .unwrap()
-                .as_deref(),
-            Some("admin")
-        );
+        assert_eq!(get_web_participant_role(&conn, "operator-main").unwrap().as_deref(), Some("admin"));
     }
 
     #[test]
-    fn participant_lifecycle_disables_totp_and_signing_without_erasing_credentials() {
+    fn participant_lifecycle_disables_totp_and_hmac_without_erasing_credentials() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
@@ -507,50 +485,31 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-        assert!(set_web_participant_totp(&conn, "lifecycle-main", secret).unwrap());
-        let (_, public_key) = signed_auth::generate_keypair();
-        assert!(set_web_participant_signing_key(&conn, "lifecycle-main", &public_key).unwrap());
+        let totp = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        assert!(set_web_participant_totp(&conn, "lifecycle-main", totp).unwrap());
+        let (_, secret) = signed_auth::generate_keypair();
+        assert!(set_web_participant_auth_secret(&conn, "lifecycle-main", &secret).unwrap());
 
-        assert_eq!(
-            get_web_participant_status(&conn, "lifecycle-main")
-                .unwrap()
-                .as_deref(),
-            Some("active")
-        );
-        assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59)
-            .unwrap()
-            .is_some());
-        assert!(get_web_participant_verification(&conn, "lifecycle-main")
-            .unwrap()
-            .is_some());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59).unwrap().is_some());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_some());
 
         assert!(set_web_participant_status(&conn, "lifecycle-main", "inactive").unwrap());
-        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89)
-            .unwrap()
-            .is_none());
-        assert!(get_web_participant_verification(&conn, "lifecycle-main")
-            .unwrap()
-            .is_none());
+        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89).unwrap().is_none());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_none());
 
         let stored: (Option<String>, Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT totp_secret, signature_scheme, public_key\n                 FROM web_participants WHERE participant_id = 'lifecycle-main'",
+                "SELECT totp_secret, auth_scheme, auth_secret\n                 FROM web_participants WHERE participant_id = 'lifecycle-main'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(stored.0.as_deref(), Some(secret));
+        assert_eq!(stored.0.as_deref(), Some(totp));
         assert_eq!(stored.1.as_deref(), Some(signed_auth::SIGNATURE_SCHEME));
-        assert_eq!(stored.2.as_deref(), Some(public_key.as_str()));
+        assert_eq!(stored.2.as_deref(), Some(secret.as_str()));
 
         assert!(set_web_participant_status(&conn, "lifecycle-main", "active").unwrap());
-        assert!(authenticate_web_totp(&conn, "lifecycle-main", "359152", 89)
-            .unwrap()
-            .is_some());
-        assert!(get_web_participant_verification(&conn, "lifecycle-main")
-            .unwrap()
-            .is_some());
+        assert!(get_web_participant_auth(&conn, "lifecycle-main").unwrap().is_some());
     }
 
     #[test]
@@ -563,42 +522,27 @@ mod tests {
         assert!(resolve_identity(&conn, &original).unwrap().is_some());
         let rotated = rotate_token(&conn, &identity.instance).unwrap().unwrap();
         assert!(resolve_identity(&conn, &original).unwrap().is_none());
-        assert_eq!(
-            resolve_identity(&conn, &rotated).unwrap().unwrap().instance,
-            identity.instance
-        );
+        assert_eq!(resolve_identity(&conn, &rotated).unwrap().unwrap().instance, identity.instance);
         assert!(revoke_token(&conn, &identity.instance).unwrap());
         assert!(resolve_identity(&conn, &rotated).unwrap().is_none());
     }
 
     #[test]
-    fn signing_key_registry_is_rotatable_and_revocable() {
+    fn participant_hmac_secret_is_rotatable_and_revocable() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        provision_web_participant_identity(&conn, "claude-main", "claude", Some("Claude"))
+        provision_web_participant_identity(&conn, "maker-main", "maker", Some("Maker"))
             .unwrap()
             .unwrap();
-        let (_, public_a) = signed_auth::generate_keypair();
-        let (_, public_b) = signed_auth::generate_keypair();
-        assert!(set_web_participant_signing_key(&conn, "claude-main", &public_a).unwrap());
-        let registered = get_web_participant_verification(&conn, "claude-main")
-            .unwrap()
-            .unwrap();
-        assert_eq!(registered.identity.instance, "claude-main");
-        assert_eq!(registered.public_key, public_a);
-        assert!(set_web_participant_signing_key(&conn, "claude-main", &public_b).unwrap());
-        assert_eq!(
-            get_web_participant_verification(&conn, "claude-main")
-                .unwrap()
-                .unwrap()
-                .public_key,
-            public_b
-        );
-        assert!(revoke_web_participant_signing_key(&conn, "claude-main").unwrap());
-        assert!(get_web_participant_verification(&conn, "claude-main")
-            .unwrap()
-            .is_none());
+        let (_, secret_a) = signed_auth::generate_keypair();
+        let (_, secret_b) = signed_auth::generate_keypair();
+        assert!(set_web_participant_auth_secret(&conn, "maker-main", &secret_a).unwrap());
+        assert_eq!(get_web_participant_auth(&conn, "maker-main").unwrap().unwrap().auth_secret, secret_a);
+        assert!(set_web_participant_auth_secret(&conn, "maker-main", &secret_b).unwrap());
+        assert_eq!(get_web_participant_auth(&conn, "maker-main").unwrap().unwrap().auth_secret, secret_b);
+        assert!(revoke_web_participant_auth(&conn, "maker-main").unwrap());
+        assert!(get_web_participant_auth(&conn, "maker-main").unwrap().is_none());
     }
 }
