@@ -317,7 +317,7 @@ fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(chunk[0])?;
         let low = hex_nibble(chunk[1])?;
         out[index] = (high << 4) | low;
@@ -510,11 +510,15 @@ mod tests {
         assert_eq!(first["id"], second["id"]);
 
         let conn = db::connect(&path).unwrap();
-        let message = db::get_message(&conn, first["id"].as_i64().unwrap())
-            .unwrap()
+        let (source, instance): (String, String) = conn
+            .query_row(
+                "SELECT source, instance FROM messages WHERE id = ?1",
+                [first["id"].as_i64().unwrap()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(message.source, "alice");
-        assert_eq!(message.instance, "alice-main");
+        assert_eq!(source, "alice");
+        assert_eq!(instance, "alice-main");
     }
 
     #[tokio::test]
