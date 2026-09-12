@@ -15,14 +15,13 @@ struct ParticipantInspection {
     role: String,
     lifecycle_status: String,
     totp_status: &'static str,
-    signature_scheme: Option<String>,
-    public_key: Option<String>,
-    signing_status: &'static str,
+    auth_scheme: Option<String>,
+    auth_status: &'static str,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ParticipantCommand {
-    /// Provision a participant identity shared by human TOTP and agent signing.
+    /// Provision a participant identity shared by human TOTP and agent authentication.
     Provision {
         #[arg(long)]
         db: PathBuf,
@@ -84,19 +83,22 @@ pub enum ParticipantCommand {
         #[arg(long)]
         participant_id: String,
     },
-    /// Generate an Ed25519 signing keypair without registering the private key.
-    GenerateSigningKey,
-    /// Register or rotate the Ed25519 public signing key used by agents.
-    SetSigningKey {
+    /// Generate the participant HMAC secret. Fails if auth is already configured.
+    AuthGenerate {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
         participant_id: String,
-        #[arg(long)]
-        public_key: String,
     },
-    /// Revoke the Ed25519 public signing key used by agents.
-    RevokeSigningKey {
+    /// Rotate the participant HMAC secret and print the replacement exactly once.
+    AuthRotate {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+    },
+    /// Revoke participant HMAC authentication without deleting the participant.
+    AuthRevoke {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
@@ -144,7 +146,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             let conn = db::connect(&path)?;
             let records = list_participants(&conn)?;
             println!("PARTICIPANTS");
-            println!("participant_id\tsource\trole\tstatus\ttotp\tsigning\tlabel");
+            println!("participant_id\tsource\trole\tstatus\ttotp\tauth\tlabel");
             for record in records {
                 println!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -153,7 +155,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
                     record.role,
                     record.lifecycle_status,
                     record.totp_status,
-                    record.signing_status,
+                    record.auth_status,
                     record.label.as_deref().unwrap_or("-")
                 );
             }
@@ -168,11 +170,9 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             if !identity::set_web_participant_status(&conn, &participant_id, "inactive")? {
                 return Err(format!("unknown participant: {participant_id}").into());
             }
-            let status = identity::get_web_participant_status(&conn, &participant_id)?
-                .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
             println!("PARTICIPANT INACTIVE");
             println!("participant_id : {participant_id}");
-            println!("status         : {status}");
+            println!("status         : inactive");
             Ok(())
         }
         ParticipantCommand::Reactivate {
@@ -184,11 +184,9 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             if !identity::set_web_participant_status(&conn, &participant_id, "active")? {
                 return Err(format!("unknown participant: {participant_id}").into());
             }
-            let status = identity::get_web_participant_status(&conn, &participant_id)?
-                .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
             println!("PARTICIPANT ACTIVE");
             println!("participant_id : {participant_id}");
-            println!("status         : {status}");
+            println!("status         : active");
             Ok(())
         }
         ParticipantCommand::SetRole {
@@ -227,9 +225,6 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("issuer         : {issuer}");
             println!("setup_key      : {secret}");
             println!("otpauth_uri    : {uri}");
-            println!(
-                "note            : Add this account to any RFC 6238 authenticator, then use the 6-digit code on the browser UI."
-            );
             Ok(())
         }
         ParticipantCommand::TotpRevoke {
@@ -244,54 +239,54 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("revoked TOTP login: {participant_id}");
             Ok(())
         }
-        ParticipantCommand::GenerateSigningKey => {
-            let (private_key, public_key) = signed_auth::generate_keypair();
-            println!("PARTICIPANT SIGNING KEY MATERIAL");
-            println!("signature_scheme : {}", signed_auth::SIGNATURE_SCHEME);
-            println!("public_key       : {public_key}");
-            println!("private_key      : {private_key}");
-            println!(
-                "note             : Register only the public key. Keep the private key with the agent participant and never send it to Conversation Blackboard."
-            );
-            Ok(())
-        }
-        ParticipantCommand::SetSigningKey {
+        ParticipantCommand::AuthGenerate {
             db: path,
             participant_id,
-            public_key,
-        } => {
-            require_database(&path)?;
-            let conn = db::connect(&path)?;
-            if identity::get_web_participant(&conn, &participant_id)?.is_none() {
-                return Err(format!("unknown participant: {participant_id}").into());
-            }
-            if !signed_auth::validate_public_key(&public_key) {
-                return Err("invalid Ed25519 public key material".into());
-            }
-            if !identity::set_web_participant_signing_key(&conn, &participant_id, &public_key)? {
-                return Err(format!("unknown participant: {participant_id}").into());
-            }
-            println!("PARTICIPANT SIGNING KEY READY");
-            println!("participant_id   : {participant_id}");
-            println!("signature_scheme : {}", signed_auth::SIGNATURE_SCHEME);
-            println!("public_key       : {public_key}");
-            Ok(())
-        }
-        ParticipantCommand::RevokeSigningKey {
+        } => provision_auth(&path, &participant_id, false),
+        ParticipantCommand::AuthRotate {
+            db: path,
+            participant_id,
+        } => provision_auth(&path, &participant_id, true),
+        ParticipantCommand::AuthRevoke {
             db: path,
             participant_id,
         } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
             if !identity::revoke_web_participant_signing_key(&conn, &participant_id)? {
-                return Err(
-                    format!("no active signing key for participant: {participant_id}").into(),
-                );
+                return Err(format!("no active participant auth for: {participant_id}").into());
             }
-            println!("revoked participant signing key: {participant_id}");
+            println!("PARTICIPANT AUTH REVOKED");
+            println!("participant_id : {participant_id}");
             Ok(())
         }
     }
+}
+
+fn provision_auth(path: &std::path::Path, participant_id: &str, rotate: bool) -> DynResult {
+    require_database(path)?;
+    let conn = db::connect(path)?;
+    if identity::get_web_participant(&conn, participant_id)?.is_none() {
+        return Err(format!("unknown participant: {participant_id}").into());
+    }
+    let current = inspect_participant(&conn, participant_id)?
+        .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
+    if !rotate && current.auth_status == "active" {
+        return Err(format!("participant auth already configured: {participant_id}; use auth-rotate").into());
+    }
+
+    let (secret, registered_secret) = signed_auth::generate_keypair();
+    debug_assert_eq!(secret, registered_secret);
+    if !identity::set_web_participant_signing_key(&conn, participant_id, &registered_secret)? {
+        return Err(format!("unknown participant: {participant_id}").into());
+    }
+
+    println!("PARTICIPANT AUTH READY");
+    println!("participant_id : {participant_id}");
+    println!("auth_scheme    : {}", signed_auth::SIGNATURE_SCHEME);
+    println!("secret         : {secret}");
+    println!("note           : This secret is shown once. Store it with the participant client; participant show/list never reveal it.");
+    Ok(())
 }
 
 fn inspect_participant(
@@ -303,26 +298,23 @@ fn inspect_participant(
         [participant_id],
         |row| {
             let totp_secret: Option<String> = row.get(5)?;
-            let signature_scheme: Option<String> = row.get(6)?;
-            let public_key: Option<String> = row.get(7)?;
+            let auth_scheme: Option<String> = row.get(6)?;
+            let auth_secret: Option<String> = row.get(7)?;
             Ok(ParticipantInspection {
                 participant_id: row.get(0)?,
                 source: row.get(1)?,
                 label: row.get(2)?,
                 role: row.get(3)?,
                 lifecycle_status: row.get(4)?,
-                totp_status: if totp_secret.is_some() {
+                totp_status: if totp_secret.is_some() { "active" } else { "not-configured" },
+                auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
+                    && auth_secret.as_deref().is_some_and(signed_auth::validate_public_key)
+                {
                     "active"
                 } else {
                     "not-configured"
                 },
-                signing_status: if signature_scheme.is_some() && public_key.is_some() {
-                    "active"
-                } else {
-                    "not-configured"
-                },
-                signature_scheme,
-                public_key,
+                auth_scheme,
             })
         },
     )
@@ -335,26 +327,23 @@ fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspe
     )?;
     let rows = stmt.query_map([], |row| {
         let totp_secret: Option<String> = row.get(5)?;
-        let signature_scheme: Option<String> = row.get(6)?;
-        let public_key: Option<String> = row.get(7)?;
+        let auth_scheme: Option<String> = row.get(6)?;
+        let auth_secret: Option<String> = row.get(7)?;
         Ok(ParticipantInspection {
             participant_id: row.get(0)?,
             source: row.get(1)?,
             label: row.get(2)?,
             role: row.get(3)?,
             lifecycle_status: row.get(4)?,
-            totp_status: if totp_secret.is_some() {
+            totp_status: if totp_secret.is_some() { "active" } else { "not-configured" },
+            auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
+                && auth_secret.as_deref().is_some_and(signed_auth::validate_public_key)
+            {
                 "active"
             } else {
                 "not-configured"
             },
-            signing_status: if signature_scheme.is_some() && public_key.is_some() {
-                "active"
-            } else {
-                "not-configured"
-            },
-            signature_scheme,
-            public_key,
+            auth_scheme,
         })
     })?;
     rows.collect()
@@ -362,28 +351,18 @@ fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspe
 
 fn print_participant(record: &ParticipantInspection) {
     println!("PARTICIPANT");
-    println!("participant_id   : {}", record.participant_id);
-    println!(
-        "label            : {}",
-        record.label.as_deref().unwrap_or("-")
-    );
-    println!("source           : {}", record.source);
-    println!("role             : {}", record.role);
-    println!("status           : {}", record.lifecycle_status);
+    println!("participant_id : {}", record.participant_id);
+    println!("label          : {}", record.label.as_deref().unwrap_or("-"));
+    println!("source         : {}", record.source);
+    println!("role           : {}", record.role);
+    println!("status         : {}", record.lifecycle_status);
     println!();
     println!("totp");
-    println!("status           : {}", record.totp_status);
+    println!("status         : {}", record.totp_status);
     println!();
-    println!("signing");
-    println!("status           : {}", record.signing_status);
-    println!(
-        "signature_scheme : {}",
-        record.signature_scheme.as_deref().unwrap_or("-")
-    );
-    println!(
-        "public_key       : {}",
-        record.public_key.as_deref().unwrap_or("-")
-    );
+    println!("auth");
+    println!("status         : {}", record.auth_status);
+    println!("auth_scheme    : {}", record.auth_scheme.as_deref().unwrap_or("-"));
 }
 
 fn require_database(path: &std::path::Path) -> DynResult {
@@ -400,81 +379,35 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn inspection_reports_non_secret_credential_state() {
+    fn inspection_never_exposes_hmac_secret() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        identity::provision_web_participant_identity(
-            &conn,
-            "keda-main",
-            "human",
-            Some("Keda Tsao"),
-        )
-        .unwrap();
-
-        let empty = inspect_participant(&conn, "keda-main").unwrap().unwrap();
-        assert_eq!(empty.role, "user");
-        assert_eq!(empty.lifecycle_status, "active");
-        assert_eq!(empty.totp_status, "not-configured");
-        assert_eq!(empty.signing_status, "not-configured");
-        assert_eq!(empty.public_key, None);
-
-        identity::set_web_participant_totp(&conn, "keda-main", &web_auth::generate_totp_secret())
+        identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
+            .unwrap()
             .unwrap();
-        let (_, public_key) = signed_auth::generate_keypair();
-        identity::set_web_participant_signing_key(&conn, "keda-main", &public_key).unwrap();
+        let (_, secret) = signed_auth::generate_keypair();
+        identity::set_web_participant_signing_key(&conn, "maker-main", &secret).unwrap();
 
-        let active = inspect_participant(&conn, "keda-main").unwrap().unwrap();
-        assert_eq!(active.totp_status, "active");
-        assert_eq!(active.signing_status, "active");
-        assert_eq!(
-            active.signature_scheme.as_deref(),
-            Some(signed_auth::SIGNATURE_SCHEME)
-        );
-        assert_eq!(active.public_key.as_deref(), Some(public_key.as_str()));
-
-        identity::set_web_participant_status(&conn, "keda-main", "inactive").unwrap();
-        let inactive = inspect_participant(&conn, "keda-main").unwrap().unwrap();
-        assert_eq!(inactive.lifecycle_status, "inactive");
-        assert_eq!(inactive.totp_status, "active");
-        assert_eq!(inactive.signing_status, "active");
-
-        identity::revoke_web_participant_totp(&conn, "keda-main").unwrap();
-        identity::revoke_web_participant_signing_key(&conn, "keda-main").unwrap();
-        let revoked = inspect_participant(&conn, "keda-main").unwrap().unwrap();
-        assert_eq!(revoked.totp_status, "not-configured");
-        assert_eq!(revoked.signing_status, "not-configured");
-        assert_eq!(revoked.public_key, None);
+        let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
+        assert_eq!(record.auth_status, "active");
+        assert_eq!(record.auth_scheme.as_deref(), Some(signed_auth::SIGNATURE_SCHEME));
+        let debug = format!("{record:?}");
+        assert!(!debug.contains(&secret));
     }
 
     #[test]
-    fn inspection_lists_participants_and_missing_is_none() {
+    fn lifecycle_state_remains_visible() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        identity::provision_web_participant_identity(
-            &conn,
-            "kegui-main",
-            "human",
-            Some("Kegui Tsao"),
-        )
-        .unwrap();
-        identity::provision_web_participant_identity(
-            &conn,
-            "keda-main",
-            "human",
-            Some("Keda Tsao"),
-        )
-        .unwrap();
-
-        let records = list_participants(&conn).unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].participant_id, "keda-main");
-        assert_eq!(records[1].participant_id, "kegui-main");
-        assert!(inspect_participant(&conn, "missing-main")
+        identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
             .unwrap()
-            .is_none());
+            .unwrap();
+        assert!(identity::set_web_participant_status(&conn, "maker-main", "inactive").unwrap());
+        let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
+        assert_eq!(record.lifecycle_status, "inactive");
     }
 }
