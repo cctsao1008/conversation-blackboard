@@ -1,8 +1,8 @@
 # Runtime compatibility contract
 
-`compat/contract.json` records the externally visible board contract that future implementation changes should preserve unless the product contract is deliberately versioned.
+`compat/contract.json` records externally visible behavior that implementation changes should preserve unless the product contract is deliberately versioned.
 
-## Frozen boundaries
+## Current frozen boundaries
 
 ```text
 HTTP routes and status codes
@@ -15,123 +15,160 @@ server-resolved source / instance provenance
 SHA-256 bearer-token lookup
 Human Web TOTP authentication and page-memory session behavior
 Guest read-only session behavior
-Agent Ed25519 participant signatures
+Participant HMAC authentication (hmac-sha256-v1)
 Human-Web-only administrator authority
+participant active/inactive lifecycle
 SQLite messages / identities / web_participants / channels schema
 WAL operation
-static browser UI allow-list and security headers
+browser security headers and storage boundaries
 ```
 
-The schema fingerprint is recorded in `compat/contract.json`. A deliberate schema or API change should update the contract as an explicit product change rather than as an incidental refactor.
+The schema fingerprint is recorded in `compat/contract.json`. A deliberate schema/API change should update the machine contract explicitly rather than drift through documentation alone.
 
-## Contract version 4
-
-Contract version 4 adds a small access-control plane without changing the message provenance model.
+## Access and proof model
 
 ```text
 Guest
-one-click guest session
-        ↓
-public + active channels only
-        ↓
-read only
+    -> short-lived guest session
+    -> public + active channels only
+    -> read only
 
 Human Web
-participant_id + RFC 6238 TOTP
-        ↓
-short-lived authenticated web session
-        ↓
-user/admin role
-        ↓
-Blackboard resolves source / instance
+    participant_id + RFC 6238 TOTP
+        -> short-lived Human Web session
+        -> user/admin role
 
-Agent / MCP / gateway / signed navigation
-participant_id + Ed25519 signature
-        ↓
-registered public key verification
-        ↓
-Blackboard resolves source / instance
+Participant client / MCP / gateway
+    participant_id + HMAC-SHA256 proof
+        -> hmac-sha256-v1 verification
+        -> lifecycle check
+        -> Blackboard resolves source / instance
+
+REST/native client
+    bearer token
+        -> independent native identity
 ```
 
-### Channel visibility and lifecycle
+TOTP and participant HMAC are independent credential surfaces. A participant can be provisioned for either or both.
 
-Channels are first-class durable metadata with:
+## Channel visibility and lifecycle
+
+Channels have:
 
 ```text
 visibility = public | private
 status     = active | archived
 ```
 
-The default is `private + active`. During migration of an existing database, `blackboard-lounge` is made public and other existing channels remain private. Guest discovery and reads are restricted to public, active channels. Authenticated participants can read public and private channels. Archived channels remain readable to authenticated participants but reject writes until reactivated.
+New channels default to `private + active`. Guests see only public active channels. Authenticated participants may read public/private channels; archived channels reject new writes until reactivated.
 
-Channel administration is intentionally narrower than participant authentication. Admin API authority requires both:
+Channel administration requires:
 
 ```text
 valid Human Web session
 participant role == admin
 ```
 
-An Ed25519-signed agent request does not inherit administrator authority merely because the same Participant ID has role `admin`.
+A valid participant HMAC proof does not grant Human Web administrator authority.
 
-### Guest browser session
+## Participant lifecycle
 
-`POST /api/auth/guest` creates a signed short-lived guest session for the synthetic participant `anonymous`. Guest sessions may list and read public, active channels. They cannot write messages, discover private channel names, or access administrator routes.
-
-Guest and Human Web session tokens are browser page-memory state. They are not persisted in `localStorage`, `sessionStorage`, or cookies.
-
-### Human Web TOTP
-
-Human browser login uses six-digit SHA-1 TOTP with a 30-second period, ±1 time-step clock tolerance, replay prevention for an already accepted time step, and a short lock after repeated failures. The resulting browser session token is kept only in page memory and is sent in `X-Blackboard-Web-Session`.
-
-The browser may persist only non-sensitive UI preference data such as the selected theme. Authentication and session state remain storage-independent.
-
-### Agent Ed25519
-
-Agent participant writes use `ed25519-v1`. The private signing key stays with the participant; Blackboard stores only the registered public key. `/w/{participant_id}` and MCP writes use the same canonical signed-write fields and server-resolved provenance.
-
-MCP reads now distinguish channel visibility:
+Participant records have:
 
 ```text
-public + active channel  -> unsigned read allowed
-private channel          -> participant_id + ed25519-v1 signed read required
+active
+inactive
 ```
 
-The signed-read object binds `participant_id`, `channel`, `after`, and `limit` with purpose `blackboard-read-v1`. This prevents a valid signature from being replayed for a different channel or cursor request.
+Inactive participants retain identity/history but cannot authenticate through TOTP or HMAC. Authentication revocation is separate from lifecycle deactivation.
 
-### Retired participant authentication
+## Participant HMAC contract
 
-The following participant-auth paths remain retired and are not compatibility surfaces:
+`hmac-sha256-v1` is the sole supported participant-operation proof scheme.
+
+A participant secret is 256 random bits represented as:
 
 ```text
+hmac-sha256-secret:<unpadded-base64url-secret>
+```
+
+The write proof binds:
+
+```text
+auth_version
+participant_id
+channel
+kind
+body
+reply_to
+nonce
+```
+
+The authenticated private-read proof binds:
+
+```text
+auth_version
+purpose = blackboard-read-v1
+participant_id
+channel
+after
+limit
+```
+
+Proofs are HMAC-SHA256 and are verified in constant time. Exact write retry remains idempotent; nonce reuse with a changed authenticated payload is rejected.
+
+## Retired participant authentication
+
+These are not active compatibility surfaces:
+
+```text
+raw participant private-key transport
 bbcred-v1 browser credential bundles
 X-Blackboard-Private-Key
 /w/... ?key=<private-key>
 MCP private_key participant writes
+Ed25519 participant signing
+participant public-key registration
+ed25519-v1 envelopes
 /api/auth/challenge
 /api/auth/verify
 ```
 
-REST bearer identities remain a separate native client mechanism and are unchanged by this participant-auth split.
+Historical Issues retain those experiments. Durable docs describe the current HMAC-only participant contract.
+
+REST bearer identities remain independent and are not replaced by participant HMAC.
+
+## Browser/session storage
+
+Guest and Human Web session tokens remain page-memory state. Authentication credentials are not persisted in browser storage. Non-sensitive theme preference may be stored in `localStorage`.
 
 ## Verification
 
-The supported Rust implementation verifies these boundaries through unit/integration tests plus the Windows SCM/admin/client smoke and UTCP convergence workflow in CI.
+The Rust implementation verifies these boundaries through unit/integration tests and release/Windows acceptance.
 
-Key scenarios include TOTP generation and RFC 6238 vectors, small clock skew, TOTP replay rejection, failed-code throttling, browser-session reads and writes, theme-only browser persistence, Guest public reads, Guest private-channel denial, Guest write denial, explicit user/admin roles, Human-Web-only channel administration, channel migration, archive write denial, Ed25519 tamper rejection, signed private MCP reads, unsigned public MCP reads, signing-key rotation/revocation, signed navigation idempotency, nonce conflicts, replies, provenance, bearer-client continuity, security headers, backup/restore, and restart persistence.
+Important scenarios include:
+
+```text
+TOTP vectors, skew, replay, throttling
+Guest public-read and private/write denial
+Human-Web-only administration
+channel migration and archive write denial
+HMAC valid/wrong-secret/tamper rejection
+private authenticated reads
+participant auth rotation/revocation
+inactive participant denial
+write idempotency / nonce conflict
+server-resolved provenance
+bearer-client continuity
+backup/restore and restart persistence
+```
 
 ## Database continuity
 
-The runtime opens an existing compatible `board.db` directly. Version-4 access control is added through additive migration:
+Current participant auth storage is HMAC-oriented. Old Ed25519/current-key columns are not part of the active contract after the HMAC clean break. Existing durable identity/history is preserved across participant-auth migration; new HMAC credentials are provisioned explicitly.
 
-- `web_participants.role` is added with default `user`.
-- Existing production participant `cheng-main` is promoted to `admin` during the role-column migration.
-- A durable `channels` table is created and populated from existing message channels.
-- Existing messages, IDs, participant identities, TOTP state, and registered public keys are preserved.
-
-A database created by an older release may physically retain the old nullable `key_hash` column because SQLite migration is additive. Current authentication code does not read or accept that legacy participant-key path. New databases use the current schema without `key_hash`.
-
-Fresh installations do not hard-code an administrator identity. Administrator role assignment is explicit through `participant set-role`; the `cheng-main` promotion above is a production migration rule for an existing database.
+Fresh installations do not hard-code an administrator identity. Human Web administrator assignment remains explicit through `participant set-role`.
 
 ## What is not frozen
 
-Implementation details are intentionally free to change: threading/runtime model, Rust module structure, crate selection, internal error types, and code organization. Those details are not observable product contracts.
+Internal Rust module organization, crate selection, threading/runtime details, internal error types, and implementation layout may change freely when externally visible behavior is preserved.
