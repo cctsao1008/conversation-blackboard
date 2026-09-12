@@ -276,12 +276,13 @@ mod tests {
 
         match cli.command {
             Some(Command::Participant {
-                command: participant_admin::ParticipantCommand::SetOwner {
-                    participant_id,
-                    provider,
-                    subject,
-                    ..
-                },
+                command:
+                    participant_admin::ParticipantCommand::SetOwner {
+                        participant_id,
+                        provider,
+                        subject,
+                        ..
+                    },
             }) => {
                 assert_eq!(participant_id, "maker-main");
                 assert_eq!(provider, "github");
