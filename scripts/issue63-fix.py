@@ -24,10 +24,13 @@ for path in Path("src").glob("*.rs"):
     text = text.replace("SIGNATURE_SCHEME", "AUTH_SCHEME")
     path.write_text(text, encoding="utf-8")
 
+# Active implementation must no longer contain asymmetric participant-auth
+# terminology. Contract tests may still assert that rejected legacy field names
+# such as private_key are absent from the published schema.
 for path in Path("src").glob("*.rs"):
     text = path.read_text(encoding="utf-8")
     lowered = text.lower()
-    forbidden = ["ed25519", "public_key", "private_key", "signed_auth"]
+    forbidden = ["ed25519", "public_key", "signed_auth"]
     found = [token for token in forbidden if token in lowered]
     if found:
         raise SystemExit(f"obsolete asymmetric-auth tokens remain in {path}: {found}")
