@@ -6,7 +6,7 @@ on:
       - "integrations/utcp.json"
       - "src/http.rs"
       - "src/mcp.rs"
-      - "src/signed_auth.rs"
+      - "src/participant_auth.rs"
       - "src/participant_admin.rs"
       - "tools/utcp_smoke.py"
       - ".github/workflows/utcp-contract.yml"
@@ -15,7 +15,7 @@ on:
       - "integrations/utcp.json"
       - "src/http.rs"
       - "src/mcp.rs"
-      - "src/signed_auth.rs"
+      - "src/participant_auth.rs"
       - "src/participant_admin.rs"
       - "tools/utcp_smoke.py"
       - ".github/workflows/utcp-contract.yml"
@@ -32,8 +32,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install pinned UTCP client and Ed25519 test dependency
-        run: python -m pip install "utcp==1.1.4" "utcp-http==1.1.13" "cryptography>=45,<48"
+      - name: Install pinned UTCP client
+        run: python -m pip install "utcp==1.1.4" "utcp-http==1.1.13"
       - name: Build Blackboard
         run: cargo build --release --locked
       - name: Run UTCP discovery/read/write smoke
