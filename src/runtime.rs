@@ -1,6 +1,6 @@
 use std::{env, future::Future, net::SocketAddr, path::PathBuf};
 
-use crate::{db, history, http, mcp};
+use crate::{db, github_webhook, history, http, mcp};
 use http::AppState;
 
 #[derive(Clone, Debug)]
@@ -51,16 +51,21 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     db::initialize(&config.db_path)?;
+    let conn = db::connect(&config.db_path)?;
+    github_webhook::ensure_owner_columns(&conn)?;
+    drop(conn);
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let state = AppState {
-        db_path: config.db_path,
+        db_path: config.db_path.clone(),
         registration_key: config.registration_key,
     };
+    let github_state = github_webhook::GithubWebhookState::from_env(config.db_path);
     let app = http::app(state.clone())
         .merge(history::app(state.clone()))
-        .merge(mcp::app(state));
+        .merge(mcp::app(state))
+        .merge(github_webhook::app(github_state));
 
     println!("conversation-blackboard listening on http://{addr}");
     axum::serve(listener, app)
