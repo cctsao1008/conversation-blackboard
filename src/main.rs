@@ -4,6 +4,7 @@ mod admin;
 mod client;
 mod client_cli;
 mod db;
+mod github_webhook;
 mod history;
 mod http;
 #[cfg(test)]
@@ -250,6 +251,42 @@ mod tests {
             Some(Command::Participant {
                 command: participant_admin::ParticipantCommand::Reactivate { participant_id, .. },
             }) => assert_eq!(participant_id, "mcp-smoke-main"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_set_owner_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "set-owner",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+            "--provider",
+            "github",
+            "--subject",
+            "543608",
+            "--login",
+            "cctsao1008",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::SetOwner {
+                    participant_id,
+                    provider,
+                    subject,
+                    ..
+                },
+            }) => {
+                assert_eq!(participant_id, "maker-main");
+                assert_eq!(provider, "github");
+                assert_eq!(subject, "543608");
+            }
             other => panic!("unexpected command: {other:?}"),
         }
     }
