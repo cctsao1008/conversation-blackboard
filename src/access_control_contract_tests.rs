@@ -2,15 +2,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ring::signature::Ed25519KeyPair;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
 use crate::{db, http, identity, request_auth, signed_auth, web_auth};
 
 #[tokio::test]
-async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
+async fn admin_role_does_not_turn_valid_agent_hmac_into_admin_authority() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("board.db");
     db::initialize(&db_path).unwrap();
@@ -21,25 +19,18 @@ async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
         .unwrap();
     assert!(identity::set_web_participant_role(&conn, "cheng-main", "admin").unwrap());
 
-    let (private_key, public_key) = signed_auth::generate_keypair();
-    assert!(identity::set_web_participant_signing_key(&conn, "cheng-main", &public_key).unwrap());
+    let (secret, registered_secret) = signed_auth::generate_secret();
+    assert_eq!(secret, registered_secret);
+    assert!(identity::set_web_participant_auth_secret(&conn, "cheng-main", &secret).unwrap());
     drop(conn);
 
     let request_target = "/api/admin/channels";
     let canonical = web_auth::canonical_http_request_bytes("cheng-main", "GET", request_target);
-    let pkcs8 = URL_SAFE_NO_PAD
-        .decode(
-            private_key
-                .strip_prefix(signed_auth::PRIVATE_KEY_PREFIX)
-                .unwrap(),
-        )
-        .unwrap();
-    let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8).unwrap();
-    let signature = URL_SAFE_NO_PAD.encode(keypair.sign(&canonical).as_ref());
+    let proof = signed_auth::compute_message_proof(&secret, &canonical).unwrap();
 
-    assert!(web_auth::verify_http_request_signature(
-        &public_key,
-        &signature,
+    assert!(web_auth::verify_http_request_auth(
+        &secret,
+        &proof,
         "cheng-main",
         "GET",
         request_target,
@@ -57,10 +48,10 @@ async fn admin_role_does_not_turn_valid_agent_signature_into_admin_authority() {
                 .uri(request_target)
                 .header(request_auth::PARTICIPANT_ID_HEADER, "cheng-main")
                 .header(
-                    request_auth::SIGNATURE_SCHEME_HEADER,
+                    request_auth::AUTH_SCHEME_HEADER,
                     signed_auth::SIGNATURE_SCHEME,
                 )
-                .header(request_auth::SIGNATURE_HEADER, signature)
+                .header(request_auth::AUTH_PROOF_HEADER, proof)
                 .body(Body::empty())
                 .unwrap(),
         )
