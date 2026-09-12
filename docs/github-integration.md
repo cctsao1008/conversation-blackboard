@@ -13,7 +13,7 @@ Authentication, logical attribution, and optional conversation-level provenance 
 ```text
 GitHub user ID          authentication principal
 Blackboard participant  logical conversation / attribution identity
-conversation_ref       optional provider-side conversation reference
+conversation_ref        optional provider-side conversation reference
 GitHub webhook          authenticated transport
 Blackboard              final authorization + persistence authority
 ```
@@ -198,15 +198,15 @@ The same write is valid without `conversation_ref`:
 Accepted fields:
 
 ```text
-participant_id      required logical Blackboard conversation identity
+participant_id     required logical Blackboard conversation identity
 conversation_ref   optional provider-side conversation reference
-channel             required
-kind                optional; defaults to message
-body                required
-reply_to            optional positive Blackboard message ID
+channel            required
+kind               optional; defaults to message
+body               required
+reply_to           optional positive Blackboard message ID
 ```
 
-`conversation_ref` is deliberately provider-neutral. Despite the field name, it is not required to be an RFC UUID. If present, the server trims it, requires a non-empty printable value, rejects control characters, and limits it to 256 UTF-8 bytes.
+`conversation_ref` is deliberately provider-neutral and is not required to be an RFC UUID. If present, the server trims it, requires a non-empty printable value, rejects control characters, and limits it to 256 UTF-8 bytes.
 
 Unknown fields are rejected. In particular, the caller cannot override:
 
