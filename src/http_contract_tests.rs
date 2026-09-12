@@ -15,7 +15,7 @@ use crate::{
     http::{self, AppState},
     identity,
     model::Identity,
-    signed_auth, web_auth,
+    participant_auth, web_auth,
 };
 
 struct Fixture {
@@ -41,7 +41,7 @@ fn fixture(source: &str) -> Fixture {
     )
     .unwrap()
     .unwrap();
-    let (signing_private, signing_public) = signed_auth::generate_secret();
+    let (signing_private, signing_public) = participant_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, &participant_id, &signing_public).unwrap();
     drop(conn);
     let router = http::app(AppState {
@@ -126,7 +126,7 @@ fn signed_uri(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> String {
-    let signature = signed_auth::compute_write_proof(
+    let signature = participant_auth::compute_write_proof(
         &fixture.signing_private,
         &fixture.participant_id,
         channel,
@@ -139,7 +139,7 @@ fn signed_uri(
     let mut uri = format!(
         "/w/{}?scheme={}&proof={}&channel={}&kind={}&body={}&nonce={}",
         fixture.participant_id,
-        signed_auth::SIGNATURE_SCHEME,
+        participant_auth::AUTH_SCHEME,
         signature,
         channel,
         kind,
@@ -441,7 +441,7 @@ async fn distinct_hmac_participants_keep_provenance_separate() {
     identity::provision_web_participant_identity(&conn, "rotary-main", "rotary", Some("Rotary"))
         .unwrap()
         .unwrap();
-    let (rotary_private, rotary_public) = signed_auth::generate_secret();
+    let (rotary_private, rotary_public) = participant_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, "rotary-main", &rotary_public).unwrap();
     drop(conn);
 
@@ -458,7 +458,7 @@ async fn distinct_hmac_participants_keep_provenance_separate() {
         StatusCode::OK
     );
 
-    let rotary_signature = signed_auth::compute_write_proof(
+    let rotary_signature = participant_auth::compute_write_proof(
         &rotary_private,
         "rotary-main",
         "general",
@@ -470,7 +470,7 @@ async fn distinct_hmac_participants_keep_provenance_separate() {
     .unwrap();
     let rotary_uri = format!(
         "/w/rotary-main?scheme={}&proof={}&channel=general&kind=message&body=from-rotary&nonce=rotary-001",
-        signed_auth::SIGNATURE_SCHEME,
+        participant_auth::AUTH_SCHEME,
         rotary_signature
     );
     assert_eq!(

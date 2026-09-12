@@ -1,7 +1,7 @@
 use axum::http::{header, HeaderMap};
 use rusqlite::{Connection, Result};
 
-use crate::{identity, model::Identity, signed_auth, web_auth};
+use crate::{identity, model::Identity, participant_auth, web_auth};
 
 pub const PARTICIPANT_ID_HEADER: &str = "x-blackboard-participant-id";
 pub const AUTH_SCHEME_HEADER: &str = "x-blackboard-auth-scheme";
@@ -36,7 +36,7 @@ pub fn resolve_request_identity_for_target(
     let Some(proof) = header_text(headers, AUTH_PROOF_HEADER) else {
         return Ok(None);
     };
-    if scheme != signed_auth::SIGNATURE_SCHEME {
+    if scheme != participant_auth::AUTH_SCHEME {
         return Ok(None);
     }
     let Some(auth) = identity::get_web_participant_auth(conn, participant_id)? else {

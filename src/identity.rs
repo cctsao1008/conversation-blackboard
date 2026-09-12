@@ -6,7 +6,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use sha2::{Digest, Sha256};
 
-use crate::{model::Identity, signed_auth, web_auth};
+use crate::{model::Identity, participant_auth, web_auth};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParticipantAuth {
@@ -89,21 +89,6 @@ pub fn get_web_participant_role(conn: &Connection, participant_id: &str) -> Resu
     }
     conn.query_row(
         "SELECT role FROM web_participants WHERE participant_id = ?1 AND status = 'active' LIMIT 1",
-        [participant_id],
-        |row| row.get(0),
-    )
-    .optional()
-}
-
-pub fn get_web_participant_status(
-    conn: &Connection,
-    participant_id: &str,
-) -> Result<Option<String>> {
-    if validate_participant_id(participant_id).is_none() {
-        return Ok(None);
-    }
-    conn.query_row(
-        "SELECT status FROM web_participants WHERE participant_id = ?1 LIMIT 1",
         [participant_id],
         |row| row.get(0),
     )
@@ -309,7 +294,7 @@ pub fn get_web_participant_auth(
     }
     conn.query_row(
         "SELECT source, participant_id, label, auth_scheme, auth_secret\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND status = 'active'\n           AND auth_scheme = ?2\n           AND auth_secret IS NOT NULL\n         LIMIT 1",
-        params![participant_id, signed_auth::SIGNATURE_SCHEME],
+        params![participant_id, participant_auth::AUTH_SCHEME],
         |row| {
             Ok(ParticipantAuth {
                 identity: Identity {
@@ -330,12 +315,14 @@ pub fn set_web_participant_auth_secret(
     participant_id: &str,
     secret: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none() || !signed_auth::validate_secret(secret) {
+    if validate_participant_id(participant_id).is_none()
+        || !participant_auth::validate_secret(secret)
+    {
         return Err(rusqlite::Error::InvalidQuery);
     }
     let changed = conn.execute(
         "UPDATE web_participants\n         SET auth_secret = ?1, auth_scheme = ?2, updated_at = unixepoch()\n         WHERE participant_id = ?3",
-        params![secret, signed_auth::SIGNATURE_SCHEME, participant_id],
+        params![secret, participant_auth::AUTH_SCHEME, participant_id],
     )?;
     Ok(changed == 1)
 }
@@ -507,7 +494,7 @@ mod tests {
 
         let totp = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
         assert!(set_web_participant_totp(&conn, "lifecycle-main", totp).unwrap());
-        let (_, secret) = signed_auth::generate_secret();
+        let (_, secret) = participant_auth::generate_secret();
         assert!(set_web_participant_auth_secret(&conn, "lifecycle-main", &secret).unwrap());
 
         assert!(authenticate_web_totp(&conn, "lifecycle-main", "287082", 59)
@@ -533,7 +520,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored.0.as_deref(), Some(totp));
-        assert_eq!(stored.1.as_deref(), Some(signed_auth::SIGNATURE_SCHEME));
+        assert_eq!(stored.1.as_deref(), Some(participant_auth::AUTH_SCHEME));
         assert_eq!(stored.2.as_deref(), Some(secret.as_str()));
 
         assert!(set_web_participant_status(&conn, "lifecycle-main", "active").unwrap());
@@ -569,8 +556,8 @@ mod tests {
         provision_web_participant_identity(&conn, "maker-main", "maker", Some("Maker"))
             .unwrap()
             .unwrap();
-        let (_, secret_a) = signed_auth::generate_secret();
-        let (_, secret_b) = signed_auth::generate_secret();
+        let (_, secret_a) = participant_auth::generate_secret();
+        let (_, secret_b) = participant_auth::generate_secret();
         assert!(set_web_participant_auth_secret(&conn, "maker-main", &secret_a).unwrap());
         assert_eq!(
             get_web_participant_auth(&conn, "maker-main")

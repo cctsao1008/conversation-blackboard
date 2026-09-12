@@ -5,7 +5,7 @@ use axum::{
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-use crate::{db, http, identity, request_auth, signed_auth, web_auth};
+use crate::{db, http, identity, participant_auth, request_auth, web_auth};
 
 #[tokio::test]
 async fn admin_role_does_not_turn_valid_agent_hmac_into_admin_authority() {
@@ -19,14 +19,14 @@ async fn admin_role_does_not_turn_valid_agent_hmac_into_admin_authority() {
         .unwrap();
     assert!(identity::set_web_participant_role(&conn, "cheng-main", "admin").unwrap());
 
-    let (secret, registered_secret) = signed_auth::generate_secret();
+    let (secret, registered_secret) = participant_auth::generate_secret();
     assert_eq!(secret, registered_secret);
     assert!(identity::set_web_participant_auth_secret(&conn, "cheng-main", &secret).unwrap());
     drop(conn);
 
     let request_target = "/api/admin/channels";
     let canonical = web_auth::canonical_http_request_bytes("cheng-main", "GET", request_target);
-    let proof = signed_auth::compute_message_proof(&secret, &canonical).unwrap();
+    let proof = participant_auth::compute_message_proof(&secret, &canonical).unwrap();
 
     assert!(web_auth::verify_http_request_auth(
         &secret,
@@ -49,7 +49,7 @@ async fn admin_role_does_not_turn_valid_agent_hmac_into_admin_authority() {
                 .header(request_auth::PARTICIPANT_ID_HEADER, "cheng-main")
                 .header(
                     request_auth::AUTH_SCHEME_HEADER,
-                    signed_auth::SIGNATURE_SCHEME,
+                    participant_auth::AUTH_SCHEME,
                 )
                 .header(request_auth::AUTH_PROOF_HEADER, proof)
                 .body(Body::empty())

@@ -3,7 +3,7 @@ use std::{error::Error, path::PathBuf};
 use clap::Subcommand;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{db, identity, signed_auth, web_auth};
+use crate::{db, identity, participant_auth, web_auth};
 
 type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -278,7 +278,7 @@ fn provision_auth(path: &std::path::Path, participant_id: &str, rotate: bool) ->
         .into());
     }
 
-    let (secret, registered_secret) = signed_auth::generate_secret();
+    let (secret, registered_secret) = participant_auth::generate_secret();
     debug_assert_eq!(secret, registered_secret);
     if !identity::set_web_participant_auth_secret(&conn, participant_id, &registered_secret)? {
         return Err(format!("unknown participant: {participant_id}").into());
@@ -286,7 +286,7 @@ fn provision_auth(path: &std::path::Path, participant_id: &str, rotate: bool) ->
 
     println!("PARTICIPANT AUTH READY");
     println!("participant_id : {participant_id}");
-    println!("auth_scheme    : {}", signed_auth::SIGNATURE_SCHEME);
+    println!("auth_scheme    : {}", participant_auth::AUTH_SCHEME);
     println!("secret         : {secret}");
     println!("note           : This secret is shown once. Store it with the participant client; participant show/list never reveal it.");
     Ok(())
@@ -327,10 +327,10 @@ fn participant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ParticipantInspe
         } else {
             "not-configured"
         },
-        auth_status: if auth_scheme.as_deref() == Some(signed_auth::SIGNATURE_SCHEME)
+        auth_status: if auth_scheme.as_deref() == Some(participant_auth::AUTH_SCHEME)
             && auth_secret
                 .as_deref()
-                .is_some_and(signed_auth::validate_secret)
+                .is_some_and(participant_auth::validate_secret)
         {
             "active"
         } else {
@@ -384,14 +384,14 @@ mod tests {
         identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
             .unwrap()
             .unwrap();
-        let (_, secret) = signed_auth::generate_secret();
+        let (_, secret) = participant_auth::generate_secret();
         identity::set_web_participant_auth_secret(&conn, "maker-main", &secret).unwrap();
 
         let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
         assert_eq!(record.auth_status, "active");
         assert_eq!(
             record.auth_scheme.as_deref(),
-            Some(signed_auth::SIGNATURE_SCHEME)
+            Some(participant_auth::AUTH_SCHEME)
         );
         let debug = format!("{record:?}");
         assert!(!debug.contains(&secret));

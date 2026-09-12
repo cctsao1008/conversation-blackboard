@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 use url::Url;
 
-use crate::signed_auth;
+use crate::participant_auth;
 
 pub const WEB_SESSION_HEADER: &str = "x-blackboard-web-session";
 pub const TOTP_PERIOD_SECS: u64 = 30;
@@ -134,7 +134,7 @@ pub fn canonical_http_request_bytes(
     request_target: &str,
 ) -> Vec<u8> {
     canonical_json([
-        ("auth_version", json!(signed_auth::SIGNATURE_SCHEME)),
+        ("auth_version", json!(participant_auth::AUTH_SCHEME)),
         ("method", json!(method)),
         ("participant_id", json!(participant_id)),
         ("purpose", json!("http-request-auth-v1")),
@@ -150,7 +150,7 @@ pub fn verify_http_request_auth(
     request_target: &str,
 ) -> bool {
     let payload = canonical_http_request_bytes(participant_id, method, request_target);
-    signed_auth::verify_message_proof(secret, proof, &payload)
+    participant_auth::verify_message_proof(secret, proof, &payload)
 }
 
 fn issue_web_session_at(

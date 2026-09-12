@@ -5,7 +5,7 @@ use rand::{rngs::OsRng, RngCore};
 use ring::hmac;
 use serde_json::{json, Value};
 
-pub const SIGNATURE_SCHEME: &str = "hmac-sha256-v1";
+pub const AUTH_SCHEME: &str = "hmac-sha256-v1";
 pub const SECRET_PREFIX: &str = "hmac-sha256-secret:";
 
 /// Generate a fresh 256-bit participant shared secret.
@@ -33,7 +33,7 @@ pub fn canonical_write_bytes(
     nonce: &str,
 ) -> Vec<u8> {
     let mut payload = BTreeMap::<String, Value>::new();
-    payload.insert("auth_version".into(), json!(SIGNATURE_SCHEME));
+    payload.insert("auth_version".into(), json!(AUTH_SCHEME));
     payload.insert("body".into(), json!(body));
     payload.insert("channel".into(), json!(channel));
     payload.insert("kind".into(), json!(kind));
@@ -51,7 +51,7 @@ pub fn canonical_read_bytes(
 ) -> Vec<u8> {
     let mut payload = BTreeMap::<String, Value>::new();
     payload.insert("after".into(), json!(after));
-    payload.insert("auth_version".into(), json!(SIGNATURE_SCHEME));
+    payload.insert("auth_version".into(), json!(AUTH_SCHEME));
     payload.insert("channel".into(), json!(channel));
     payload.insert("limit".into(), json!(limit));
     payload.insert("participant_id".into(), json!(participant_id));

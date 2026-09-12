@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::{db, identity, model::Identity, request_auth, signed_auth, web_auth};
+use crate::{db, identity, model::Identity, participant_auth, request_auth, web_auth};
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -200,7 +200,7 @@ async fn navigation_write(
     }
     let scheme = params
         .get("scheme")
-        .filter(|value| value.as_str() == signed_auth::SIGNATURE_SCHEME)
+        .filter(|value| value.as_str() == participant_auth::AUTH_SCHEME)
         .ok_or_else(ApiError::unauthorized)?
         .clone();
     let proof = params
@@ -218,7 +218,7 @@ async fn navigation_write(
             return Ok(None);
         };
         if record.auth_scheme != scheme
-            || !signed_auth::verify_write_proof(
+            || !participant_auth::verify_write_proof(
                 &record.auth_secret,
                 &proof,
                 &lookup_participant,
@@ -791,7 +791,7 @@ async fn post_signed_message(
     let scheme = auth
         .get("scheme")
         .and_then(Value::as_str)
-        .filter(|value| *value == signed_auth::SIGNATURE_SCHEME)
+        .filter(|value| *value == participant_auth::AUTH_SCHEME)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "unsupported_auth_scheme"))?
         .to_owned();
     let proof = auth
@@ -811,7 +811,7 @@ async fn post_signed_message(
             return Ok(None);
         };
         if record.auth_scheme != scheme
-            || !signed_auth::verify_write_proof(
+            || !participant_auth::verify_write_proof(
                 &record.auth_secret,
                 &proof,
                 &lookup_participant,

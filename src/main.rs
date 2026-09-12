@@ -14,9 +14,9 @@ mod mcp;
 mod mcp_contract_tests;
 mod model;
 mod participant_admin;
+mod participant_auth;
 mod request_auth;
 mod runtime;
-mod signed_auth;
 mod web_auth;
 #[cfg(test)]
 mod web_auth_contract_tests;

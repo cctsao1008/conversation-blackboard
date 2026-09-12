@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
-use crate::{db, http::AppState, identity, mcp, signed_auth};
+use crate::{db, http::AppState, identity, mcp, participant_auth};
 
 struct Fixture {
     _dir: TempDir,
@@ -31,8 +31,8 @@ fn fixture() -> Fixture {
     identity::provision_web_participant_identity(&conn, "rotary-main", "rotary", Some("Rotary"))
         .unwrap()
         .unwrap();
-    let (single_secret, _) = signed_auth::generate_secret();
-    let (rotary_secret, _) = signed_auth::generate_secret();
+    let (single_secret, _) = participant_auth::generate_secret();
+    let (rotary_secret, _) = participant_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, "single-main", &single_secret).unwrap();
     identity::set_web_participant_auth_secret(&conn, "rotary-main", &rotary_secret).unwrap();
     drop(conn);
@@ -58,7 +58,7 @@ fn write_arguments(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Value {
-    let proof = signed_auth::compute_write_proof(
+    let proof = participant_auth::compute_write_proof(
         secret,
         participant_id,
         channel,
@@ -75,7 +75,7 @@ fn write_arguments(
         "body": body,
         "reply_to": reply_to,
         "nonce": nonce,
-        "auth": {"scheme": signed_auth::SIGNATURE_SCHEME, "proof": proof}
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
     })
 }
 
@@ -86,14 +86,14 @@ fn read_arguments(
     after: i64,
     limit: usize,
 ) -> Value {
-    let proof =
-        signed_auth::compute_read_proof(secret, participant_id, channel, after, limit).unwrap();
+    let proof = participant_auth::compute_read_proof(secret, participant_id, channel, after, limit)
+        .unwrap();
     json!({
         "participant_id": participant_id,
         "channel": channel,
         "after": after,
         "limit": limit,
-        "auth": {"scheme": signed_auth::SIGNATURE_SCHEME, "proof": proof}
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
     })
 }
 
@@ -163,7 +163,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
             auth["properties"]["scheme"]["enum"][0],
-            signed_auth::SIGNATURE_SCHEME
+            participant_auth::AUTH_SCHEME
         );
         assert!(auth["properties"]["proof"].is_object());
         assert!(auth["properties"]["signature"].is_null());
@@ -362,7 +362,7 @@ async fn inactive_revoke_and_rotate_change_hmac_authority_immediately() {
 
     let conn = db::connect(&fixture.db_path).unwrap();
     identity::set_web_participant_status(&conn, "rotary-main", "active").unwrap();
-    let (new_secret, _) = signed_auth::generate_secret();
+    let (new_secret, _) = participant_auth::generate_secret();
     identity::set_web_participant_auth_secret(&conn, "rotary-main", &new_secret).unwrap();
     drop(conn);
 

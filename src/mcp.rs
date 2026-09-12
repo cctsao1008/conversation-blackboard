@@ -12,7 +12,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 use url::Url;
 
-use crate::{db, http::AppState, identity, model::Identity, signed_auth};
+use crate::{db, http::AppState, identity, model::Identity, participant_auth};
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES: usize = 64 * 1024;
@@ -187,7 +187,7 @@ fn auth_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "scheme": {"type": "string", "enum": [signed_auth::SIGNATURE_SCHEME]},
+            "scheme": {"type": "string", "enum": [participant_auth::AUTH_SCHEME]},
             "proof": {
                 "type": "string",
                 "minLength": 1,
@@ -346,7 +346,7 @@ fn parse_auth(arguments: &Map<String, Value>) -> Result<(&str, &str), &'static s
         .get("scheme")
         .and_then(Value::as_str)
         .ok_or("invalid_auth")?;
-    if scheme != signed_auth::SIGNATURE_SCHEME {
+    if scheme != participant_auth::AUTH_SCHEME {
         return Err("unsupported_auth_scheme");
     }
     let proof = auth
@@ -401,8 +401,8 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
             let Some(auth) = identity::get_web_participant_auth(conn, &lookup)? else {
                 return Ok(false);
             };
-            Ok(auth.auth_scheme == signed_auth::SIGNATURE_SCHEME
-                && signed_auth::verify_read_proof(
+            Ok(auth.auth_scheme == participant_auth::AUTH_SCHEME
+                && participant_auth::verify_read_proof(
                     &auth.auth_secret,
                     &proof,
                     &lookup,
@@ -615,10 +615,10 @@ async fn resolve_write_identity(
         Ok(None) => return Err("unauthorized"),
         Err(()) => return Err("database_unavailable"),
     };
-    if auth.auth_scheme != signed_auth::SIGNATURE_SCHEME {
+    if auth.auth_scheme != participant_auth::AUTH_SCHEME {
         return Err("unsupported_auth_scheme");
     }
-    if !signed_auth::verify_write_proof(
+    if !participant_auth::verify_write_proof(
         &auth.auth_secret,
         &proof,
         participant_id,
