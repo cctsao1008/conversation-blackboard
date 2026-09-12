@@ -531,7 +531,10 @@ mod tests {
         .unwrap();
         let first_id = match first {
             NavigationAppendResult::Created(message) => {
-                assert_eq!(message.conversation_uuid.as_deref(), Some("claude-chat-abc123"));
+                assert_eq!(
+                    message.conversation_uuid.as_deref(),
+                    Some("claude-chat-abc123")
+                );
                 message.id
             }
             other => panic!("unexpected result: {other:?}"),
@@ -554,7 +557,10 @@ mod tests {
         match second {
             NavigationAppendResult::Existing(message) => {
                 assert_eq!(message.id, first_id);
-                assert_eq!(message.conversation_uuid.as_deref(), Some("claude-chat-abc123"));
+                assert_eq!(
+                    message.conversation_uuid.as_deref(),
+                    Some("claude-chat-abc123")
+                );
             }
             other => panic!("unexpected result: {other:?}"),
         }
