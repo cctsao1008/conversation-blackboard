@@ -34,28 +34,37 @@ pub fn connect(path: &Path) -> Result<Connection> {
 pub fn initialize(path: &Path) -> Result<()> {
     let conn = connect(path)?;
     conn.execute_batch(SCHEMA)?;
-    migrate_web_participant_signing_columns(&conn)?;
+    migrate_web_participant_auth_columns(&conn)?;
     migrate_web_participant_totp_columns(&conn)?;
     migrate_web_participant_role(&conn)?;
     migrate_web_participant_status(&conn)?;
     migrate_channel_metadata(&conn)?;
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_participants_public_key\n         ON web_participants(public_key)\n         WHERE public_key IS NOT NULL",
-        [],
-    )?;
     Ok(())
 }
 
-fn migrate_web_participant_signing_columns(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "web_participants", "public_key")? {
+fn migrate_web_participant_auth_columns(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "web_participants", "auth_scheme")? {
         conn.execute(
-            "ALTER TABLE web_participants ADD COLUMN public_key TEXT",
+            "ALTER TABLE web_participants ADD COLUMN auth_scheme TEXT",
             [],
         )?;
     }
-    if !table_has_column(conn, "web_participants", "signature_scheme")? {
+    if !table_has_column(conn, "web_participants", "auth_secret")? {
         conn.execute(
-            "ALTER TABLE web_participants ADD COLUMN signature_scheme TEXT",
+            "ALTER TABLE web_participants ADD COLUMN auth_secret TEXT",
+            [],
+        )?;
+    }
+
+    // Ed25519 is intentionally not migrated. Existing asymmetric credentials are
+    // discarded; participants must receive a fresh HMAC secret after deployment.
+    conn.execute("DROP INDEX IF EXISTS idx_web_participants_public_key", [])?;
+    if table_has_column(conn, "web_participants", "public_key")? {
+        conn.execute("ALTER TABLE web_participants DROP COLUMN public_key", [])?;
+    }
+    if table_has_column(conn, "web_participants", "signature_scheme")? {
+        conn.execute(
+            "ALTER TABLE web_participants DROP COLUMN signature_scheme",
             [],
         )?;
     }
@@ -399,36 +408,42 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn initialize_migrates_existing_web_participant_table() {
+    fn initialize_replaces_ed25519_registry_columns_with_hmac_auth_columns() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("board.db");
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
-                "CREATE TABLE web_participants (\n                    participant_id TEXT PRIMARY KEY,\n                    source TEXT NOT NULL,\n                    label TEXT,\n                    key_hash TEXT UNIQUE,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())\n                );\n                INSERT INTO web_participants (participant_id, source, label)\n                VALUES ('cheng-main', 'cheng', 'Cheng');",
+                "CREATE TABLE web_participants (\n                    participant_id TEXT PRIMARY KEY,\n                    source TEXT NOT NULL,\n                    label TEXT,\n                    public_key TEXT,\n                    signature_scheme TEXT,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())\n                );\n                INSERT INTO web_participants (participant_id, source, label, public_key, signature_scheme)\n                VALUES ('cheng-main', 'cheng', 'Cheng', 'old-ed25519-key', 'ed25519-v1');",
             )
             .unwrap();
         }
 
         initialize(&path).unwrap();
         let conn = connect(&path).unwrap();
-        assert!(table_has_column(&conn, "web_participants", "public_key").unwrap());
-        assert!(table_has_column(&conn, "web_participants", "signature_scheme").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "auth_secret").unwrap());
+        assert!(table_has_column(&conn, "web_participants", "auth_scheme").unwrap());
+        assert!(!table_has_column(&conn, "web_participants", "public_key").unwrap());
+        assert!(!table_has_column(&conn, "web_participants", "signature_scheme").unwrap());
         assert!(table_has_column(&conn, "web_participants", "totp_secret").unwrap());
-        assert!(table_has_column(&conn, "web_participants", "totp_last_step").unwrap());
-        assert!(table_has_column(&conn, "web_participants", "totp_fail_count").unwrap());
-        assert!(table_has_column(&conn, "web_participants", "totp_locked_until").unwrap());
         assert!(table_has_column(&conn, "web_participants", "role").unwrap());
         assert!(table_has_column(&conn, "web_participants", "status").unwrap());
-        let (role, status): (String, String) = conn
+        let (role, status, auth_scheme, auth_secret): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn
             .query_row(
-                "SELECT role, status FROM web_participants WHERE participant_id = 'cheng-main'",
+                "SELECT role, status, auth_scheme, auth_secret FROM web_participants WHERE participant_id = 'cheng-main'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
         assert_eq!(role, "admin");
         assert_eq!(status, "active");
+        assert!(auth_scheme.is_none());
+        assert!(auth_secret.is_none());
     }
 
     #[test]
