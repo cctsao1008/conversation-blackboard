@@ -24,10 +24,13 @@ for path in Path("src").glob("*.rs"):
     text = text.replace("SIGNATURE_SCHEME", "AUTH_SCHEME")
     path.write_text(text, encoding="utf-8")
 
-# Active implementation must no longer contain asymmetric participant-auth
-# terminology. Contract tests may still assert that rejected legacy field names
-# such as private_key are absent from the published schema.
+# Active participant-auth implementation must no longer contain asymmetric
+# terminology. db.rs is intentionally excluded because the one-time schema
+# migration must name and drop the old columns from an existing production DB.
+# Contract tests may also name rejected legacy fields to prove they are absent.
 for path in Path("src").glob("*.rs"):
+    if path.name in {"db.rs", "mcp_contract_tests.rs"}:
+        continue
     text = path.read_text(encoding="utf-8")
     lowered = text.lower()
     forbidden = ["ed25519", "public_key", "signed_auth"]
