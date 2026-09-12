@@ -18,6 +18,7 @@ use crate::{db, identity, model::Identity};
 
 const GITHUB_PROVIDER: &str = "github";
 const TITLE_PREFIX: &str = "[blackboard]";
+const MAX_CONVERSATION_UUID_BYTES: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct GithubWebhookState {
@@ -187,6 +188,10 @@ async fn github_issue_webhook(
     if intent.reply_to.is_some_and(|value| value <= 0) {
         return error_response(StatusCode::BAD_REQUEST, "invalid_blackboard_intent");
     }
+    let conversation_uuid = match normalize_conversation_uuid(intent.conversation_uuid.as_deref()) {
+        Ok(value) => value,
+        Err(()) => return error_response(StatusCode::BAD_REQUEST, "invalid_blackboard_intent"),
+    };
 
     let participant_id = intent.participant_id.clone();
     let owner_subject = event.sender.id.to_string();
@@ -203,10 +208,12 @@ async fn github_issue_webhook(
             "channel": channel,
             "kind": kind,
             "body": message_body,
+            "conversation_uuid": conversation_uuid,
             "reply_to": reply_to,
         })
         .to_string(),
     );
+    let response_conversation_uuid = conversation_uuid.clone();
     let db_path = state.db_path.clone();
 
     let write_result =
@@ -226,6 +233,7 @@ async fn github_issue_webhook(
                         channel: &channel,
                         kind: &kind,
                         body: &message_body,
+                        conversation_uuid: conversation_uuid.as_deref(),
                         reply_to,
                         nonce: &nonce,
                         request_hash: &request_hash,
@@ -261,6 +269,7 @@ async fn github_issue_webhook(
             "status": status,
             "id": id,
             "participant_id": intent.participant_id,
+            "conversation_uuid": response_conversation_uuid,
             "github_user_id": event.sender.id,
             "github_login": event.sender.login,
         }))
@@ -299,6 +308,20 @@ fn get_owned_active_participant(
         },
     )
     .optional()
+}
+
+fn normalize_conversation_uuid(value: Option<&str>) -> Result<Option<String>, ()> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_CONVERSATION_UUID_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(());
+    }
+    Ok(Some(value.to_owned()))
 }
 
 fn verify_github_signature(secret: &str, signature: &str, body: &[u8]) -> bool {
@@ -392,6 +415,8 @@ struct GithubIssue {
 #[serde(deny_unknown_fields)]
 struct BlackboardIssueIntent {
     participant_id: String,
+    #[serde(default)]
+    conversation_uuid: Option<String>,
     channel: String,
     #[serde(default)]
     kind: Option<String>,
@@ -435,20 +460,34 @@ mod tests {
     }
 
     fn payload(sender_id: u64, association: &str, participant_id: &str) -> Vec<u8> {
+        payload_with_conversation(sender_id, association, participant_id, None, 77)
+    }
+
+    fn payload_with_conversation(
+        sender_id: u64,
+        association: &str,
+        participant_id: &str,
+        conversation_uuid: Option<&str>,
+        issue_number: i64,
+    ) -> Vec<u8> {
+        let mut intent = json!({
+            "participant_id": participant_id,
+            "channel": "blackboard-lounge",
+            "kind": "message",
+            "body": "hello from github",
+            "reply_to": null
+        });
+        if let Some(value) = conversation_uuid {
+            intent["conversation_uuid"] = json!(value);
+        }
         serde_json::to_vec(&json!({
             "action": "opened",
             "repository": {"id": REPO_ID},
             "sender": {"id": sender_id, "login": "alice"},
             "issue": {
-                "number": 77,
+                "number": issue_number,
                 "title": "[blackboard] write blackboard-lounge",
-                "body": serde_json::to_string(&json!({
-                    "participant_id": participant_id,
-                    "channel": "blackboard-lounge",
-                    "kind": "message",
-                    "body": "hello from github",
-                    "reply_to": null
-                })).unwrap(),
+                "body": serde_json::to_string(&intent).unwrap(),
                 "author_association": association,
                 "user": {"id": sender_id, "login": "alice"}
             }
@@ -504,27 +543,102 @@ mod tests {
         let (status, first) = send(router.clone(), body.clone(), sign(&body)).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(first["status"], "created");
+        assert!(first["conversation_uuid"].is_null());
         let (status, second) = send(router, body.clone(), sign(&body)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(second["status"], "existing");
         assert_eq!(first["id"], second["id"]);
 
         let conn = db::connect(&path).unwrap();
-        let (source, instance): (String, String) = conn
-            .query_row(
-                "SELECT source, instance FROM messages WHERE id = ?1",
-                [first["id"].as_i64().unwrap()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(source, "alice");
-        assert_eq!(instance, "alice-main");
+        let messages = db::list_messages_after(&conn, 0, Some("blackboard-lounge"), 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source, "alice");
+        assert_eq!(messages[0].instance, "alice-main");
+        assert!(messages[0].conversation_uuid.is_none());
+    }
+
+    #[tokio::test]
+    async fn valid_non_rfc_conversation_reference_is_persisted() {
+        let (_dir, path, router) = fixture();
+        let body = payload_with_conversation(
+            123456,
+            "COLLABORATOR",
+            "alice-main",
+            Some("claude-chat-abc123"),
+            78,
+        );
+        let (status, response) = send(router, body.clone(), sign(&body)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(response["conversation_uuid"], "claude-chat-abc123");
+
+        let conn = db::connect(&path).unwrap();
+        let messages = db::list_messages_after(&conn, 0, Some("blackboard-lounge"), 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].conversation_uuid.as_deref(),
+            Some("claude-chat-abc123")
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_conversation_references_are_rejected() {
+        for (index, value) in [
+            "   ".to_owned(),
+            "x".repeat(MAX_CONVERSATION_UUID_BYTES + 1),
+            "bad\nreference".to_owned(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_dir, _path, router) = fixture();
+            let body = payload_with_conversation(
+                123456,
+                "COLLABORATOR",
+                "alice-main",
+                Some(&value),
+                100 + index as i64,
+            );
+            let (status, response) = send(router, body.clone(), sign(&body)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(response["error"], "invalid_blackboard_intent");
+        }
+    }
+
+    #[tokio::test]
+    async fn conversation_reference_participates_in_request_hash() {
+        let (_dir, _path, router) = fixture();
+        let first = payload_with_conversation(
+            123456,
+            "COLLABORATOR",
+            "alice-main",
+            Some("chat-a"),
+            81,
+        );
+        let (status, _) = send(router.clone(), first.clone(), sign(&first)).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        let changed = payload_with_conversation(
+            123456,
+            "COLLABORATOR",
+            "alice-main",
+            Some("chat-b"),
+            81,
+        );
+        let (status, response) = send(router, changed.clone(), sign(&changed)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(response["error"], "nonce_conflict");
     }
 
     #[tokio::test]
     async fn wrong_owner_and_non_collaborator_are_rejected() {
         let (_dir, _path, router) = fixture();
-        let wrong_owner = payload(999999, "COLLABORATOR", "alice-main");
+        let wrong_owner = payload_with_conversation(
+            999999,
+            "COLLABORATOR",
+            "alice-main",
+            Some("chat-does-not-grant-authority"),
+            82,
+        );
         let (status, _) = send(router.clone(), wrong_owner.clone(), sign(&wrong_owner)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
