@@ -146,4 +146,44 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
     }
+
+    #[test]
+    fn participant_show_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "show",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "keda-main",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::Show { participant_id, .. },
+            }) => assert_eq!(participant_id, "keda-main"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_list_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "list",
+            "--db",
+            "board.db",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::List { .. },
+            }) => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 }
