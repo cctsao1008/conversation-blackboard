@@ -130,8 +130,7 @@ pub fn set_web_participant_status(
     participant_id: &str,
     status: &str,
 ) -> Result<bool> {
-    if validate_participant_id(participant_id).is_none()
-        || !matches!(status, "active" | "inactive")
+    if validate_participant_id(participant_id).is_none() || !matches!(status, "active" | "inactive")
     {
         return Err(rusqlite::Error::InvalidQuery);
     }
