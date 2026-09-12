@@ -2,14 +2,15 @@ PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS messages (
-    id          INTEGER PRIMARY KEY,
-    created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-    channel     TEXT NOT NULL,
-    source      TEXT NOT NULL,
-    instance    TEXT NOT NULL,
-    kind        TEXT NOT NULL DEFAULT 'message',
-    body        TEXT NOT NULL,
-    reply_to    INTEGER
+    id                 INTEGER PRIMARY KEY,
+    created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+    channel            TEXT NOT NULL,
+    source             TEXT NOT NULL,
+    instance           TEXT NOT NULL,
+    conversation_uuid  TEXT,
+    kind               TEXT NOT NULL DEFAULT 'message',
+    body               TEXT NOT NULL,
+    reply_to           INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_channel_id
