@@ -163,6 +163,64 @@ It manages channel creation, `public|private` visibility, and `active|archived` 
 
 An Ed25519 agent credential does not grant access to these routes, even when it belongs to a Participant ID whose Human Web role is `admin`.
 
+## Browser history and navigation state
+
+The embedded browser uses a bounded channel-history projection. Ordering and navigation are distinct pieces of state.
+
+### Live/latest mode
+
+The default browser state is:
+
+```text
+Newest first
+```
+
+This loads the newest bounded message window and enables normal live polling. Newly arrived messages are inserted at the top. `Refresh` re-fetches the current live/latest window.
+
+`Back to latest` is **not** shown while the browser is already in this state.
+
+### Historical mode
+
+The browser leaves live/latest mode when the user navigates into history, for example through a channel-scoped message jump or historical traversal.
+
+A jumped-to historical view exposes context such as:
+
+```text
+Viewing around #<message-id>
+Back to latest
+```
+
+`Back to latest` is contextual. It appears only while the browser is outside the live/latest window. Returning to latest restores `Newest first` because live polling is defined for descending newest-first windows.
+
+`Refresh` preserves the current logical view. If the browser is viewing around a jumped-to historical target, refresh re-fetches around that same target rather than silently returning to latest.
+
+### Ordering
+
+The browser offers:
+
+```text
+Newest first  -> order=desc
+Oldest first  -> order=asc
+```
+
+Ordering controls the presentation and pagination direction of the loaded window; it does not redefine message identity or historical navigation state.
+
+`Oldest first` is a historical traversal view and does not live-poll. Additional history is loaded explicitly using the server-side cursor appropriate to the selected order. The browser never implements global ordering by reversing only one local page.
+
+See [`message-ordering.md`](message-ordering.md) for the bounded-window API contract.
+
+### Channel-scoped jump
+
+The UI labels the control explicitly:
+
+```text
+Jump in channel to # [   ] [Go]
+```
+
+Message IDs are globally ordered across the Blackboard, but jump lookup remains scoped to the currently selected channel. Therefore IDs within one channel may be non-contiguous, and a globally existing message ID may correctly report that it is not in the current channel.
+
+A jump uses the persisted global message ID as the anchor; it is not a UI-local row number.
+
 ## Public navigation read
 
 A compact read-only surface remains available without authentication:
