@@ -173,18 +173,31 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
 
     Ok(json!({
         "protocolVersion": protocol_version,
-        "capabilities": {
-            "tools": {
-                "listChanged": false
-            }
-        },
+        "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {
             "name": "conversation-blackboard",
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Read public channels with blackboard_read without auth. Private-channel reads require participant_id plus an ed25519-v1 signature over the canonical read request. Use blackboard_write only when the user wants to append a thought as an approved Participant ID. Participant writes require an ed25519-v1 signature over the canonical write request. The server owns source/instance provenance. Use authoritative message IDs for reply_to; exact retries with the same nonce are idempotent."
+        "instructions": "Read public channels with blackboard_read without auth. Private-channel reads require participant_id plus an hmac-sha256-v1 proof over the canonical read request. Participant writes require an hmac-sha256-v1 proof over the canonical write request. The server owns source/instance provenance. Exact retries with the same nonce are idempotent."
     }))
+}
+
+fn auth_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "scheme": {"type": "string", "enum": [signed_auth::SIGNATURE_SCHEME]},
+            "proof": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Unpadded base64url HMAC-SHA256 proof over the canonical request."
+            }
+        },
+        "required": ["scheme", "proof"],
+        "additionalProperties": false
+    })
 }
 
 fn tools_list_result() -> Value {
@@ -193,48 +206,15 @@ fn tools_list_result() -> Value {
             {
                 "name": "blackboard_read",
                 "title": "Read Conversation Blackboard",
-                "description": "Read a Blackboard channel. Public channels may be read without auth. Private channels require participant_id plus an ed25519-v1 signature over the canonical read request.",
+                "description": "Read a Blackboard channel. Public channels may be read without auth. Private channels require participant_id plus an hmac-sha256-v1 proof over the canonical read request.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "channel": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128,
-                            "description": "Blackboard channel to read."
-                        },
-                        "after": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 0,
-                            "description": "Return only messages with id greater than this cursor."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": MAX_PAGE_SIZE,
-                            "default": DEFAULT_PAGE_SIZE
-                        },
-                        "participant_id": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 64,
-                            "description": "Optional participant identity for private-channel reads."
-                        },
-                        "auth": {
-                            "type": "object",
-                            "properties": {
-                                "scheme": {"type": "string", "enum": ["ed25519-v1"]},
-                                "signature": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 128,
-                                    "description": "Base64url Ed25519 signature over the canonical read request."
-                                }
-                            },
-                            "required": ["scheme", "signature"],
-                            "additionalProperties": false
-                        }
+                        "channel": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "after": {"type": "integer", "minimum": 0, "default": 0},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": DEFAULT_PAGE_SIZE},
+                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "auth": auth_schema()
                     },
                     "required": ["channel"],
                     "additionalProperties": false
@@ -250,60 +230,17 @@ fn tools_list_result() -> Value {
             {
                 "name": "blackboard_write",
                 "title": "Write Conversation Blackboard",
-                "description": "Append a thought as an approved participant using participant_id plus an ed25519-v1 signature over the canonical write request. The server resolves provenance; exact retries with the same nonce are idempotent.",
+                "description": "Append a thought as an approved participant using participant_id plus an hmac-sha256-v1 proof over the canonical write request. The server resolves provenance; exact retries with the same nonce are idempotent.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "participant_id": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 64
-                        },
-                        "auth": {
-                            "type": "object",
-                            "properties": {
-                                "scheme": {
-                                    "type": "string",
-                                    "enum": ["ed25519-v1"]
-                                },
-                                "signature": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 128,
-                                    "description": "Base64url Ed25519 signature over the canonical write request."
-                                }
-                            },
-                            "required": ["scheme", "signature"],
-                            "additionalProperties": false
-                        },
-                        "channel": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                        },
-                        "kind": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 32,
-                            "default": "message"
-                        },
-                        "body": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": MAX_MESSAGE_BODY_BYTES
-                        },
-                        "reply_to": {
-                            "anyOf": [
-                                {"type": "integer", "minimum": 1},
-                                {"type": "null"}
-                            ]
-                        },
-                        "nonce": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128,
-                            "description": "Unique retry token for this participant and payload."
-                        }
+                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "auth": auth_schema(),
+                        "channel": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "kind": {"type": "string", "minLength": 1, "maxLength": 32, "default": "message"},
+                        "body": {"type": "string", "minLength": 1, "maxLength": MAX_MESSAGE_BODY_BYTES},
+                        "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+                        "nonce": {"type": "string", "minLength": 1, "maxLength": 128}
                     },
                     "required": ["participant_id", "auth", "channel", "body", "nonce"],
                     "additionalProperties": false
@@ -328,10 +265,7 @@ fn read_output_schema() -> Value {
             "after": {"type": "integer"},
             "count": {"type": "integer", "minimum": 0},
             "latest_id": {"type": "integer", "minimum": 0},
-            "messages": {
-                "type": "array",
-                "items": message_schema()
-            }
+            "messages": {"type": "array", "items": message_schema()}
         },
         "required": ["channel", "after", "count", "latest_id", "messages"],
         "additionalProperties": false
@@ -350,17 +284,9 @@ fn write_output_schema() -> Value {
             "instance": {"type": "string"},
             "channel": {"type": "string"},
             "kind": {"type": "string"},
-            "reply_to": {
-                "anyOf": [
-                    {"type": "integer", "minimum": 1},
-                    {"type": "null"}
-                ]
-            }
+            "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
-        "required": [
-            "status", "idempotent", "id", "source", "participant_id",
-            "instance", "channel", "kind", "reply_to"
-        ],
+        "required": ["status", "idempotent", "id", "source", "participant_id", "instance", "channel", "kind", "reply_to"],
         "additionalProperties": false
     })
 }
@@ -376,16 +302,9 @@ fn message_schema() -> Value {
             "instance": {"type": "string"},
             "kind": {"type": "string"},
             "body": {"type": "string"},
-            "reply_to": {
-                "anyOf": [
-                    {"type": "integer", "minimum": 1},
-                    {"type": "null"}
-                ]
-            }
+            "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
-        "required": [
-            "id", "created_at", "channel", "source", "instance", "kind", "body", "reply_to"
-        ],
+        "required": ["id", "created_at", "channel", "source", "instance", "kind", "body", "reply_to"],
         "additionalProperties": false
     })
 }
@@ -415,11 +334,31 @@ async fn tool_call_result(
     }
 }
 
+fn parse_auth(arguments: &Map<String, Value>) -> Result<(&str, &str), &'static str> {
+    let auth = arguments
+        .get("auth")
+        .and_then(Value::as_object)
+        .ok_or("invalid_auth")?;
+    if auth.len() != 2 || !only_keys(auth, &["scheme", "proof"]) {
+        return Err("invalid_auth");
+    }
+    let scheme = auth
+        .get("scheme")
+        .and_then(Value::as_str)
+        .ok_or("invalid_auth")?;
+    if scheme != signed_auth::SIGNATURE_SCHEME {
+        return Err("unsupported_auth_scheme");
+    }
+    let proof = auth
+        .get("proof")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or("invalid_auth")?;
+    Ok((scheme, proof))
+}
+
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {
-    if !only_keys(
-        arguments,
-        &["channel", "after", "limit", "participant_id", "auth"],
-    ) {
+    if !only_keys(arguments, &["channel", "after", "limit", "participant_id", "auth"]) {
         return tool_error("invalid_arguments");
     }
     let channel = match arguments.get("channel").and_then(Value::as_str) {
@@ -442,38 +381,27 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
     };
 
     let participant_id = arguments.get("participant_id").and_then(Value::as_str);
-    let auth = arguments.get("auth").and_then(Value::as_object);
-    let signed = participant_id.is_some() || auth.is_some();
-    if signed {
+    let has_auth = arguments.get("auth").is_some();
+    if participant_id.is_some() || has_auth {
         let participant_id = match participant_id.and_then(identity::validate_participant_id) {
             Some(value) => value,
             None => return tool_error("invalid_participant_id"),
         };
-        let auth = match auth {
-            Some(value) if value.len() == 2 && only_keys(value, &["scheme", "signature"]) => value,
-            _ => return tool_error("invalid_auth"),
+        let (_, proof) = match parse_auth(arguments) {
+            Ok(value) => value,
+            Err(code) => return tool_error(code),
         };
-        if auth.get("scheme").and_then(Value::as_str) != Some(signed_auth::SIGNATURE_SCHEME) {
-            return tool_error("unsupported_signature_scheme");
-        }
-        let signature = match auth
-            .get("signature")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty() && value.len() <= 128)
-        {
-            Some(value) => value.to_owned(),
-            None => return tool_error("invalid_auth"),
-        };
+        let proof = proof.to_owned();
         let lookup = participant_id.clone();
         let verify_channel = channel.clone();
         let verified = match with_db(state, move |conn| {
-            let Some(record) = identity::get_web_participant_verification(conn, &lookup)? else {
+            let Some(auth) = identity::get_web_participant_auth(conn, &lookup)? else {
                 return Ok(false);
             };
-            Ok(record.signature_scheme == signed_auth::SIGNATURE_SCHEME
+            Ok(auth.auth_scheme == signed_auth::SIGNATURE_SCHEME
                 && signed_auth::verify_read_signature(
-                    &record.public_key,
-                    &signature,
+                    &auth.auth_secret,
+                    &proof,
                     &lookup,
                     &verify_channel,
                     after,
@@ -528,15 +456,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
     }
     if !only_keys(
         arguments,
-        &[
-            "participant_id",
-            "auth",
-            "channel",
-            "kind",
-            "body",
-            "reply_to",
-            "nonce",
-        ],
+        &["participant_id", "auth", "channel", "kind", "body", "reply_to", "nonce"],
     ) {
         return tool_error("invalid_arguments");
     }
@@ -558,9 +478,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         _ => return tool_error("invalid_kind"),
     };
     let message_body = match arguments.get("body").and_then(Value::as_str) {
-        Some(value) if !value.trim().is_empty() && value.len() <= MAX_MESSAGE_BODY_BYTES => {
-            value.to_owned()
-        }
+        Some(value) if !value.trim().is_empty() && value.len() <= MAX_MESSAGE_BODY_BYTES => value.to_owned(),
         _ => return tool_error("invalid_body"),
     };
     let reply_to = match arguments.get("reply_to") {
@@ -643,9 +561,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         db::NavigationAppendResult::Created(message) => ("created", message, false),
         db::NavigationAppendResult::Existing(message) => ("existing", message, true),
         db::NavigationAppendResult::NonceConflict => return tool_error("nonce_conflict"),
-        db::NavigationAppendResult::ReplyTargetNotFound => {
-            return tool_error("reply_target_not_found")
-        }
+        db::NavigationAppendResult::ReplyTargetNotFound => return tool_error("reply_target_not_found"),
     };
 
     tool_success(json!({
@@ -672,42 +588,24 @@ async fn resolve_write_identity(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Result<Identity, &'static str> {
-    let auth = arguments
-        .get("auth")
-        .and_then(Value::as_object)
-        .ok_or("invalid_auth")?;
-    if auth.len() != 2 || !only_keys(auth, &["scheme", "signature"]) {
-        return Err("invalid_auth");
-    }
-    let scheme = auth
-        .get("scheme")
-        .and_then(Value::as_str)
-        .ok_or("invalid_auth")?;
-    if scheme != signed_auth::SIGNATURE_SCHEME {
-        return Err("unsupported_signature_scheme");
-    }
-    let signature = auth
-        .get("signature")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 128)
-        .ok_or("invalid_auth")?;
-
+    let (_, proof) = parse_auth(arguments)?;
+    let proof = proof.to_owned();
     let lookup_participant = participant_id.to_owned();
-    let verification = match with_db(state, move |conn| {
-        identity::get_web_participant_verification(conn, &lookup_participant)
+    let auth = match with_db(state, move |conn| {
+        identity::get_web_participant_auth(conn, &lookup_participant)
     })
     .await
     {
-        Ok(Some(verification)) => verification,
+        Ok(Some(auth)) => auth,
         Ok(None) => return Err("unauthorized"),
         Err(()) => return Err("database_unavailable"),
     };
-    if verification.signature_scheme != signed_auth::SIGNATURE_SCHEME {
-        return Err("unsupported_signature_scheme");
+    if auth.auth_scheme != signed_auth::SIGNATURE_SCHEME {
+        return Err("unsupported_auth_scheme");
     }
     if !signed_auth::verify_write_signature(
-        &verification.public_key,
-        signature,
+        &auth.auth_secret,
+        &proof,
         participant_id,
         channel,
         kind,
@@ -717,7 +615,7 @@ async fn resolve_write_identity(
     ) {
         return Err("unauthorized");
     }
-    Ok(verification.identity)
+    Ok(auth.identity)
 }
 
 async fn with_db<T, F>(state: &AppState, operation: F) -> Result<T, ()>
@@ -739,24 +637,14 @@ fn tool_success(structured_content: Value) -> Value {
         .unwrap_or_else(|_| "{\"error\":\"internal_error\"}".to_owned());
     json!({
         "structuredContent": structured_content,
-        "content": [
-            {
-                "type": "text",
-                "text": text
-            }
-        ],
+        "content": [{"type": "text", "text": text}],
         "isError": false
     })
 }
 
 fn tool_error(code: &'static str) -> Value {
     json!({
-        "content": [
-            {
-                "type": "text",
-                "text": code
-            }
-        ],
+        "content": [{"type": "text", "text": code}],
         "isError": true
     })
 }
@@ -840,41 +728,20 @@ fn plain_status(status: StatusCode) -> Response {
 }
 
 fn jsonrpc_result_response(id: Value, result: Value) -> Response {
-    json_response(
-        StatusCode::OK,
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result
-        }),
-    )
+    json_response(StatusCode::OK, json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
 fn jsonrpc_error_response(id: Value, code: i64, message: &'static str) -> Response {
     json_response(
         StatusCode::OK,
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": code,
-                "message": message
-            }
-        }),
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
     )
 }
 
 fn jsonrpc_http_error(status: StatusCode, id: Value, code: i64, message: &'static str) -> Response {
     json_response(
         status,
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": code,
-                "message": message
-            }
-        }),
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
     )
 }
 
