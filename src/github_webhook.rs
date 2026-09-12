@@ -12,7 +12,7 @@ use regex::Regex;
 use ring::hmac;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::{db, identity, model::Identity};
 
@@ -96,10 +96,7 @@ pub fn set_participant_owner(
     Ok(changed == 1)
 }
 
-pub fn clear_participant_owner(
-    conn: &Connection,
-    participant_id: &str,
-) -> rusqlite::Result<bool> {
+pub fn clear_participant_owner(conn: &Connection, participant_id: &str) -> rusqlite::Result<bool> {
     ensure_owner_columns(conn)?;
     if identity::validate_participant_id(participant_id).is_none() {
         return Err(rusqlite::Error::InvalidQuery);
@@ -119,7 +116,10 @@ async fn github_issue_webhook(
     let (Some(secret), Some(expected_repository_id)) =
         (state.webhook_secret.as_deref(), state.repository_id)
     else {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "github_webhook_not_configured");
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "github_webhook_not_configured",
+        );
     };
 
     if headers
@@ -145,7 +145,10 @@ async fn github_issue_webhook(
         Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid_github_payload"),
     };
     if event.action != "opened" {
-        return error_response(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_github_action");
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_github_action",
+        );
     }
     if event.repository.id != expected_repository_id {
         return error_response(StatusCode::FORBIDDEN, "github_repository_mismatch");
@@ -206,33 +209,42 @@ async fn github_issue_webhook(
     );
     let db_path = state.db_path.clone();
 
-    let write_result = tokio::task::spawn_blocking(move || -> rusqlite::Result<WebhookWriteResult> {
-        let conn = db::connect(&db_path)?;
-        ensure_owner_columns(&conn)?;
-        let identity = get_owned_active_participant(&conn, &participant_id, &owner_subject)?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if !db::ensure_channel_for_write(&conn, &channel, Some(&identity.instance))? {
-            return Ok(WebhookWriteResult::ChannelArchived);
-        }
-        Ok(match db::append_navigation_message(
-            &conn,
-            &identity,
-            db::NavigationMessageInput {
-                channel: &channel,
-                kind: &kind,
-                body: &message_body,
-                reply_to,
-                nonce: &nonce,
-                request_hash: &request_hash,
-            },
-        )? {
-            db::NavigationAppendResult::Created(message) => WebhookWriteResult::Created(message.id),
-            db::NavigationAppendResult::Existing(message) => WebhookWriteResult::Existing(message.id),
-            db::NavigationAppendResult::NonceConflict => WebhookWriteResult::NonceConflict,
-            db::NavigationAppendResult::ReplyTargetNotFound => WebhookWriteResult::ReplyTargetNotFound,
+    let write_result =
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<WebhookWriteResult> {
+            let conn = db::connect(&db_path)?;
+            ensure_owner_columns(&conn)?;
+            let identity = get_owned_active_participant(&conn, &participant_id, &owner_subject)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            if !db::ensure_channel_for_write(&conn, &channel, Some(&identity.instance))? {
+                return Ok(WebhookWriteResult::ChannelArchived);
+            }
+            Ok(
+                match db::append_navigation_message(
+                    &conn,
+                    &identity,
+                    db::NavigationMessageInput {
+                        channel: &channel,
+                        kind: &kind,
+                        body: &message_body,
+                        reply_to,
+                        nonce: &nonce,
+                        request_hash: &request_hash,
+                    },
+                )? {
+                    db::NavigationAppendResult::Created(message) => {
+                        WebhookWriteResult::Created(message.id)
+                    }
+                    db::NavigationAppendResult::Existing(message) => {
+                        WebhookWriteResult::Existing(message.id)
+                    }
+                    db::NavigationAppendResult::NonceConflict => WebhookWriteResult::NonceConflict,
+                    db::NavigationAppendResult::ReplyTargetNotFound => {
+                        WebhookWriteResult::ReplyTargetNotFound
+                    }
+                },
+            )
         })
-    })
-    .await;
+        .await;
 
     let result = match write_result {
         Ok(Ok(value)) => value,
@@ -256,11 +268,11 @@ async fn github_issue_webhook(
     };
 
     match result {
-        WebhookWriteResult::Created(id) => (StatusCode::CREATED, payload("created", id)).into_response(),
-        WebhookWriteResult::Existing(id) => payload("existing", id),
-        WebhookWriteResult::NonceConflict => {
-            error_response(StatusCode::CONFLICT, "nonce_conflict")
+        WebhookWriteResult::Created(id) => {
+            (StatusCode::CREATED, payload("created", id)).into_response()
         }
+        WebhookWriteResult::Existing(id) => payload("existing", id),
+        WebhookWriteResult::NonceConflict => error_response(StatusCode::CONFLICT, "nonce_conflict"),
         WebhookWriteResult::ReplyTargetNotFound => {
             error_response(StatusCode::BAD_REQUEST, "reply_target_not_found")
         }
@@ -444,7 +456,11 @@ mod tests {
         .unwrap()
     }
 
-    async fn send(router: Router, body: Vec<u8>, signature: String) -> (StatusCode, Value) {
+    async fn send(
+        router: Router,
+        body: Vec<u8>,
+        signature: String,
+    ) -> (StatusCode, serde_json::Value) {
         let response = router
             .oneshot(
                 Request::builder()
@@ -473,7 +489,11 @@ mod tests {
             .unwrap()
             .unwrap();
         set_participant_owner(&conn, "alice-main", "github", "123456", Some("alice")).unwrap();
-        let router = app(GithubWebhookState::configured(path.clone(), SECRET, REPO_ID));
+        let router = app(GithubWebhookState::configured(
+            path.clone(),
+            SECRET,
+            REPO_ID,
+        ));
         (dir, path, router)
     }
 
