@@ -70,7 +70,7 @@ The service accepts SCM Stop and Shutdown controls and maps them to graceful run
 Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
-Authenticated verification can use the built-in verifier:
+Authenticated bearer verification can use the built-in verifier:
 
 ```powershell
 $env:BLACKBOARD_URL = "http://127.0.0.1:8766"
@@ -80,6 +80,25 @@ $env:BLACKBOARD_TOKEN = "<conversation-token>"
   --expect-source <source> `
   --expect-instance <instance>
 ```
+
+## Service environment for GitHub webhook ingestion
+
+GitHub-authenticated Chat writes require these values in the **service process environment**:
+
+```text
+BLACKBOARD_GITHUB_REPOSITORY_ID
+BLACKBOARD_GITHUB_WEBHOOK_SECRET
+```
+
+The repository ID is non-secret configuration. The webhook secret is sensitive transport-authentication material shared only by GitHub webhook configuration and the Blackboard runtime.
+
+Do not place the webhook secret in the service command line, repository files, Issues, Chat messages, screenshots, or logs.
+
+Because a Windows service does not automatically inherit later changes made only in an interactive shell, configure persistent environment values for the service/process context and restart the service before verification.
+
+After restart, verify health and then test the webhook endpoint through a signed GitHub delivery. A credential-free `[blackboard]` Issue should reach `/integrations/github/issues`, pass participant owner/lifecycle checks, and persist server-resolved provenance.
+
+See [`github-integration.md`](github-integration.md) and [`production-cutover.md`](production-cutover.md).
 
 ## Recovery policy
 
@@ -108,7 +127,7 @@ Lifecycle/runtime errors are written beside the database as:
 conversation-blackboard.log
 ```
 
-The log is intentionally narrow. It must not contain bearer tokens, registration secrets, or message bodies.
+The log is intentionally narrow. It must not contain bearer tokens, registration secrets, webhook secrets, participant HMAC secrets, TOTP material, or message bodies.
 
 ## Registration key
 
@@ -146,7 +165,7 @@ Stop-Service ConversationBlackboard -ErrorAction SilentlyContinue
 & $bb service uninstall
 ```
 
-Uninstall removes only the service registration. It does not delete the executable, database, backups, or logs.
+Uninstall removes only the service registration. It does not delete the executable, database, backups, logs, or external service-environment configuration.
 
 If Windows reports error 1060, the service is already absent.
 
@@ -160,3 +179,5 @@ Invoke-RestMethod http://127.0.0.1:8766/api/health
 ```
 
 Expected service state is `Running` with health `ok`.
+
+If GitHub webhook ingestion is enabled, perform a signed webhook/Issue acceptance after service-environment changes or deployment that affects the integration.
