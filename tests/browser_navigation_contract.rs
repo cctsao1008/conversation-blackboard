@@ -8,6 +8,9 @@ fn back_to_latest_is_contextual_and_refresh_preserves_history() {
     assert!(html.contains(">Back to latest</button>"));
     assert!(html.contains("id=\"history-state\""));
 
+    // The jump control states its current-channel scope explicitly.
+    assert!(html.contains(">Jump in channel to #</label>"));
+
     // Historical navigation is explicit state, not an alias for sorting.
     assert!(app.contains("historyTargetId: null"));
     assert!(app.contains("const historical = !state.followLatest;"));
