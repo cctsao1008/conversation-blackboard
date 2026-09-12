@@ -607,23 +607,13 @@ mod tests {
     #[tokio::test]
     async fn conversation_reference_participates_in_request_hash() {
         let (_dir, _path, router) = fixture();
-        let first = payload_with_conversation(
-            123456,
-            "COLLABORATOR",
-            "alice-main",
-            Some("chat-a"),
-            81,
-        );
+        let first =
+            payload_with_conversation(123456, "COLLABORATOR", "alice-main", Some("chat-a"), 81);
         let (status, _) = send(router.clone(), first.clone(), sign(&first)).await;
         assert_eq!(status, StatusCode::CREATED);
 
-        let changed = payload_with_conversation(
-            123456,
-            "COLLABORATOR",
-            "alice-main",
-            Some("chat-b"),
-            81,
-        );
+        let changed =
+            payload_with_conversation(123456, "COLLABORATOR", "alice-main", Some("chat-b"), 81);
         let (status, response) = send(router, changed.clone(), sign(&changed)).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(response["error"], "nonce_conflict");
