@@ -49,9 +49,9 @@ jobs:
           .\target\release\conversation-blackboard.exe participant set-role --help
           .\target\release\conversation-blackboard.exe participant totp-enroll --help
           .\target\release\conversation-blackboard.exe participant totp-revoke --help
-          .\target\release\conversation-blackboard.exe participant generate-signing-key --help
-          .\target\release\conversation-blackboard.exe participant set-signing-key --help
-          .\target\release\conversation-blackboard.exe participant revoke-signing-key --help
+          .\target\release\conversation-blackboard.exe participant auth-generate --help
+          .\target\release\conversation-blackboard.exe participant auth-rotate --help
+          .\target\release\conversation-blackboard.exe participant auth-revoke --help
           .\target\release\conversation-blackboard.exe verify --help
           .\target\release\conversation-blackboard.exe client --help
           .\target\release\conversation-blackboard.exe service --help
@@ -102,18 +102,23 @@ jobs:
             }
             & $exe participant totp-revoke --db $db --participant-id ci-participant-main
 
-            $signing = (& $exe participant generate-signing-key) | Out-String
-            $publicLine = (($signing -split "\r?\n") | Where-Object { $_ -match '^public_key\s*:' } | Select-Object -First 1)
-            $privateLine = (($signing -split "\r?\n") | Where-Object { $_ -match '^private_key\s*:' } | Select-Object -First 1)
-            if (-not $publicLine -or -not $privateLine) {
-              throw "Ed25519 signing-key generation output mismatch"
+            $auth = (& $exe participant auth-generate --db $db --participant-id ci-participant-main) | Out-String
+            if ($auth -notmatch 'auth_scheme\s*:\s*hmac-sha256-v1' -or $auth -notmatch 'secret\s*:\s*hmac-sha256-secret:') {
+              throw "HMAC auth generation output mismatch"
             }
-            $publicKey = ($publicLine -replace '^public_key\s*:\s*', '').Trim()
-            if ($publicKey -notmatch '^ed25519-pk:') {
-              throw "Ed25519 public-key prefix mismatch"
+            $shown = (& $exe participant show --db $db --participant-id ci-participant-main) | Out-String
+            if ($shown -match 'hmac-sha256-secret:') {
+              throw "participant show leaked HMAC secret"
             }
-            & $exe participant set-signing-key --db $db --participant-id ci-participant-main --public-key $publicKey
-            & $exe participant revoke-signing-key --db $db --participant-id ci-participant-main
+            $rotated = (& $exe participant auth-rotate --db $db --participant-id ci-participant-main) | Out-String
+            if ($rotated -notmatch 'auth_scheme\s*:\s*hmac-sha256-v1' -or $rotated -notmatch 'secret\s*:\s*hmac-sha256-secret:') {
+              throw "HMAC auth rotation output mismatch"
+            }
+            & $exe participant auth-revoke --db $db --participant-id ci-participant-main
+            $revoked = (& $exe participant show --db $db --participant-id ci-participant-main) | Out-String
+            if ($revoked -notmatch 'status\s*:\s*not-configured') {
+              throw "HMAC auth revoke status mismatch"
+            }
 
             $a = Provision-Identity "ci-source-a" "CI identity A"
             $b = Provision-Identity "ci-source-b" "CI identity B"
