@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS web_participants (
     totp_last_step     INTEGER,
     totp_fail_count    INTEGER NOT NULL DEFAULT 0,
     totp_locked_until  INTEGER,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_login        TEXT,
     created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (role IN ('user', 'admin')),
@@ -49,6 +52,10 @@ CREATE TABLE IF NOT EXISTS web_participants (
     CHECK (
         (auth_scheme IS NULL AND auth_secret IS NULL)
         OR (auth_scheme = 'hmac-sha256-v1' AND auth_secret IS NOT NULL)
+    ),
+    CHECK (
+        (owner_provider IS NULL AND owner_subject IS NULL)
+        OR (owner_provider IS NOT NULL AND owner_subject IS NOT NULL)
     )
 );
 
