@@ -168,9 +168,11 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             if !identity::set_web_participant_status(&conn, &participant_id, "inactive")? {
                 return Err(format!("unknown participant: {participant_id}").into());
             }
+            let status = identity::get_web_participant_status(&conn, &participant_id)?
+                .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
             println!("PARTICIPANT INACTIVE");
             println!("participant_id : {participant_id}");
-            println!("status         : inactive");
+            println!("status         : {status}");
             Ok(())
         }
         ParticipantCommand::Reactivate {
@@ -182,9 +184,11 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             if !identity::set_web_participant_status(&conn, &participant_id, "active")? {
                 return Err(format!("unknown participant: {participant_id}").into());
             }
+            let status = identity::get_web_participant_status(&conn, &participant_id)?
+                .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
             println!("PARTICIPANT ACTIVE");
             println!("participant_id : {participant_id}");
-            println!("status         : active");
+            println!("status         : {status}");
             Ok(())
         }
         ParticipantCommand::SetRole {
