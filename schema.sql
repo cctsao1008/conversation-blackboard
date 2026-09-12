@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS web_participants (
     label              TEXT,
     role               TEXT NOT NULL DEFAULT 'user',
     status             TEXT NOT NULL DEFAULT 'active',
-    public_key         TEXT,
-    signature_scheme   TEXT,
+    auth_scheme        TEXT,
+    auth_secret        TEXT,
     totp_secret        TEXT,
     totp_last_step     INTEGER,
     totp_fail_count    INTEGER NOT NULL DEFAULT 0,
@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS web_participants (
     created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (role IN ('user', 'admin')),
-    CHECK (status IN ('active', 'inactive'))
+    CHECK (status IN ('active', 'inactive')),
+    CHECK (
+        (auth_scheme IS NULL AND auth_secret IS NULL)
+        OR (auth_scheme = 'hmac-sha256-v1' AND auth_secret IS NOT NULL)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS channels (
