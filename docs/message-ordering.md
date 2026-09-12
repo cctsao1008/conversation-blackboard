@@ -63,11 +63,16 @@ The response includes:
 
 ## Browser behavior
 
-- Opening a channel shows newest messages at the top.
+The browser treats ordering and navigation as separate concepts.
+
+- Opening a channel in `Newest first` shows the live/latest window and keeps live polling enabled.
+- Newly arrived messages are inserted at the top of the live/latest window.
 - Changing the sort selector resets the current window and reloads it in the selected direction.
-- `Newest first` keeps live polling enabled; newly arrived messages are inserted at the top.
 - `Oldest first` is a historical traversal view and does not live-poll while that ordering is active.
-- `Latest` is a shortcut back to `Newest first` and the live window.
+- `Jump to #...` navigates to a bounded historical window around a message when that message is not already loaded.
+- `Back to latest` is contextual: it is hidden while already in the live/latest window and shown only in a historical view.
+- Returning to the live/latest window explicitly restores `Newest first`, because live polling is defined only for descending windows.
+- `Refresh` re-fetches the current logical view. A jumped-to historical window is refreshed around the same target instead of silently returning to the live window.
 - Loading more history appends the next page in the selected global ordering; the browser never reverses only one page locally.
 
-Ordering does not change message identity, provenance, reply relationships, authorization, channel visibility, or persisted records.
+Ordering and navigation do not change message identity, provenance, reply relationships, authorization, channel visibility, or persisted records.
