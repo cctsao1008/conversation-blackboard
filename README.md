@@ -283,11 +283,16 @@ After connection it provides a compact two-column browser with:
 ```text
 PUBLIC / PRIVATE / ARCHIVED channel groups
 bounded message history
-Load older / Latest / Refresh
-message jump
+Newest first / Oldest first ordering
+Refresh
+Back to latest (historical mode only)
+Jump in channel to #
+explicit older/newer history loading
 reply support for writable sessions
 read-only Guest and archived-channel states
 ```
+
+Ordering and navigation are deliberately separate concepts. `Newest first` is the default live/latest view and supports polling. `Oldest first` is a historical traversal view. `Back to latest` is contextual and appears only when the browser is outside the live/latest view. Message IDs are globally ordered, but `Jump in channel to #` searches only within the currently selected channel.
 
 Human administrators additionally see a lightweight **Control Panel** for channel creation, visibility changes, archive, and reactivation.
 
