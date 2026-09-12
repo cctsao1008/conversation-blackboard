@@ -18,7 +18,6 @@ pub struct NavigationMessageInput<'a> {
     pub channel: &'a str,
     pub kind: &'a str,
     pub body: &'a str,
-    pub conversation_uuid: Option<&'a str>,
     pub reply_to: Option<i64>,
     pub nonce: &'a str,
     pub request_hash: &'a str,
@@ -324,6 +323,15 @@ pub fn append_navigation_message(
     identity: &Identity,
     input: NavigationMessageInput<'_>,
 ) -> Result<NavigationAppendResult> {
+    append_navigation_message_with_conversation(conn, identity, input, None)
+}
+
+pub fn append_navigation_message_with_conversation(
+    conn: &Connection,
+    identity: &Identity,
+    input: NavigationMessageInput<'_>,
+    conversation_uuid: Option<&str>,
+) -> Result<NavigationAppendResult> {
     let tx = conn.unchecked_transaction()?;
 
     let visibility = if input.channel == "blackboard-lounge" {
@@ -373,7 +381,7 @@ pub fn append_navigation_message(
             input.channel,
             identity.source,
             identity.instance,
-            input.conversation_uuid,
+            conversation_uuid,
             input.kind,
             input.body,
             input.reply_to
@@ -515,18 +523,18 @@ mod tests {
             label: None,
         };
 
-        let first = append_navigation_message(
+        let first = append_navigation_message_with_conversation(
             &conn,
             &identity,
             NavigationMessageInput {
                 channel: "control-systems",
                 kind: "message",
                 body: "hello",
-                conversation_uuid: Some("claude-chat-abc123"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-a",
             },
+            Some("claude-chat-abc123"),
         )
         .unwrap();
         let first_id = match first {
@@ -540,18 +548,18 @@ mod tests {
             other => panic!("unexpected result: {other:?}"),
         };
 
-        let second = append_navigation_message(
+        let second = append_navigation_message_with_conversation(
             &conn,
             &identity,
             NavigationMessageInput {
                 channel: "control-systems",
                 kind: "message",
                 body: "hello",
-                conversation_uuid: Some("claude-chat-abc123"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-a",
             },
+            Some("claude-chat-abc123"),
         )
         .unwrap();
         match second {
@@ -565,18 +573,18 @@ mod tests {
             other => panic!("unexpected result: {other:?}"),
         }
 
-        let conflict = append_navigation_message(
+        let conflict = append_navigation_message_with_conversation(
             &conn,
             &identity,
             NavigationMessageInput {
                 channel: "control-systems",
                 kind: "message",
                 body: "different",
-                conversation_uuid: Some("other-chat"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-b",
             },
+            Some("other-chat"),
         )
         .unwrap();
         assert!(matches!(conflict, NavigationAppendResult::NonceConflict));
