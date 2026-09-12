@@ -13,6 +13,7 @@ struct ParticipantInspection {
     source: String,
     label: Option<String>,
     role: String,
+    lifecycle_status: String,
     totp_status: &'static str,
     signature_scheme: Option<String>,
     public_key: Option<String>,
@@ -43,6 +44,20 @@ pub enum ParticipantCommand {
     List {
         #[arg(long)]
         db: PathBuf,
+    },
+    /// Deactivate a participant without deleting identity history or credentials.
+    Deactivate {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+    },
+    /// Reactivate a previously inactive participant.
+    Reactivate {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
     },
     /// Set the participant role used by Human-Web authorization.
     SetRole {
@@ -110,6 +125,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("source         : {}", record.source);
             println!("participant_id : {}", record.instance);
             println!("role           : user");
+            println!("status         : active");
             Ok(())
         }
         ParticipantCommand::Show {
@@ -128,18 +144,47 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             let conn = db::connect(&path)?;
             let records = list_participants(&conn)?;
             println!("PARTICIPANTS");
-            println!("participant_id\tsource\trole\ttotp\tsigning\tlabel");
+            println!("participant_id\tsource\trole\tstatus\ttotp\tsigning\tlabel");
             for record in records {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     record.participant_id,
                     record.source,
                     record.role,
+                    record.lifecycle_status,
                     record.totp_status,
                     record.signing_status,
                     record.label.as_deref().unwrap_or("-")
                 );
             }
+            Ok(())
+        }
+        ParticipantCommand::Deactivate {
+            db: path,
+            participant_id,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            if !identity::set_web_participant_status(&conn, &participant_id, "inactive")? {
+                return Err(format!("unknown participant: {participant_id}").into());
+            }
+            println!("PARTICIPANT INACTIVE");
+            println!("participant_id : {participant_id}");
+            println!("status         : inactive");
+            Ok(())
+        }
+        ParticipantCommand::Reactivate {
+            db: path,
+            participant_id,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            if !identity::set_web_participant_status(&conn, &participant_id, "active")? {
+                return Err(format!("unknown participant: {participant_id}").into());
+            }
+            println!("PARTICIPANT ACTIVE");
+            println!("participant_id : {participant_id}");
+            println!("status         : active");
             Ok(())
         }
         ParticipantCommand::SetRole {
@@ -250,17 +295,18 @@ fn inspect_participant(
     participant_id: &str,
 ) -> rusqlite::Result<Option<ParticipantInspection>> {
     conn.query_row(
-        "SELECT participant_id, source, label, role, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
+        "SELECT participant_id, source, label, role, status, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
         [participant_id],
         |row| {
-            let totp_secret: Option<String> = row.get(4)?;
-            let signature_scheme: Option<String> = row.get(5)?;
-            let public_key: Option<String> = row.get(6)?;
+            let totp_secret: Option<String> = row.get(5)?;
+            let signature_scheme: Option<String> = row.get(6)?;
+            let public_key: Option<String> = row.get(7)?;
             Ok(ParticipantInspection {
                 participant_id: row.get(0)?,
                 source: row.get(1)?,
                 label: row.get(2)?,
                 role: row.get(3)?,
+                lifecycle_status: row.get(4)?,
                 totp_status: if totp_secret.is_some() {
                     "active"
                 } else {
@@ -281,17 +327,18 @@ fn inspect_participant(
 
 fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspection>> {
     let mut stmt = conn.prepare(
-        "SELECT participant_id, source, label, role, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         ORDER BY participant_id ASC",
+        "SELECT participant_id, source, label, role, status, totp_secret, signature_scheme, public_key\n         FROM web_participants\n         ORDER BY participant_id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
-        let totp_secret: Option<String> = row.get(4)?;
-        let signature_scheme: Option<String> = row.get(5)?;
-        let public_key: Option<String> = row.get(6)?;
+        let totp_secret: Option<String> = row.get(5)?;
+        let signature_scheme: Option<String> = row.get(6)?;
+        let public_key: Option<String> = row.get(7)?;
         Ok(ParticipantInspection {
             participant_id: row.get(0)?,
             source: row.get(1)?,
             label: row.get(2)?,
             role: row.get(3)?,
+            lifecycle_status: row.get(4)?,
             totp_status: if totp_secret.is_some() {
                 "active"
             } else {
@@ -318,6 +365,7 @@ fn print_participant(record: &ParticipantInspection) {
     );
     println!("source           : {}", record.source);
     println!("role             : {}", record.role);
+    println!("status           : {}", record.lifecycle_status);
     println!();
     println!("totp");
     println!("status           : {}", record.totp_status);
@@ -363,6 +411,7 @@ mod tests {
 
         let empty = inspect_participant(&conn, "keda-main").unwrap().unwrap();
         assert_eq!(empty.role, "user");
+        assert_eq!(empty.lifecycle_status, "active");
         assert_eq!(empty.totp_status, "not-configured");
         assert_eq!(empty.signing_status, "not-configured");
         assert_eq!(empty.public_key, None);
@@ -380,6 +429,12 @@ mod tests {
             Some(signed_auth::SIGNATURE_SCHEME)
         );
         assert_eq!(active.public_key.as_deref(), Some(public_key.as_str()));
+
+        identity::set_web_participant_status(&conn, "keda-main", "inactive").unwrap();
+        let inactive = inspect_participant(&conn, "keda-main").unwrap().unwrap();
+        assert_eq!(inactive.lifecycle_status, "inactive");
+        assert_eq!(inactive.totp_status, "active");
+        assert_eq!(inactive.signing_status, "active");
 
         identity::revoke_web_participant_totp(&conn, "keda-main").unwrap();
         identity::revoke_web_participant_signing_key(&conn, "keda-main").unwrap();
