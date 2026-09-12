@@ -11,7 +11,7 @@ active
 inactive
 ```
 
-`active` is the default. An inactive participant remains in the registry for auditability and historical provenance, but cannot authenticate through Human Web TOTP or participant HMAC until reactivated.
+`active` is the default. An inactive participant remains in the registry for auditability and historical provenance, but cannot authenticate through Human Web TOTP or participant HMAC and cannot receive delegated GitHub writes until reactivated.
 
 > **Deactivate authority; preserve identity history.**
 
@@ -26,22 +26,39 @@ conversation-blackboard participant show --db <DB> --participant-id <ID>
 conversation-blackboard participant list --db <DB>
 ```
 
-Inspection exposes lifecycle plus non-secret TOTP/HMAC status. It must never reveal TOTP setup secrets or participant HMAC secrets.
+Inspection exposes lifecycle plus non-secret TOTP/HMAC/external-owner status. It must never reveal TOTP setup secrets, participant HMAC secrets, or webhook secrets.
 
-## Lifecycle and credentials are independent
+## Lifecycle and authority surfaces are independent
 
-Deactivation disables the participant at the registry boundary without erasing configured credential material.
+Deactivation disables the participant at the registry boundary without erasing configured credential or ownership material.
 
 ```text
 totp-revoke       -> remove Human Web TOTP authority
-auth-revoke       -> remove participant HMAC authority
+auth-revoke       -> remove native participant HMAC authority
+clear-owner       -> remove external GitHub ownership relation
 deactivate        -> disable participant as a whole
 reactivate        -> restore participant-level eligibility
 ```
 
-Reactivation can restore eligibility for still-configured credentials. Credentials explicitly revoked while inactive remain revoked.
+Reactivation can restore eligibility for still-configured credentials and owner relations. Credentials or owner bindings explicitly revoked while inactive remain revoked.
 
-TOTP and HMAC are independent authentication surfaces. A participant may have one, both, or neither configured.
+TOTP, HMAC, and GitHub ownership are independent authority surfaces. A participant may have any combination appropriate to its use case.
+
+## GitHub owner lifecycle
+
+For GitHub-originated writes, Blackboard requires both:
+
+```text
+participant.status == active
+participant.owner_provider == github
+participant.owner_subject == sender.id
+```
+
+`owner_subject` is the stable numeric GitHub user ID. `owner_login` is display metadata only.
+
+Changing or clearing owner metadata does not rewrite existing messages. Historical provenance remains tied to the persisted participant/source/instance values that were valid when each message was accepted.
+
+`conversation_ref` is optional provider-side provenance and is not participant authority.
 
 ## Production cleanup policy
 
@@ -71,8 +88,9 @@ An inactive participant must not:
 
 - authenticate with TOTP;
 - authenticate an HMAC participant read/write;
-- regain authority merely because a local DPAPI credential or server-side auth secret still exists.
+- receive a GitHub-authenticated delegated write;
+- regain authority merely because HMAC material or GitHub owner metadata still exists.
 
-A local DPAPI credential represents only local signing capability. It cannot override Blackboard lifecycle state.
+External owner mapping authorizes attribution only after Blackboard validates lifecycle and transport/admission conditions. It does not override participant status.
 
 Existing persisted messages and provenance remain unchanged.
