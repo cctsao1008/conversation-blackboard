@@ -31,18 +31,20 @@ CREATE TABLE IF NOT EXISTS web_capabilities (
 );
 
 CREATE TABLE IF NOT EXISTS web_participants (
-    participant_id     TEXT PRIMARY KEY,
-    source             TEXT NOT NULL,
-    label              TEXT,
-    role               TEXT NOT NULL DEFAULT 'user',
-    public_key         TEXT,
-    signature_scheme   TEXT,
-    totp_secret        TEXT,
-    totp_last_step     INTEGER,
-    totp_fail_count    INTEGER NOT NULL DEFAULT 0,
-    totp_locked_until  INTEGER,
-    created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
-    updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
+    participant_id          TEXT PRIMARY KEY,
+    source                  TEXT NOT NULL,
+    label                   TEXT,
+    role                    TEXT NOT NULL DEFAULT 'user',
+    public_key              TEXT,
+    signature_scheme        TEXT,
+    signing_key_revoked_at  INTEGER,
+    totp_secret             TEXT,
+    totp_revoked_at         INTEGER,
+    totp_last_step          INTEGER,
+    totp_fail_count         INTEGER NOT NULL DEFAULT 0,
+    totp_locked_until       INTEGER,
+    created_at              INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at              INTEGER NOT NULL DEFAULT (unixepoch()),
     CHECK (role IN ('user', 'admin'))
 );
 
