@@ -18,6 +18,7 @@ pub struct NavigationMessageInput<'a> {
     pub channel: &'a str,
     pub kind: &'a str,
     pub body: &'a str,
+    pub conversation_uuid: Option<&'a str>,
     pub reply_to: Option<i64>,
     pub nonce: &'a str,
     pub request_hash: &'a str,
@@ -38,6 +39,7 @@ pub fn initialize(path: &Path) -> Result<()> {
     migrate_web_participant_totp_columns(&conn)?;
     migrate_web_participant_role(&conn)?;
     migrate_web_participant_status(&conn)?;
+    migrate_message_conversation_uuid(&conn)?;
     migrate_channel_metadata(&conn)?;
     Ok(())
 }
@@ -109,6 +111,13 @@ fn migrate_web_participant_status(conn: &Connection) -> Result<()> {
             "ALTER TABLE web_participants ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
             [],
         )?;
+    }
+    Ok(())
+}
+
+fn migrate_message_conversation_uuid(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "messages", "conversation_uuid")? {
+        conn.execute("ALTER TABLE messages ADD COLUMN conversation_uuid TEXT", [])?;
     }
     Ok(())
 }
@@ -265,9 +274,9 @@ pub fn list_messages_after(
     limit: usize,
 ) -> Result<Vec<Message>> {
     let sql = if channel.is_some() {
-        "SELECT id, created_at, channel, source, instance, kind, body, reply_to\n         FROM messages\n         WHERE channel = ?1 AND id > ?2\n         ORDER BY id ASC\n         LIMIT ?3"
+        "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n         FROM messages\n         WHERE channel = ?1 AND id > ?2\n         ORDER BY id ASC\n         LIMIT ?3"
     } else {
-        "SELECT id, created_at, channel, source, instance, kind, body, reply_to\n         FROM messages\n         WHERE id > ?1\n         ORDER BY id ASC\n         LIMIT ?2"
+        "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n         FROM messages\n         WHERE id > ?1\n         ORDER BY id ASC\n         LIMIT ?2"
     };
 
     let mut stmt = conn.prepare(sql)?;
@@ -359,11 +368,12 @@ pub fn append_navigation_message(
     }
 
     tx.execute(
-        "INSERT INTO messages (channel, source, instance, kind, body, reply_to)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO messages (channel, source, instance, conversation_uuid, kind, body, reply_to)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             input.channel,
             identity.source,
             identity.instance,
+            input.conversation_uuid,
             input.kind,
             input.body,
             input.reply_to
@@ -383,7 +393,7 @@ pub fn append_navigation_message(
 
 fn message_by_id(conn: &Connection, id: i64) -> Result<Message> {
     conn.query_row(
-        "SELECT id, created_at, channel, source, instance, kind, body, reply_to\n         FROM messages WHERE id = ?1",
+        "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n         FROM messages WHERE id = ?1",
         [id],
         row_to_message,
     )
@@ -396,9 +406,10 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> Result<Message> {
         channel: row.get(2)?,
         source: row.get(3)?,
         instance: row.get(4)?,
-        kind: row.get(5)?,
-        body: row.get(6)?,
-        reply_to: row.get(7)?,
+        conversation_uuid: row.get(5)?,
+        kind: row.get(6)?,
+        body: row.get(7)?,
+        reply_to: row.get(8)?,
     })
 }
 
@@ -428,6 +439,7 @@ mod tests {
         assert!(table_has_column(&conn, "web_participants", "totp_secret").unwrap());
         assert!(table_has_column(&conn, "web_participants", "role").unwrap());
         assert!(table_has_column(&conn, "web_participants", "status").unwrap());
+        assert!(table_has_column(&conn, "messages", "conversation_uuid").unwrap());
         let (role, status, auth_scheme, auth_secret): (
             String,
             String,
@@ -458,7 +470,7 @@ mod tests {
             label: None,
         };
 
-        append_message(
+        let private = append_message(
             &conn,
             &identity,
             "control-systems",
@@ -467,6 +479,7 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(private.conversation_uuid.is_none());
         append_message(
             &conn,
             &identity,
@@ -509,6 +522,7 @@ mod tests {
                 channel: "control-systems",
                 kind: "message",
                 body: "hello",
+                conversation_uuid: Some("claude-chat-abc123"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-a",
@@ -516,7 +530,10 @@ mod tests {
         )
         .unwrap();
         let first_id = match first {
-            NavigationAppendResult::Created(message) => message.id,
+            NavigationAppendResult::Created(message) => {
+                assert_eq!(message.conversation_uuid.as_deref(), Some("claude-chat-abc123"));
+                message.id
+            }
             other => panic!("unexpected result: {other:?}"),
         };
 
@@ -527,6 +544,7 @@ mod tests {
                 channel: "control-systems",
                 kind: "message",
                 body: "hello",
+                conversation_uuid: Some("claude-chat-abc123"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-a",
@@ -534,7 +552,10 @@ mod tests {
         )
         .unwrap();
         match second {
-            NavigationAppendResult::Existing(message) => assert_eq!(message.id, first_id),
+            NavigationAppendResult::Existing(message) => {
+                assert_eq!(message.id, first_id);
+                assert_eq!(message.conversation_uuid.as_deref(), Some("claude-chat-abc123"));
+            }
             other => panic!("unexpected result: {other:?}"),
         }
 
@@ -545,6 +566,7 @@ mod tests {
                 channel: "control-systems",
                 kind: "message",
                 body: "different",
+                conversation_uuid: Some("other-chat"),
                 reply_to: None,
                 nonce: "nonce-1",
                 request_hash: "hash-b",
@@ -555,5 +577,29 @@ mod tests {
 
         let messages = list_messages_after(&conn, 0, Some("control-systems"), 10).unwrap();
         assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].conversation_uuid.as_deref(),
+            Some("claude-chat-abc123")
+        );
+    }
+
+    #[test]
+    fn migration_preserves_historical_messages_with_null_conversation_uuid() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE messages (\n                    id INTEGER PRIMARY KEY,\n                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),\n                    channel TEXT NOT NULL,\n                    source TEXT NOT NULL,\n                    instance TEXT NOT NULL,\n                    kind TEXT NOT NULL DEFAULT 'message',\n                    body TEXT NOT NULL,\n                    reply_to INTEGER\n                );\n                INSERT INTO messages (channel, source, instance, kind, body)\n                VALUES ('blackboard-lounge', 'legacy', 'legacy-main', 'message', 'before migration');",
+            )
+            .unwrap();
+        }
+
+        initialize(&path).unwrap();
+        let conn = connect(&path).unwrap();
+        let messages = list_messages_after(&conn, 0, Some("blackboard-lounge"), 10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].body, "before migration");
+        assert!(messages[0].conversation_uuid.is_none());
     }
 }
