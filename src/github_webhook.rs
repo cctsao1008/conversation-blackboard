@@ -226,18 +226,18 @@ async fn github_issue_webhook(
                 return Ok(WebhookWriteResult::ChannelArchived);
             }
             Ok(
-                match db::append_navigation_message(
+                match db::append_navigation_message_with_conversation(
                     &conn,
                     &identity,
                     db::NavigationMessageInput {
                         channel: &channel,
                         kind: &kind,
                         body: &message_body,
-                        conversation_uuid: conversation_uuid.as_deref(),
                         reply_to,
                         nonce: &nonce,
                         request_hash: &request_hash,
                     },
+                    conversation_uuid.as_deref(),
                 )? {
                     db::NavigationAppendResult::Created(message) => {
                         WebhookWriteResult::Created(message.id)
