@@ -71,9 +71,7 @@ async fn message_window(
         return json_error(StatusCode::BAD_REQUEST, "invalid_channel");
     }
 
-    if query.before.is_some_and(|value| value <= 0)
-        || query.after.is_some_and(|value| value <= 0)
-    {
+    if query.before.is_some_and(|value| value <= 0) || query.after.is_some_and(|value| value <= 0) {
         return json_error(StatusCode::BAD_REQUEST, "invalid_query");
     }
 
@@ -173,7 +171,8 @@ fn list_message_window(
                 let mut stmt = conn.prepare(
                     "SELECT id, created_at, channel, source, instance, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1 AND id < ?2\n                     ORDER BY id DESC\n                     LIMIT ?3",
                 )?;
-                let rows = stmt.query_map(params![channel, before, limit as i64], row_to_message)?;
+                let rows =
+                    stmt.query_map(params![channel, before, limit as i64], row_to_message)?;
                 for row in rows {
                     out.push(row?);
                 }
@@ -372,7 +371,14 @@ mod tests {
         let (status, body) = response_json(response).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ids(&body), fixture.ids[20..25].iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(
+            ids(&body),
+            fixture.ids[20..25]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+        );
         assert_eq!(body["order"], "desc");
         assert_eq!(body["has_more"], Value::Bool(true));
         assert_eq!(body["has_older"], Value::Bool(true));
@@ -393,7 +399,14 @@ mod tests {
         let (status, body) = response_json(response).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ids(&body), fixture.ids[15..20].iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(
+            ids(&body),
+            fixture.ids[15..20]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+        );
         assert_eq!(body["has_more"], Value::Bool(true));
     }
 
@@ -499,7 +512,10 @@ mod tests {
         let (status, body) = response_json(response).await;
 
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ids(&body), fixture.ids[0..5].iter().rev().copied().collect::<Vec<_>>());
+        assert_eq!(
+            ids(&body),
+            fixture.ids[0..5].iter().rev().copied().collect::<Vec<_>>()
+        );
         assert_eq!(body["has_more"], Value::Bool(false));
     }
 
