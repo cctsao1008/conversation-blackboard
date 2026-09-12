@@ -109,19 +109,11 @@ pub fn matching_totp_step(secret: &str, code: &str, now: u64) -> Option<u64> {
 }
 
 pub fn issue_web_session(participant_id: &str) -> WebSession {
-    issue_web_session_at(
-        participant_id,
-        WebSessionKind::HumanWeb,
-        current_unix_time(),
-    )
+    issue_web_session_at(participant_id, WebSessionKind::HumanWeb, current_unix_time())
 }
 
 pub fn issue_guest_session() -> WebSession {
-    issue_web_session_at(
-        GUEST_PARTICIPANT_ID,
-        WebSessionKind::Guest,
-        current_unix_time(),
-    )
+    issue_web_session_at(GUEST_PARTICIPANT_ID, WebSessionKind::Guest, current_unix_time())
 }
 
 pub fn verify_web_session(token: &str) -> Option<WebSession> {
@@ -134,23 +126,23 @@ pub fn canonical_http_request_bytes(
     request_target: &str,
 ) -> Vec<u8> {
     canonical_json([
+        ("auth_version", json!(signed_auth::SIGNATURE_SCHEME)),
         ("method", json!(method)),
         ("participant_id", json!(participant_id)),
         ("purpose", json!("http-request-auth-v1")),
         ("request_target", json!(request_target)),
-        ("signature_version", json!(signed_auth::SIGNATURE_SCHEME)),
     ])
 }
 
-pub fn verify_http_request_signature(
-    public_key: &str,
-    signature: &str,
+pub fn verify_http_request_auth(
+    secret: &str,
+    proof: &str,
     participant_id: &str,
     method: &str,
     request_target: &str,
 ) -> bool {
     let payload = canonical_http_request_bytes(participant_id, method, request_target);
-    signed_auth::verify_message_signature(public_key, signature, &payload)
+    signed_auth::verify_message_signature(secret, proof, &payload)
 }
 
 fn issue_web_session_at(
@@ -244,11 +236,7 @@ fn totp_code_bytes(secret: &[u8], step: u64, digits: u32) -> Option<String> {
         | (u32::from(digest[offset + 2]) << 8)
         | u32::from(digest[offset + 3]);
     let modulo = 10_u32.pow(digits);
-    Some(format!(
-        "{:0width$}",
-        binary % modulo,
-        width = digits as usize
-    ))
+    Some(format!("{:0width$}", binary % modulo, width = digits as usize))
 }
 
 fn base32_encode(bytes: &[u8]) -> String {
@@ -326,10 +314,7 @@ mod tests {
         let secret = generate_totp_secret();
         let now = 1_700_000_000;
         let code = totp_code_at(&secret, now, TOTP_DIGITS).unwrap();
-        assert_eq!(
-            matching_totp_step(&secret, &code, now),
-            Some(now / TOTP_PERIOD_SECS)
-        );
+        assert_eq!(matching_totp_step(&secret, &code, now), Some(now / TOTP_PERIOD_SECS));
         assert!(matching_totp_step(&secret, "00000x", now).is_none());
     }
 
