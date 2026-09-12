@@ -171,8 +171,8 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert!(!app.contains("document.cookie"));
 
     // #53 permits persistence for the non-sensitive theme preference only.
-    // Authentication/session state must remain page-memory-only and must not
-    // gain additional browser-storage call sites.
+    // Authentication/session state and #55 message ordering remain page-memory-only
+    // and must not gain additional browser-storage call sites.
     assert!(app.contains("const THEME_KEY = \"conversation-blackboard-theme\";"));
     assert!(app.contains("storageSet(THEME_KEY, theme)"));
     assert!(app.contains("storageGet(THEME_KEY)"));
@@ -191,12 +191,24 @@ async fn totp_code_is_one_time_per_time_step_and_old_browser_endpoints_are_gone(
     assert!(app.contains("$(\"control-panel-open\").classList.toggle(\"hidden\", !isAdmin());"));
     assert!(app.contains("$(\"connect\").addEventListener(\"click\", connect);"));
 
+    // #55: newest-first is the browser default, sort direction is selectable,
+    // and the selected direction is passed to the bounded history API.
+    assert!(app.contains("order: \"desc\""));
+    assert!(app.contains("order=${state.order}"));
+    assert!(app.contains("$(\"message-order\").addEventListener(\"change\""));
+    assert!(app.contains("state.order = \"desc\";"));
+    assert!(app.contains("before=${state.oldestId}"));
+    assert!(app.contains("after=${state.lastId}"));
+
     assert!(html.contains("Continue as Guest"));
     assert!(html.contains("Guest access is read-only. Only public channels are visible."));
     assert!(html.contains("Control Panel"));
     assert!(html.contains("value=\"system\""));
     assert!(html.contains("value=\"light\""));
     assert!(html.contains("value=\"dracula\""));
+    assert!(html.contains("id=\"message-order\""));
+    assert!(html.contains("<option value=\"desc\" selected>Newest first</option>"));
+    assert!(html.contains("<option value=\"asc\">Oldest first</option>"));
 }
 
 #[tokio::test]

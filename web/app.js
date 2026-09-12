@@ -22,6 +22,7 @@
     pollTimer: null,
     editChannel: "",
     theme: "system",
+    order: "desc",
   };
 
   async function api(path, options = {}) {
@@ -214,6 +215,8 @@
     state.channel = "";
     state.channels = [];
     state.replyTo = null;
+    state.order = "desc";
+    $("message-order").value = state.order;
     resetHistory();
   }
 
@@ -322,7 +325,7 @@
 
   async function selectChannel(channel, refreshChannels = true) {
     state.channel = channel;
-    state.followLatest = true;
+    state.followLatest = state.order === "desc";
     state.replyTo = null;
     $("channel-name").textContent = channel;
     resetHistory();
@@ -341,17 +344,17 @@
   async function loadLatestHistory() {
     if (!state.channel) return;
 
-    state.followLatest = true;
+    state.followLatest = state.order === "desc";
     resetHistory();
     try {
       const data = await api(
-        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&limit=${HISTORY_PAGE_SIZE}`,
+        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&order=${state.order}&limit=${HISTORY_PAGE_SIZE}`,
       );
       for (const message of data.messages) appendMessage(message);
-      state.hasOlder = Boolean(data.has_older);
+      state.hasOlder = Boolean(data.has_more);
       updateHistoryNav();
       updateEmpty();
-      scrollToBottom();
+      $("timeline").scrollTop = 0;
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
       else boardStatus(`Could not load channel: ${error.message}`);
@@ -359,7 +362,9 @@
   }
 
   async function loadOlderHistory() {
-    if (!state.channel || !state.oldestId || !state.hasOlder) return;
+    if (!state.channel || !state.hasOlder) return;
+    if (state.order === "desc" && !state.oldestId) return;
+    if (state.order === "asc" && !state.lastId) return;
 
     const button = $("load-older");
     if (button) {
@@ -367,20 +372,21 @@
       button.textContent = "Loading…";
     }
 
+    const cursor = state.order === "desc"
+      ? `before=${state.oldestId}`
+      : `after=${state.lastId}`;
+
     try {
       const data = await api(
-        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&before=${state.oldestId}&limit=${HISTORY_PAGE_SIZE}`,
+        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&order=${state.order}&${cursor}&limit=${HISTORY_PAGE_SIZE}`,
       );
-      for (let index = data.messages.length - 1; index >= 0; index -= 1) {
-        appendMessage(data.messages[index], "prepend");
-      }
-      state.hasOlder = Boolean(data.has_older);
+      for (const message of data.messages) appendMessage(message);
+      state.hasOlder = Boolean(data.has_more);
       updateHistoryNav();
       updateEmpty();
-      if (data.messages.length) $("timeline").scrollTop = 0;
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
-      else boardStatus(`Could not load older messages: ${error.message}`);
+      else boardStatus(`Could not load ${state.order === "desc" ? "older" : "newer"} messages: ${error.message}`);
     }
   }
 
@@ -410,8 +416,14 @@
     $("jump-go").disabled = true;
     boardStatus(`Finding #${id}…`);
     try {
+      let cursor = "";
+      if (state.order === "desc") {
+        cursor = `&before=${id + 1}`;
+      } else if (id > 1) {
+        cursor = `&after=${id - 1}`;
+      }
       const data = await api(
-        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&before=${id + 1}&limit=${HISTORY_PAGE_SIZE}`,
+        `/api/messages/window?channel=${encodeURIComponent(state.channel)}&order=${state.order}${cursor}&limit=${HISTORY_PAGE_SIZE}`,
       );
       const found = data.messages.some((message) => message.id === id);
       if (!found) {
@@ -421,7 +433,7 @@
       state.followLatest = false;
       resetHistory();
       for (const message of data.messages) appendMessage(message);
-      state.hasOlder = Boolean(data.has_older);
+      state.hasOlder = Boolean(data.has_more);
       updateHistoryNav();
       updateEmpty();
       requestAnimationFrame(() => focusMessage(id));
@@ -435,13 +447,13 @@
   }
 
   async function poll() {
-    if (!state.sessionToken || !state.channel || !state.followLatest) return;
+    if (!state.sessionToken || !state.channel || !state.followLatest || state.order !== "desc") return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
-      for (const message of data.messages) appendMessage(message);
+      for (const message of data.messages) appendMessage(message, "prepend");
       if (data.messages.length) {
         updateEmpty();
-        scrollToBottom();
+        $("timeline").scrollTop = 0;
         await refreshChannelCounts();
       }
     } catch (error) {
@@ -553,7 +565,7 @@
     button.id = "load-older";
     button.type = "button";
     button.className = "secondary";
-    button.textContent = "Load older messages";
+    button.textContent = state.order === "desc" ? "Load older messages" : "Load newer messages";
     button.addEventListener("click", loadOlderHistory);
     nav.append(button);
     $("timeline").append(nav);
@@ -783,7 +795,15 @@
     await refreshChannelCounts();
     await loadLatestHistory();
   });
-  $("latest").addEventListener("click", loadLatestHistory);
+  $("latest").addEventListener("click", async () => {
+    state.order = "desc";
+    $("message-order").value = state.order;
+    await loadLatestHistory();
+  });
+  $("message-order").addEventListener("change", async (event) => {
+    state.order = event.target.value === "asc" ? "asc" : "desc";
+    await loadLatestHistory();
+  });
   $("jump-form").addEventListener("submit", jumpToMessage);
   $("composer").addEventListener("submit", postMessage);
   $("cancel-reply").addEventListener("click", () => {
@@ -802,6 +822,7 @@
   });
   $("theme").addEventListener("change", (event) => applyTheme(event.target.value));
 
+  $("message-order").value = state.order;
   applyTheme(storageGet(THEME_KEY) || "system", false);
   setConnected(false);
   resetHistory();

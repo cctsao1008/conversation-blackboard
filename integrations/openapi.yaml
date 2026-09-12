@@ -209,7 +209,11 @@ paths:
   /api/messages/window:
     get:
       operationId: blackboardMessageWindow
-      summary: Read a bounded chronological message window for one channel.
+      summary: Read a bounded message window for one channel in selectable ID order.
+      description: |
+        The default order is newest-first (`desc`). Descending windows page toward older
+        messages with `before`; ascending windows page toward newer messages with `after`.
+        `before` and `after` are mutually exclusive and must match the selected direction.
       security:
         - bearerAuth: []
         - webSessionAuth: []
@@ -219,9 +223,24 @@ paths:
           required: true
           schema:
             type: string
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [desc, asc]
+            default: desc
         - name: before
           in: query
           required: false
+          description: Exclusive upper ID cursor used only with order=desc.
+          schema:
+            type: integer
+            minimum: 1
+        - name: after
+          in: query
+          required: false
+          description: Exclusive lower ID cursor used only with order=asc.
           schema:
             type: integer
             minimum: 1
@@ -235,19 +254,35 @@ paths:
             default: 20
       responses:
         '200':
-          description: Bounded chronological message window.
+          description: Bounded message window in the requested global message-ID order.
           content:
             application/json:
               schema:
                 type: object
-                required: [messages, has_older]
+                required: [messages, order, has_more, has_older, has_newer]
                 properties:
                   messages:
                     type: array
                     items:
                       $ref: '#/components/schemas/Message'
+                  order:
+                    type: string
+                    enum: [desc, asc]
+                  has_more:
+                    type: boolean
+                    description: Whether another page exists in the selected traversal direction.
                   has_older:
                     type: boolean
+                    description: True only when a descending window has another older page.
+                  has_newer:
+                    type: boolean
+                    description: True only when an ascending window has another newer page.
+        '400':
+          description: Invalid order, cursor, channel, or window limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
