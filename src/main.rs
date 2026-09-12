@@ -186,4 +186,46 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
     }
+
+    #[test]
+    fn participant_deactivate_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "deactivate",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "mcp-smoke-main",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::Deactivate { participant_id, .. },
+            }) => assert_eq!(participant_id, "mcp-smoke-main"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_reactivate_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "participant",
+            "reactivate",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "mcp-smoke-main",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Participant {
+                command: participant_admin::ParticipantCommand::Reactivate { participant_id, .. },
+            }) => assert_eq!(participant_id, "mcp-smoke-main"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 }
