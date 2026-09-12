@@ -67,6 +67,7 @@
           <div class="channel-tools">
             <div class="channel-head-actions">
               <span id="channel-message-count" class="channel-message-count"></span>
+              <span id="history-state" class="channel-message-count hidden" aria-live="polite"></span>
               <label for="message-order">
                 <span class="sr-only">Message order</span>
                 <select id="message-order" aria-label="Message order">
@@ -74,7 +75,7 @@
                   <option value="asc">Oldest first</option>
                 </select>
               </label>
-              <button id="latest" class="secondary" type="button">Latest</button>
+              <button id="latest" class="secondary hidden" type="button">Back to latest</button>
               <button id="refresh" class="secondary" type="button">Refresh</button>
             </div>
             <form id="jump-form" class="jump-form">
