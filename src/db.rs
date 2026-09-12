@@ -37,6 +37,7 @@ pub fn initialize(path: &Path) -> Result<()> {
     migrate_web_participant_signing_columns(&conn)?;
     migrate_web_participant_totp_columns(&conn)?;
     migrate_web_participant_role(&conn)?;
+    migrate_web_participant_status(&conn)?;
     migrate_channel_metadata(&conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_participants_public_key\n         ON web_participants(public_key)\n         WHERE public_key IS NOT NULL",
@@ -87,6 +88,16 @@ fn migrate_web_participant_role(conn: &Connection) -> Result<()> {
         )?;
         conn.execute(
             "UPDATE web_participants SET role = 'admin', updated_at = unixepoch()\n             WHERE participant_id = 'cheng-main'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_web_participant_status(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "web_participants", "status")? {
+        conn.execute(
+            "ALTER TABLE web_participants ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
             [],
         )?;
     }
@@ -408,14 +419,16 @@ mod tests {
         assert!(table_has_column(&conn, "web_participants", "totp_fail_count").unwrap());
         assert!(table_has_column(&conn, "web_participants", "totp_locked_until").unwrap());
         assert!(table_has_column(&conn, "web_participants", "role").unwrap());
-        let role: String = conn
+        assert!(table_has_column(&conn, "web_participants", "status").unwrap());
+        let (role, status): (String, String) = conn
             .query_row(
-                "SELECT role FROM web_participants WHERE participant_id = 'cheng-main'",
+                "SELECT role, status FROM web_participants WHERE participant_id = 'cheng-main'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(role, "admin");
+        assert_eq!(status, "active");
     }
 
     #[test]
