@@ -67,6 +67,13 @@
           <div class="channel-tools">
             <div class="channel-head-actions">
               <span id="channel-message-count" class="channel-message-count"></span>
+              <label for="message-order">
+                <span class="sr-only">Message order</span>
+                <select id="message-order" aria-label="Message order">
+                  <option value="desc" selected>Newest first</option>
+                  <option value="asc">Oldest first</option>
+                </select>
+              </label>
               <button id="latest" class="secondary" type="button">Latest</button>
               <button id="refresh" class="secondary" type="button">Refresh</button>
             </div>
