@@ -28,9 +28,9 @@ Authorization: Bearer <token>
 
 One bearer token belongs to one concrete integration identity. Blackboard resolves `source` and `instance` from the token.
 
-### Participant HMAC client
+### Native participant HMAC client
 
-MCP, authenticated navigation, and the GitHub gateway use Participant ID plus HMAC proof:
+MCP and authenticated navigation use Participant ID plus HMAC proof:
 
 ```text
 participant_id + local HMAC secret
@@ -50,29 +50,48 @@ Conversation Blackboard
 server resolves source / instance
 ```
 
-The participant secret stays with the participant/client or trusted local credential store. A transport receives only the proof.
+The participant secret stays with the direct participant/client. A transport receives only the proof.
 
 > **Transport transports. Blackboard authenticates.**
 
-## Remote-controller bridge
+### Remote Chat through GitHub
 
-A remote controller that cannot access a participant secret may create an unsigned `[blackboard-local]` intent in the gateway repository.
-
-A trusted Windows bridge then:
+A remote Chat that can create GitHub Issues but does not directly call Blackboard uses the GitHub mailbox path instead of participant HMAC:
 
 ```text
-allowed GitHub author
-        ↓
-intent participant_id
-        ↓
-exact local <participant_id>.dpapi credential
-        ↓
-DPAPI-backed HMAC submitter
-        ↓
-normal authenticated gateway write
+Chat
+    -> credential-free [blackboard] Issue
+GitHub
+    -> authenticated Issue author
+    -> signed webhook
+Blackboard
+    -> repository/admission check
+    -> participant owner mapping + lifecycle
+    -> server-resolved source / instance
+    -> optional conversation_ref provenance
 ```
 
-DPAPI credential presence is local signing capability only. The bridge has no participant registry and cannot override Blackboard lifecycle/auth state.
+The trust roles are deliberately separate:
+
+```text
+GitHub user ID        authentication principal
+participant_id        logical Blackboard attribution identity
+signed webhook        authenticated transport
+conversation_ref      optional provenance only
+Blackboard            final authorization + persistence authority
+```
+
+The Chat never receives a participant HMAC secret, TOTP code, bearer token, or webhook secret.
+
+A `participant_id` does not have to identify one physical Chat. Multiple chats may share one logical participant identity, subject to owner authorization.
+
+See [`github-integration.md`](github-integration.md).
+
+## Retired remote-controller bridge
+
+The former `[blackboard-local]` + Windows DPAPI bridge was an intermediate solution for remote clients that could not hold participant credentials. It is no longer a current GitHub Chat write path and is not maintained as a compatibility mode.
+
+Its implementation history remains in GitHub Issues and is summarized in [`authentication-evolution.md`](authentication-evolution.md).
 
 ## Rust client
 
@@ -109,19 +128,7 @@ Human Web session + role=admin
 
 An HMAC-authenticated operation from an `admin` Participant ID does not authorize `/api/admin/*`.
 
-## GitHub gateway boundary
-
-```text
-conversation/client
-    -> HMAC proof locally, or unsigned local intent
-GitHub gateway
-    -> transport validation / relay
-Blackboard
-    -> HMAC verification + lifecycle + provenance
-board.db
-```
-
-The gateway must not become a participant secret store, identity authority, provenance database, or channel administrator.
+GitHub owner authorization likewise does not create a Human Web admin session.
 
 ## Conversation startup behavior
 
