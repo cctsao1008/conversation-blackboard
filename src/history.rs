@@ -169,7 +169,7 @@ fn list_message_window(
         MessageOrder::Desc => {
             if let Some(before) = before {
                 let mut stmt = conn.prepare(
-                    "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1 AND id < ?2\n                     ORDER BY id DESC\n                     LIMIT ?3",
+                    "SELECT id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1 AND id < ?2\n                     ORDER BY id DESC\n                     LIMIT ?3",
                 )?;
                 let rows =
                     stmt.query_map(params![channel, before, limit as i64], row_to_message)?;
@@ -178,7 +178,7 @@ fn list_message_window(
                 }
             } else {
                 let mut stmt = conn.prepare(
-                    "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1\n                     ORDER BY id DESC\n                     LIMIT ?2",
+                    "SELECT id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1\n                     ORDER BY id DESC\n                     LIMIT ?2",
                 )?;
                 let rows = stmt.query_map(params![channel, limit as i64], row_to_message)?;
                 for row in rows {
@@ -189,7 +189,7 @@ fn list_message_window(
         MessageOrder::Asc => {
             if let Some(after) = after {
                 let mut stmt = conn.prepare(
-                    "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1 AND id > ?2\n                     ORDER BY id ASC\n                     LIMIT ?3",
+                    "SELECT id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1 AND id > ?2\n                     ORDER BY id ASC\n                     LIMIT ?3",
                 )?;
                 let rows = stmt.query_map(params![channel, after, limit as i64], row_to_message)?;
                 for row in rows {
@@ -197,7 +197,7 @@ fn list_message_window(
                 }
             } else {
                 let mut stmt = conn.prepare(
-                    "SELECT id, created_at, channel, source, instance, conversation_uuid, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1\n                     ORDER BY id ASC\n                     LIMIT ?2",
+                    "SELECT id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to\n                     FROM messages\n                     WHERE channel = ?1\n                     ORDER BY id ASC\n                     LIMIT ?2",
                 )?;
                 let rows = stmt.query_map(params![channel, limit as i64], row_to_message)?;
                 for row in rows {
@@ -235,7 +235,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> SqlResult<Message> {
         channel: row.get(2)?,
         source: row.get(3)?,
         instance: row.get(4)?,
-        conversation_uuid: row.get(5)?,
+        conversation_ref: row.get(5)?,
         kind: row.get(6)?,
         body: row.get(7)?,
         reply_to: row.get(8)?,

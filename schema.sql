@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS messages (
     channel            TEXT NOT NULL,
     source             TEXT NOT NULL,
     instance           TEXT NOT NULL,
-    conversation_uuid  TEXT,
+    conversation_ref  TEXT,
     kind               TEXT NOT NULL DEFAULT 'message',
     body               TEXT NOT NULL,
     reply_to           INTEGER

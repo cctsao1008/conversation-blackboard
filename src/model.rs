@@ -14,7 +14,7 @@ pub struct Message {
     pub channel: String,
     pub source: String,
     pub instance: String,
-    pub conversation_uuid: Option<String>,
+    pub conversation_ref: Option<String>,
     pub kind: String,
     pub body: String,
     pub reply_to: Option<i64>,

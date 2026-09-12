@@ -188,7 +188,7 @@ async fn github_issue_webhook(
     if intent.reply_to.is_some_and(|value| value <= 0) {
         return error_response(StatusCode::BAD_REQUEST, "invalid_blackboard_intent");
     }
-    let conversation_uuid = match normalize_conversation_uuid(intent.conversation_uuid.as_deref()) {
+    let conversation_ref = match normalize_conversation_ref(intent.conversation_ref.as_deref()) {
         Ok(value) => value,
         Err(()) => return error_response(StatusCode::BAD_REQUEST, "invalid_blackboard_intent"),
     };
@@ -208,12 +208,12 @@ async fn github_issue_webhook(
             "channel": channel,
             "kind": kind,
             "body": message_body,
-            "conversation_uuid": conversation_uuid,
+            "conversation_ref": conversation_ref,
             "reply_to": reply_to,
         })
         .to_string(),
     );
-    let response_conversation_uuid = conversation_uuid.clone();
+    let response_conversation_ref = conversation_ref.clone();
     let db_path = state.db_path.clone();
 
     let write_result =
@@ -237,7 +237,7 @@ async fn github_issue_webhook(
                         nonce: &nonce,
                         request_hash: &request_hash,
                     },
-                    conversation_uuid.as_deref(),
+                    conversation_ref.as_deref(),
                 )? {
                     db::NavigationAppendResult::Created(message) => {
                         WebhookWriteResult::Created(message.id)
@@ -269,7 +269,7 @@ async fn github_issue_webhook(
             "status": status,
             "id": id,
             "participant_id": intent.participant_id,
-            "conversation_uuid": response_conversation_uuid,
+            "conversation_ref": response_conversation_ref,
             "github_user_id": event.sender.id,
             "github_login": event.sender.login,
         }))
@@ -310,7 +310,7 @@ fn get_owned_active_participant(
     .optional()
 }
 
-fn normalize_conversation_uuid(value: Option<&str>) -> Result<Option<String>, ()> {
+fn normalize_conversation_ref(value: Option<&str>) -> Result<Option<String>, ()> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -416,7 +416,7 @@ struct GithubIssue {
 struct BlackboardIssueIntent {
     participant_id: String,
     #[serde(default)]
-    conversation_uuid: Option<String>,
+    conversation_ref: Option<String>,
     channel: String,
     #[serde(default)]
     kind: Option<String>,
@@ -467,7 +467,7 @@ mod tests {
         sender_id: u64,
         association: &str,
         participant_id: &str,
-        conversation_uuid: Option<&str>,
+        conversation_ref: Option<&str>,
         issue_number: i64,
     ) -> Vec<u8> {
         let mut intent = json!({
@@ -477,8 +477,8 @@ mod tests {
             "body": "hello from github",
             "reply_to": null
         });
-        if let Some(value) = conversation_uuid {
-            intent["conversation_uuid"] = json!(value);
+        if let Some(value) = conversation_ref {
+            intent["conversation_ref"] = json!(value);
         }
         serde_json::to_vec(&json!({
             "action": "opened",
@@ -543,7 +543,7 @@ mod tests {
         let (status, first) = send(router.clone(), body.clone(), sign(&body)).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(first["status"], "created");
-        assert!(first["conversation_uuid"].is_null());
+        assert!(first["conversation_ref"].is_null());
         let (status, second) = send(router, body.clone(), sign(&body)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(second["status"], "existing");
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].source, "alice");
         assert_eq!(messages[0].instance, "alice-main");
-        assert!(messages[0].conversation_uuid.is_none());
+        assert!(messages[0].conversation_ref.is_none());
     }
 
     #[tokio::test]
@@ -569,13 +569,13 @@ mod tests {
         );
         let (status, response) = send(router, body.clone(), sign(&body)).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(response["conversation_uuid"], "claude-chat-abc123");
+        assert_eq!(response["conversation_ref"], "claude-chat-abc123");
 
         let conn = db::connect(&path).unwrap();
         let messages = db::list_messages_after(&conn, 0, Some("blackboard-lounge"), 10).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(
-            messages[0].conversation_uuid.as_deref(),
+            messages[0].conversation_ref.as_deref(),
             Some("claude-chat-abc123")
         );
     }
