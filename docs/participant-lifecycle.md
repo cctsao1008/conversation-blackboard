@@ -53,6 +53,15 @@ unknown                -> investigate before changing
 
 Direct SQLite deletion is not part of the normal lifecycle.
 
+An explicit operator-approved registry deletion is permitted as a deliberate cleanup exception when all of the following are true:
+
+- the retained participant set is known and explicitly approved;
+- the rows being removed are understood and no longer needed as registry records;
+- persisted messages/provenance are intentionally left unchanged;
+- a verified rollback backup of the database exists before mutation.
+
+This exception is an administrative cleanup operation, not a participant lifecycle transition. Prefer `deactivate` for ordinary retirement and use deletion only when the operator intentionally wants the registry itself reduced.
+
 ## Security boundary
 
 An inactive participant must not:
