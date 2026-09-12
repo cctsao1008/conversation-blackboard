@@ -2,9 +2,9 @@
 """End-to-end UTCP and MCP convergence test for Conversation Blackboard.
 
 The test starts one local Blackboard instance, provisions an independent REST
-bearer identity plus an Ed25519 participant identity, discovers the provider
-manual through /utcp, and proves that UTCP/native-HTTP and signed MCP access
-paths observe the same canonical message log.
+bearer identity plus an HMAC-authenticated participant identity, discovers the
+provider manual through /utcp, and proves that UTCP/native-HTTP and authenticated
+MCP access paths observe the same canonical message log.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import socket
 import subprocess
@@ -20,34 +22,13 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from utcp.data.utcp_client_config import UtcpClientConfig
 from utcp.utcp_client import UtcpClient
 from utcp_http.http_call_template import HttpCallTemplate
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
-SIGNATURE_SCHEME = "ed25519-v1"
-PRIVATE_KEY_PREFIX = "ed25519-sk:"
-RING_PKCS8_V2_PREFIX = bytes(
-    [
-        0x30,
-        0x51,
-        0x02,
-        0x01,
-        0x01,
-        0x30,
-        0x05,
-        0x06,
-        0x03,
-        0x2B,
-        0x65,
-        0x70,
-        0x04,
-        0x22,
-        0x04,
-        0x20,
-    ]
-)
+AUTH_SCHEME = "hmac-sha256-v1"
+SECRET_PREFIX = "hmac-sha256-secret:"
 
 
 def parse_field(output: str, field: str) -> str:
@@ -115,17 +96,29 @@ def base64url_encode_unpadded(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
-def ring_private_seed(private_key: str) -> bytes:
-    if not private_key.startswith(PRIVATE_KEY_PREFIX):
-        raise RuntimeError("unexpected Ed25519 private-key prefix")
-    der = base64url_decode_unpadded(private_key.removeprefix(PRIVATE_KEY_PREFIX))
-    if len(der) != 83 or der[:16] != RING_PKCS8_V2_PREFIX:
-        raise RuntimeError("unexpected ring Ed25519 PKCS#8 shape")
-    return der[16:48]
+def hmac_key(secret: str) -> bytes:
+    if not secret.startswith(SECRET_PREFIX):
+        raise RuntimeError("unexpected HMAC participant-secret prefix")
+    decoded = base64url_decode_unpadded(secret.removeprefix(SECRET_PREFIX))
+    if len(decoded) != 32:
+        raise RuntimeError("participant HMAC secret must decode to 32 bytes")
+    return decoded
 
 
-def sign_write(
-    private_key: str,
+def canonical_proof(secret: str, payload: dict) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64url_encode_unpadded(
+        hmac.new(hmac_key(secret), canonical, hashlib.sha256).digest()
+    )
+
+
+def prove_write(
+    secret: str,
     participant_id: str,
     channel: str,
     kind: str,
@@ -133,54 +126,38 @@ def sign_write(
     reply_to: int | None,
     nonce: str,
 ) -> str:
-    key = Ed25519PrivateKey.from_private_bytes(ring_private_seed(private_key))
-    payload = {
-        "body": body,
-        "channel": channel,
-        "kind": kind,
-        "nonce": nonce,
-        "participant_id": participant_id,
-        "reply_to": reply_to,
-        "signature_version": SIGNATURE_SCHEME,
-    }
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    signature = key.sign(canonical)
-    if len(signature) != 64:
-        raise RuntimeError("unexpected Ed25519 signature length")
-    return base64url_encode_unpadded(signature)
+    return canonical_proof(
+        secret,
+        {
+            "auth_version": AUTH_SCHEME,
+            "body": body,
+            "channel": channel,
+            "kind": kind,
+            "nonce": nonce,
+            "participant_id": participant_id,
+            "reply_to": reply_to,
+        },
+    )
 
 
-def sign_read(
-    private_key: str,
+def prove_read(
+    secret: str,
     participant_id: str,
     channel: str,
     after: int,
     limit: int,
 ) -> str:
-    key = Ed25519PrivateKey.from_private_bytes(ring_private_seed(private_key))
-    payload = {
-        "after": after,
-        "channel": channel,
-        "limit": limit,
-        "participant_id": participant_id,
-        "purpose": "blackboard-read-v1",
-        "signature_version": SIGNATURE_SCHEME,
-    }
-    canonical = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    signature = key.sign(canonical)
-    if len(signature) != 64:
-        raise RuntimeError("unexpected Ed25519 signature length")
-    return base64url_encode_unpadded(signature)
+    return canonical_proof(
+        secret,
+        {
+            "after": after,
+            "auth_version": AUTH_SCHEME,
+            "channel": channel,
+            "limit": limit,
+            "participant_id": participant_id,
+            "purpose": "blackboard-read-v1",
+        },
+    )
 
 
 async def exercise_interfaces(
@@ -188,7 +165,7 @@ async def exercise_interfaces(
     bearer: str,
     rest_instance: str,
     participant_id: str,
-    private_key: str,
+    participant_secret: str,
 ) -> None:
     manual = HttpCallTemplate(
         name="blackboard",
@@ -212,7 +189,6 @@ async def exercise_interfaces(
     )
     assert initial == {"messages": []}, initial
 
-    # UTCP -> native HTTP write using the independent REST bearer identity.
     utcp_posted = await client.call_tool(
         "blackboard.post_message",
         {
@@ -230,17 +206,14 @@ async def exercise_interfaces(
     assert utcp_message["kind"] == "test", utcp_message
     assert utcp_message["body"] == "hello from UTCP", utcp_message
 
-    # The independent MCP adapter must observe the exact same persisted message.
-    read_signature = sign_read(
-        private_key, participant_id, "utcp-ci", 0, 20
-    )
+    read_proof = prove_read(participant_secret, participant_id, "utcp-ci", 0, 20)
     mcp_observed = mcp_call(
         base_url,
         1,
         "blackboard_read",
         {
             "participant_id": participant_id,
-            "auth": {"scheme": SIGNATURE_SCHEME, "signature": read_signature},
+            "auth": {"scheme": AUTH_SCHEME, "proof": read_proof},
             "channel": "utcp-ci",
             "after": 0,
             "limit": 20,
@@ -251,14 +224,12 @@ async def exercise_interfaces(
     assert mcp_observed["messages"][0]["source"] == "utcp-ci", mcp_observed
     assert mcp_observed["messages"][0]["instance"] == rest_instance, mcp_observed
 
-    # MCP -> Blackboard using an Ed25519 participant signature. The private key
-    # remains local to this test client and is not part of the MCP arguments.
     channel = "utcp-ci"
     kind = "test"
     body = "hello from MCP"
     nonce = "utcp-mcp-convergence-001"
-    signature = sign_write(
-        private_key,
+    proof = prove_write(
+        participant_secret,
         participant_id,
         channel,
         kind,
@@ -272,7 +243,7 @@ async def exercise_interfaces(
         "blackboard_write",
         {
             "participant_id": participant_id,
-            "auth": {"scheme": SIGNATURE_SCHEME, "signature": signature},
+            "auth": {"scheme": AUTH_SCHEME, "proof": proof},
             "channel": channel,
             "kind": kind,
             "body": body,
@@ -284,7 +255,6 @@ async def exercise_interfaces(
     assert mcp_written["participant_id"] == participant_id, mcp_written
     assert mcp_written["instance"] == participant_id, mcp_written
 
-    # UTCP/native HTTP must now observe both messages in canonical ID order.
     utcp_observed = await client.call_tool(
         "blackboard.read_messages",
         {"after": 0, "channel": "utcp-ci", "limit": 20},
@@ -356,29 +326,21 @@ def main() -> int:
         ).stdout
         participant_id = parse_field(participant_provision, "participant_id")
 
-        signing_material = subprocess.run(
-            [str(binary), "participant", "generate-signing-key"],
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout
-        public_key = parse_field(signing_material, "public_key")
-        private_key = parse_field(signing_material, "private_key")
-        subprocess.run(
+        auth_material = subprocess.run(
             [
                 str(binary),
                 "participant",
-                "set-signing-key",
+                "auth-generate",
                 "--db",
                 str(db_path),
                 "--participant-id",
                 participant_id,
-                "--public-key",
-                public_key,
             ],
             check=True,
             text=True,
-        )
+            capture_output=True,
+        ).stdout
+        participant_secret = parse_field(auth_material, "secret")
 
         port = free_port()
         base_url = f"http://127.0.0.1:{port}"
@@ -405,10 +367,10 @@ def main() -> int:
                     bearer,
                     rest_instance,
                     participant_id,
-                    private_key,
+                    participant_secret,
                 )
             )
-            print("UTCP discovery + signed MCP convergence: PASS")
+            print("UTCP discovery + HMAC MCP convergence: PASS")
         finally:
             server.terminate()
             try:
