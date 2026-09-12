@@ -312,7 +312,10 @@ fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspe
 fn print_participant(record: &ParticipantInspection) {
     println!("PARTICIPANT");
     println!("participant_id   : {}", record.participant_id);
-    println!("label            : {}", record.label.as_deref().unwrap_or("-"));
+    println!(
+        "label            : {}",
+        record.label.as_deref().unwrap_or("-")
+    );
     println!("source           : {}", record.source);
     println!("role             : {}", record.role);
     println!();
@@ -325,7 +328,10 @@ fn print_participant(record: &ParticipantInspection) {
         "signature_scheme : {}",
         record.signature_scheme.as_deref().unwrap_or("-")
     );
-    println!("public_key       : {}", record.public_key.as_deref().unwrap_or("-"));
+    println!(
+        "public_key       : {}",
+        record.public_key.as_deref().unwrap_or("-")
+    );
 }
 
 fn require_database(path: &std::path::Path) -> DynResult {
@@ -369,7 +375,10 @@ mod tests {
         let active = inspect_participant(&conn, "keda-main").unwrap().unwrap();
         assert_eq!(active.totp_status, "active");
         assert_eq!(active.signing_status, "active");
-        assert_eq!(active.signature_scheme.as_deref(), Some(signed_auth::SIGNATURE_SCHEME));
+        assert_eq!(
+            active.signature_scheme.as_deref(),
+            Some(signed_auth::SIGNATURE_SCHEME)
+        );
         assert_eq!(active.public_key.as_deref(), Some(public_key.as_str()));
 
         identity::revoke_web_participant_totp(&conn, "keda-main").unwrap();
@@ -386,15 +395,27 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        identity::provision_web_participant_identity(&conn, "kegui-main", "human", Some("Kegui Tsao"))
-            .unwrap();
-        identity::provision_web_participant_identity(&conn, "keda-main", "human", Some("Keda Tsao"))
-            .unwrap();
+        identity::provision_web_participant_identity(
+            &conn,
+            "kegui-main",
+            "human",
+            Some("Kegui Tsao"),
+        )
+        .unwrap();
+        identity::provision_web_participant_identity(
+            &conn,
+            "keda-main",
+            "human",
+            Some("Keda Tsao"),
+        )
+        .unwrap();
 
         let records = list_participants(&conn).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].participant_id, "keda-main");
         assert_eq!(records[1].participant_id, "kegui-main");
-        assert!(inspect_participant(&conn, "missing-main").unwrap().is_none());
+        assert!(inspect_participant(&conn, "missing-main")
+            .unwrap()
+            .is_none());
     }
 }
