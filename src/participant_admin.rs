@@ -3,7 +3,7 @@ use std::{error::Error, path::PathBuf};
 use clap::Subcommand;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::{db, identity, participant_auth, web_auth};
+use crate::{db, github_webhook, identity, participant_auth, web_auth};
 
 type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -17,6 +17,9 @@ struct ParticipantInspection {
     totp_status: &'static str,
     auth_scheme: Option<String>,
     auth_status: &'static str,
+    owner_provider: Option<String>,
+    owner_subject: Option<String>,
+    owner_login: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -67,6 +70,26 @@ pub enum ParticipantCommand {
         #[arg(long, value_parser = ["user", "admin"])]
         role: String,
     },
+    /// Bind a participant to an external owner identity for delegated transport attribution.
+    SetOwner {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+        #[arg(long, value_parser = ["github"])]
+        provider: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        login: Option<String>,
+    },
+    /// Remove external owner metadata without deleting the participant.
+    ClearOwner {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+    },
     /// Generate and register a TOTP secret for human browser login.
     TotpEnroll {
         #[arg(long)]
@@ -116,6 +139,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
         } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
+            github_webhook::ensure_owner_columns(&conn)?;
             let record = identity::provision_web_participant_identity(
                 &conn,
                 &participant_id,
@@ -136,6 +160,7 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
         } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
+            github_webhook::ensure_owner_columns(&conn)?;
             let record = inspect_participant(&conn, &participant_id)?
                 .ok_or_else(|| format!("unknown participant: {participant_id}"))?;
             print_participant(&record);
@@ -144,18 +169,31 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
         ParticipantCommand::List { db: path } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
+            github_webhook::ensure_owner_columns(&conn)?;
             let records = list_participants(&conn)?;
             println!("PARTICIPANTS");
-            println!("participant_id\tsource\trole\tstatus\ttotp\tauth\tlabel");
+            println!("participant_id\tsource\trole\tstatus\ttotp\tauth\towner\tlabel");
             for record in records {
+                let owner = match (
+                    record.owner_provider.as_deref(),
+                    record.owner_subject.as_deref(),
+                    record.owner_login.as_deref(),
+                ) {
+                    (Some(provider), Some(subject), Some(login)) => {
+                        format!("{provider}:{subject}({login})")
+                    }
+                    (Some(provider), Some(subject), None) => format!("{provider}:{subject}"),
+                    _ => "-".to_owned(),
+                };
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     record.participant_id,
                     record.source,
                     record.role,
                     record.lifecycle_status,
                     record.totp_status,
                     record.auth_status,
+                    owner,
                     record.label.as_deref().unwrap_or("-")
                 );
             }
@@ -202,6 +240,44 @@ pub fn dispatch(command: ParticipantCommand) -> DynResult {
             println!("PARTICIPANT ROLE READY");
             println!("participant_id : {participant_id}");
             println!("role           : {role}");
+            Ok(())
+        }
+        ParticipantCommand::SetOwner {
+            db: path,
+            participant_id,
+            provider,
+            subject,
+            login,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            if !github_webhook::set_participant_owner(
+                &conn,
+                &participant_id,
+                &provider,
+                &subject,
+                login.as_deref(),
+            )? {
+                return Err(format!("unknown participant: {participant_id}").into());
+            }
+            println!("PARTICIPANT OWNER READY");
+            println!("participant_id : {participant_id}");
+            println!("provider       : {provider}");
+            println!("subject        : {subject}");
+            println!("login          : {}", login.as_deref().unwrap_or("-"));
+            Ok(())
+        }
+        ParticipantCommand::ClearOwner {
+            db: path,
+            participant_id,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            if !github_webhook::clear_participant_owner(&conn, &participant_id)? {
+                return Err(format!("unknown participant: {participant_id}").into());
+            }
+            println!("PARTICIPANT OWNER CLEARED");
+            println!("participant_id : {participant_id}");
             Ok(())
         }
         ParticipantCommand::TotpEnroll {
@@ -296,8 +372,9 @@ fn inspect_participant(
     conn: &Connection,
     participant_id: &str,
 ) -> rusqlite::Result<Option<ParticipantInspection>> {
+    github_webhook::ensure_owner_columns(conn)?;
     conn.query_row(
-        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
+        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret,\n                owner_provider, owner_subject, owner_login\n         FROM web_participants\n         WHERE participant_id = ?1\n         LIMIT 1",
         [participant_id],
         participant_row,
     )
@@ -305,8 +382,9 @@ fn inspect_participant(
 }
 
 fn list_participants(conn: &Connection) -> rusqlite::Result<Vec<ParticipantInspection>> {
+    github_webhook::ensure_owner_columns(conn)?;
     let mut stmt = conn.prepare(
-        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret\n         FROM web_participants\n         ORDER BY participant_id ASC",
+        "SELECT participant_id, source, label, role, status, totp_secret, auth_scheme, auth_secret,\n                owner_provider, owner_subject, owner_login\n         FROM web_participants\n         ORDER BY participant_id ASC",
     )?;
     let rows = stmt.query_map([], participant_row)?;
     rows.collect()
@@ -337,6 +415,9 @@ fn participant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ParticipantInspe
             "not-configured"
         },
         auth_scheme,
+        owner_provider: row.get(8)?,
+        owner_subject: row.get(9)?,
+        owner_login: row.get(10)?,
     })
 }
 
@@ -350,6 +431,20 @@ fn print_participant(record: &ParticipantInspection) {
     println!("source         : {}", record.source);
     println!("role           : {}", record.role);
     println!("status         : {}", record.lifecycle_status);
+    println!();
+    println!("owner");
+    println!(
+        "provider       : {}",
+        record.owner_provider.as_deref().unwrap_or("-")
+    );
+    println!(
+        "subject        : {}",
+        record.owner_subject.as_deref().unwrap_or("-")
+    );
+    println!(
+        "login          : {}",
+        record.owner_login.as_deref().unwrap_or("-")
+    );
     println!();
     println!("totp");
     println!("status         : {}", record.totp_status);
@@ -381,6 +476,7 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
+        github_webhook::ensure_owner_columns(&conn).unwrap();
         identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
             .unwrap()
             .unwrap();
@@ -403,11 +499,36 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
+        github_webhook::ensure_owner_columns(&conn).unwrap();
         identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
             .unwrap()
             .unwrap();
         assert!(identity::set_web_participant_status(&conn, "maker-main", "inactive").unwrap());
         let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
         assert_eq!(record.lifecycle_status, "inactive");
+    }
+
+    #[test]
+    fn github_owner_metadata_is_visible_but_not_secret() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        github_webhook::ensure_owner_columns(&conn).unwrap();
+        identity::provision_web_participant_identity(&conn, "maker-main", "maker", None)
+            .unwrap()
+            .unwrap();
+        github_webhook::set_participant_owner(
+            &conn,
+            "maker-main",
+            "github",
+            "543608",
+            Some("cctsao1008"),
+        )
+        .unwrap();
+        let record = inspect_participant(&conn, "maker-main").unwrap().unwrap();
+        assert_eq!(record.owner_provider.as_deref(), Some("github"));
+        assert_eq!(record.owner_subject.as_deref(), Some("543608"));
+        assert_eq!(record.owner_login.as_deref(), Some("cctsao1008"));
     }
 }
