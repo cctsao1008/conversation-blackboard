@@ -24,17 +24,6 @@ pub fn validate_secret(secret: &str) -> bool {
     decode_secret(secret).is_some()
 }
 
-pub fn canonical_write_bytes(
-    participant_id: &str,
-    channel: &str,
-    kind: &str,
-    body: &str,
-    reply_to: Option<i64>,
-    nonce: &str,
-) -> Vec<u8> {
-    canonical_write_bytes_with_intent(participant_id, channel, kind, body, reply_to, nonce, None)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn canonical_write_bytes_with_intent(
     participant_id: &str,
