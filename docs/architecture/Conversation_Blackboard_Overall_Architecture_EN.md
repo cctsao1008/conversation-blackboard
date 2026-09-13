@@ -4,7 +4,7 @@
 
 Conversation Blackboard has evolved from a persistent message board into a protocol-independent semantic execution system.
 
-Its core architecture separates transport, authentication, attribution, authorization, semantic intent, execution, provenance, and external contract projection into distinct layers.
+Its core architecture separates transport, authentication, attribution, authorization, semantic intent, execution, provenance, historical audit, and external contract projection into distinct layers.
 
 The central design rule is:
 
@@ -37,6 +37,8 @@ Atomic Execution
 │ Delegated Grant Consumption  │
 └──────────────────────────────┘
    ↓
+Historical Audit Read Model
+   ↓
 REST / MCP / UTCP / CLI projections
 ```
 
@@ -48,7 +50,7 @@ Semantic Intent Kernel
 Atomic Execution Kernel
 ```
 
-Everything else is a transport, adapter, administrative surface, or projection around those kernels.
+Historical audit is a read projection over committed evidence. It does not become a fourth source of truth.
 
 ## 3. External Actors and Adapter Layer
 
@@ -95,6 +97,7 @@ CLI
   participant administration
   grant administration
   authorization diagnosis
+  execution audit
   database / operational tooling
 ```
 
@@ -538,7 +541,49 @@ Its purpose is:
 
 A grant may later be deactivated or participant policy may change, but the historical execution still records the source, reason, and grant reference that applied when it committed.
 
-## 17. Current Policy vs Historical Truth
+## 17. Immutable Execution Audit
+
+Historical execution evidence is exposed through a canonical read model:
+
+```text
+ExecutionAuditBundle
+├── receipt
+├── authorization
+└── ingress[]
+```
+
+The operator CLI is:
+
+```text
+conversation-blackboard execution audit \
+  --db board.db \
+  --participant-id maker-main \
+  --intent-id intent-83
+```
+
+The audit path reads only persisted evidence:
+
+```text
+execution_receipts
+execution_authorization_provenance
+ingress_provenance
+```
+
+It does not call `evaluate_authorization()` and does not consume delegated authority.
+
+This creates a strict distinction:
+
+```text
+grant explain
+    -> why would this principal be allowed or denied now?
+
+execution audit
+    -> why was this committed execution allowed then?
+```
+
+One semantic execution may expose multiple ingress deliveries while still retaining exactly one semantic receipt.
+
+## 18. Current Policy vs Historical Truth
 
 Two different questions are intentionally supported.
 
@@ -565,11 +610,12 @@ Answered by:
 
 ```text
 execution_authorization_provenance
+execution audit
 ```
 
 Current policy changes must not rewrite historical authorization truth.
 
-## 18. Provenance Domains
+## 19. Provenance Domains
 
 The system distinguishes two provenance domains.
 
@@ -589,9 +635,9 @@ Answers:
 
 Stored in `execution_authorization_provenance`.
 
-These are deliberately separate.
+These are deliberately separate and are combined only in the historical audit read model.
 
-## 19. Contract Projection Architecture
+## 20. Contract Projection Architecture
 
 External contracts are projections of Rust application semantics.
 
@@ -621,9 +667,9 @@ The project follows:
 
 Parity checks cover important concepts such as `participant_id`, `conversation_ref`, `intent_id`, `delivery_id`, access context, execution receipt, and message shape.
 
-## 20. Security Boundary
+## 21. Security Boundary
 
-Raw credential material must not be persisted in semantic or authorization history.
+Raw credential material must not be persisted in semantic, authorization, or audit history.
 
 Do not persist:
 
@@ -663,73 +709,52 @@ non-secret decision metadata may be persisted
 credential itself is not persisted
 ```
 
-## 21. Architectural Evolution: #71 → #82
+## 22. Architectural Evolution: #71 → #83
 
 ### #71 — Intent / Authority Semantics
-
 Separated semantic identity from transport details and clarified authority semantics.
 
 ### #72 — Ingress Convergence
-
 Moved REST, MCP, and GitHub toward a common execution path.
 
 ### #73 — Atomic Execution Transaction
-
 Established effect + provenance + receipt as one transaction.
 
 ### #74 — Scoped Authorization
-
-Introduced:
-
-```text
-Principal × Capability × Participant × Resource × Context
-```
+Introduced `Principal × Capability × Participant × Resource × Context`.
 
 ### #75 — Adapter Capability Profiles
-
 Made adapter capabilities explicit while preserving shared invariants.
 
 ### #76 — Derived Contract Projections
-
 Established Rust semantics as authoritative and OpenAPI/MCP/UTCP as projections.
 
 ### #77 — External OIDC / OAuth
-
 Added resource-server validation and normalized external identities into `Principal`.
 
 ### #78 — Delegated Grants
-
 Added expiry, resource binding, intent binding, and one-shot consumption.
 
 ### #79 — Grant Administration
-
 Added operator lifecycle commands for create, list, and deactivate.
 
 ### #80 — Authorization Explainability
-
 Added operator-readable allow/deny explanations.
 
 ### #81 — Canonical Authorization Decision
-
-Unified execution and explanation behind one policy result:
-
-```text
-authorization::evaluate_authorization()
-                    ↓
-          AuthorizationDecision
-              ├── execution
-              └── explanation
-```
+Unified execution and explanation behind one policy result.
 
 ### #82 — Historical Authorization Truth
+Persisted the authorization decision that admitted a committed execution.
 
-Persists the authorization decision that admitted a committed execution so historical explanation remains stable even when current policy changes.
+### #83 — Immutable Execution Audit Bundle
+Added a read-only historical bundle combining semantic receipt, committed authorization provenance, and all transport deliveries without re-evaluating current policy.
 
-## 22. Final Architecture Principle
+## 23. Final Architecture Principle
 
 Conversation Blackboard can now be described as:
 
-> A protocol-independent semantic execution system in which external transports deliver authenticated principals and semantic intents, a shared authorization kernel produces canonical authority decisions, and an atomic execution kernel durably commits effects, provenance, receipts, delegated-authority consumption, and historical authorization truth.
+> A protocol-independent semantic execution system in which external transports deliver authenticated principals and semantic intents, a shared authorization kernel produces canonical authority decisions, and an atomic execution kernel durably commits effects, provenance, receipts, delegated-authority consumption, and historical authorization truth. Historical audit then reads those committed facts without reconstructing policy.
 
 The resulting properties include:
 
@@ -742,6 +767,7 @@ cross-transport replay safety
 atomic delegated authority consumption
 current-state explainability
 historical authorization auditability
+immutable execution inspection
 derived external contracts
 credential-minimizing persistence
 ```
@@ -758,4 +784,5 @@ At the execution level:
 > Authorize the principal.  
 > Attribute the participant.  
 > Execute the semantic intent exactly once.  
-> Persist what happened, how it arrived, and why it was allowed.
+> Persist what happened, how it arrived, and why it was allowed.  
+> Audit history from committed facts, not from current policy.
