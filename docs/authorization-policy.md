@@ -7,63 +7,89 @@ Conversation Blackboard separates authentication, authorization, semantic intent
 Authorization is evaluated as:
 
 ```text
-Principal × Capability × Participant × Resource × Context -> allow / deny
+Principal × Capability × Participant × Resource × Context -> AuthorizationDecision
 ```
 
 `participant_id` remains the durable Blackboard attribution identity. Authentication mechanisms resolve an actor into a `Principal`; the authorization layer then determines whether that principal may exercise a capability for the participant and resource.
 
-## Grant sources
+The canonical decision contains only non-secret policy metadata:
 
-Two grant sources currently coexist during migration:
+```text
+allowed
+source
+reason
+optional grant_id
+optional consume_grant_id
+```
 
-1. **Explicit scoped grants** in `principal_grants`.
-2. **Implicit compatibility grants** derived from existing participant authority:
+Credential material such as JWTs, bearer tokens, HMAC secrets, TOTP values, or session secrets is never part of the decision object.
+
+## Authority sources
+
+Three authority sources coexist:
+
+1. **Explicit durable scoped grants** in `principal_grants`.
+2. **Implicit compatibility authority** derived from existing participant relationships:
    - GitHub owner binding (`owner_provider = github`, matching `owner_subject`).
    - participant HMAC self-authentication.
    - human-web self-authentication, with `manage_channels` limited to admin participants.
+3. **Delegated grants** in `delegated_grants`, optionally constrained by resource, semantic `intent_id`, expiry, and one-shot consumption.
 
-Explicit grants are evaluated per capability. If one or more active explicit grants exist for a principal + participant + capability, only matching resource grants authorize that capability; the broader implicit fallback does not bypass the restriction.
-
-Example:
-
-```text
-principal   = github:123456
-participant = alice-main
-capability  = post_message
-resource    = blackboard-lounge
-
-blackboard-lounge -> allow
-control-systems   -> deny
-```
+Explicit durable grants are evaluated per capability. If one or more active explicit grants exist for a principal + participant + capability, only matching resource grants authorize through the durable-grant path; broader implicit fallback does not bypass the restriction. Intent-aware delegated authority may still authorize a separately scoped semantic execution when its own constraints match.
 
 ## Lifecycle precedence
 
-Participant lifecycle remains authoritative. An inactive participant denies all grants, including otherwise matching explicit grants and legacy implicit authority.
+Participant lifecycle remains authoritative. A missing participant is denied. An inactive participant denies all durable, implicit, and delegated authority.
 
-## Execution boundary
+## Canonical decision kernel
 
-Semantic message execution is authorized before persistence. REST HMAC, MCP HMAC, and GitHub webhook ingress converge on the same execution authorization check before the atomic semantic effect / provenance / receipt transaction proceeds.
-
-The execution boundary therefore follows:
+`authorization::evaluate_authorization` is the policy kernel for both execution and operator explanation. It owns participant lifecycle, durable grant matching, implicit compatibility authority, delegated constraints, expiry, intent binding, one-shot replay classification, and consumption intent.
 
 ```text
-transport authentication
+authenticated Principal
         ↓
-Principal
+authorization::evaluate_authorization
         ↓
-authorization::authorize
-        ↓
-execute semantic intent
-        ↓
-atomic effect + provenance + receipt
+AuthorizationDecision
+        ├─ execution.rs -> enforce allow/deny and consume only on commit
+        └─ grant explain -> render the same decision read-only
 ```
 
-GitHub webhook code no longer performs a separate owner-specific authorization query. It resolves the participant identity, supplies the authenticated GitHub principal, and delegates the allow/deny decision to the common policy evaluator.
+`authorize` remains a thin compatibility projection for non-intent boolean checks. Intent-aware execution consumes the canonical decision directly.
+
+## One-shot delegated authority
+
+A fresh matching one-shot delegated grant returns `consume_grant_id`. Only the execution layer may consume it, and consumption remains in the same SQLite transaction as semantic effect, ingress provenance, and execution receipt.
+
+A committed replay of the same semantic intent is classified separately and does not request a second consumption. A consumed grant without a matching committed execution receipt is denied.
+
+## Explainability
+
+`conversation-blackboard grant explain` renders the canonical decision without mutating authority. Its decision source/reason therefore cannot drift into a second policy implementation.
+
+Representative reason classes include:
+
+- `participant_missing`
+- `participant_inactive`
+- `explicit_durable_grant_match`
+- `explicit_resource_scope_mismatch`
+- `implicit_github_owner`
+- `implicit_participant_hmac`
+- `implicit_human_web`
+- `implicit_human_web_admin`
+- `delegated_grant_match`
+- `delegated_resource_mismatch`
+- `delegated_intent_mismatch`
+- `delegated_grant_expired`
+- `delegated_consumed_different_intent`
+- `delegated_committed_replay`
+- `delegated_consumed_without_committed_receipt`
+- `no_matching_authority`
 
 ## Access context
 
-`/api/access-context` reports effective grants derived from the same policy model. It exposes authorization state, not credentials.
+`/api/access-context` reports effective grants derived from the same authorization model. It exposes authorization state, not credentials.
 
-## Current non-goals
+## Verification boundary
 
-This policy does not introduce OAuth/OIDC, delegated cryptographic tokens, or a replacement for `participant_id`. Those remain separate future work.
+Authorization changes are accepted only after formatting, strict Clippy, Rust tests, release build, and Windows service/CLI/smoke/package verification pass in core CI. The #81 migration additionally verifies that execution and `grant explain` consume one canonical policy decision while one-shot consumption remains execution-only and atomic.
