@@ -1,6 +1,6 @@
 name: Issue 72 semantic intent convergence
 
-# Retry after GitHub reported a startup_failure before any job was created.
+# Retry after correcting the signed-write proof target.
 on:
   push:
     paths:
@@ -16,7 +16,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Apply semantic intent patch
-        run: python tools/issue72_intent_patch.py
+        run: |
+          python tools/issue72_intent_patch.py
+          python tools/issue72_intent_fix.py
 
       - name: Format
         run: cargo fmt
@@ -31,6 +33,7 @@ jobs:
         shell: bash
         run: |
           rm tools/issue72_intent_patch.py
+          rm tools/issue72_intent_fix.py
           rm .github/workflows/issue72-intent.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
