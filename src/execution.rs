@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -167,33 +167,94 @@ pub fn execute_message_intent(
         return Err(rusqlite::Error::InvalidQuery);
     }
 
-    if !db::ensure_channel_for_write(conn, request.channel, Some(&identity.instance))? {
+    let tx = conn.unchecked_transaction()?;
+    let visibility = if request.channel == "blackboard-lounge" {
+        "public"
+    } else {
+        "private"
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO channels (name, visibility, status, created_by)
+         VALUES (?1, ?2, 'active', ?3)",
+        params![request.channel, visibility, identity.instance],
+    )?;
+    let channel_status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM channels WHERE name = ?1",
+            [request.channel],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if channel_status.as_deref() != Some("active") {
         return Ok(MessageExecutionResult::ChannelArchived);
     }
 
-    let append = db::append_navigation_message_with_conversation(
-        conn,
-        identity,
-        db::NavigationMessageInput {
-            channel: request.channel,
-            kind: request.kind,
-            body: request.body,
-            reply_to: request.reply_to,
-            nonce: &request.intent.intent_id,
-            request_hash: &request.intent.request_hash,
-        },
-        request.intent.conversation_ref.as_deref(),
+    let reserved = tx.execute(
+        "INSERT OR IGNORE INTO navigation_writes
+             (instance, nonce, request_hash, message_id)
+         VALUES (?1, ?2, ?3, 0)",
+        params![
+            identity.instance,
+            request.intent.intent_id,
+            request.intent.request_hash
+        ],
     )?;
 
-    let (message, created) = match append {
-        db::NavigationAppendResult::Created(message) => (message, true),
-        db::NavigationAppendResult::Existing(message) => (message, false),
-        db::NavigationAppendResult::NonceConflict => {
-            return Ok(MessageExecutionResult::IntentConflict)
+    let (message, created) = if reserved == 0 {
+        let (stored_hash, message_id): (String, i64) = tx.query_row(
+            "SELECT request_hash, message_id
+             FROM navigation_writes
+             WHERE instance = ?1 AND nonce = ?2",
+            params![identity.instance, request.intent.intent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let message = message_by_id(&tx, message_id)?;
+        if stored_hash != request.intent.request_hash
+            && (message.channel != request.channel
+                || message.kind != request.kind
+                || message.body != request.body
+                || message.reply_to != request.reply_to
+                || message.conversation_ref.as_deref()
+                    != request.intent.conversation_ref.as_deref())
+        {
+            return Ok(MessageExecutionResult::IntentConflict);
         }
-        db::NavigationAppendResult::ReplyTargetNotFound => {
-            return Ok(MessageExecutionResult::ReplyTargetNotFound)
+        (message, false)
+    } else {
+        if let Some(target) = request.reply_to {
+            let exists = tx
+                .query_row("SELECT 1 FROM messages WHERE id = ?1", [target], |_| {
+                    Ok(1_i64)
+                })
+                .optional()?
+                .is_some();
+            if !exists {
+                return Ok(MessageExecutionResult::ReplyTargetNotFound);
+            }
         }
+
+        tx.execute(
+            "INSERT INTO messages
+                (channel, source, instance, conversation_ref, kind, body, reply_to)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                request.channel,
+                identity.source,
+                identity.instance,
+                request.intent.conversation_ref,
+                request.kind,
+                request.body,
+                request.reply_to
+            ],
+        )?;
+        let message_id = tx.last_insert_rowid();
+        tx.execute(
+            "UPDATE navigation_writes
+             SET message_id = ?1
+             WHERE instance = ?2 AND nonce = ?3",
+            params![message_id, identity.instance, request.intent.intent_id],
+        )?;
+        (message_by_id(&tx, message_id)?, true)
     };
 
     let receipt = ExecutionReceipt {
@@ -204,7 +265,8 @@ pub fn execute_message_intent(
         message_id: message.id,
         status: "committed".to_owned(),
     };
-    record_execution(conn, request.ingress, &receipt)?;
+    record_execution_in_tx(&tx, request.ingress, &receipt)?;
+    tx.commit()?;
 
     Ok(if created {
         MessageExecutionResult::Created(message)
@@ -219,9 +281,16 @@ pub fn record_execution(
     receipt: &ExecutionReceipt,
 ) -> rusqlite::Result<()> {
     ensure_execution_tables(conn)?;
-
     let tx = conn.unchecked_transaction()?;
+    record_execution_in_tx(&tx, ingress, receipt)?;
+    tx.commit()
+}
 
+fn record_execution_in_tx(
+    tx: &Transaction<'_>,
+    ingress: &IngressProvenance,
+    receipt: &ExecutionReceipt,
+) -> rusqlite::Result<()> {
     let existing_delivery: Option<(String, String, String, String, String)> = tx
         .query_row(
             "SELECT intent_id, transport, external_ref, principal_provider, principal_subject
@@ -277,13 +346,11 @@ pub fn record_execution(
         .optional()?;
 
     if let Some(existing) = existing_receipt {
-        let expected = (
-            receipt.intent_hash.clone(),
-            receipt.capability.clone(),
-            receipt.message_id,
-            receipt.status.clone(),
-        );
-        if existing != expected {
+        let (_, existing_capability, existing_message_id, existing_status) = existing;
+        if existing_capability != receipt.capability
+            || existing_message_id != receipt.message_id
+            || existing_status != receipt.status
+        {
             return Err(rusqlite::Error::InvalidQuery);
         }
     } else {
@@ -302,13 +369,75 @@ pub fn record_execution(
         )?;
     }
 
-    tx.commit()
+    Ok(())
+}
+
+fn message_by_id(conn: &Connection, id: i64) -> rusqlite::Result<Message> {
+    conn.query_row(
+        "SELECT id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to
+         FROM messages WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                channel: row.get(2)?,
+                source: row.get(3)?,
+                instance: row.get(4)?,
+                conversation_ref: row.get(5)?,
+                kind: row.get(6)?,
+                body: row.get(7)?,
+                reply_to: row.get(8)?,
+            })
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn test_identity() -> Identity {
+        Identity {
+            source: "maker".into(),
+            instance: "maker-main".into(),
+            label: None,
+        }
+    }
+
+    fn test_request_parts(intent_id: &str) -> (AuthorityContext, IntentEnvelope, IngressProvenance) {
+        let principal = Principal {
+            provider: "hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let authority = AuthorityContext {
+            principal: principal.clone(),
+            mechanism: "hmac-sha256-v1".into(),
+        };
+        let intent = IntentEnvelope {
+            intent_id: intent_id.into(),
+            participant_id: "maker-main".into(),
+            conversation_ref: None,
+            capability: POST_MESSAGE_CAPABILITY.into(),
+            resource: "blackboard-lounge".into(),
+            request_hash: message_request_hash(
+                "blackboard-lounge",
+                "message",
+                "hello",
+                None,
+                None,
+            ),
+        };
+        let ingress = IngressProvenance {
+            delivery_id: format!("rest:maker-main:{intent_id}"),
+            intent_id: intent_id.into(),
+            transport: "rest".into(),
+            external_ref: intent_id.into(),
+            principal,
+        };
+        (authority, intent, ingress)
+    }
 
     #[test]
     fn github_default_intent_preserves_legacy_nonce() {
@@ -374,37 +503,9 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        let identity = Identity {
-            source: "maker".into(),
-            instance: "maker-main".into(),
-            label: None,
-        };
-        let intent_id = "semantic-intent-1".to_owned();
-        let request_hash =
-            message_request_hash("blackboard-lounge", "message", "hello", None, None);
-        let intent = IntentEnvelope {
-            intent_id: intent_id.clone(),
-            participant_id: identity.instance.clone(),
-            conversation_ref: None,
-            capability: POST_MESSAGE_CAPABILITY.into(),
-            resource: "blackboard-lounge".into(),
-            request_hash,
-        };
-        let principal = Principal {
-            provider: "hmac".into(),
-            subject: "maker-main".into(),
-        };
-        let authority = AuthorityContext {
-            principal: principal.clone(),
-            mechanism: "hmac-sha256-v1".into(),
-        };
-        let rest_ingress = IngressProvenance {
-            delivery_id: "rest:maker-main:nonce-1".into(),
-            intent_id: intent_id.clone(),
-            transport: "rest".into(),
-            external_ref: "nonce-1".into(),
-            principal: principal.clone(),
-        };
+        let identity = test_identity();
+        let (authority, intent, rest_ingress) = test_request_parts("semantic-intent-1");
+
         let first = execute_message_intent(
             &conn,
             &identity,
@@ -424,9 +525,10 @@ mod tests {
             other => panic!("unexpected result: {other:?}"),
         };
 
+        let principal = rest_ingress.principal.clone();
         let mcp_ingress = IngressProvenance {
             delivery_id: "mcp:maker-main:nonce-1".into(),
-            intent_id,
+            intent_id: intent.intent_id.clone(),
             transport: "mcp".into(),
             external_ref: "nonce-1".into(),
             principal,
@@ -459,5 +561,75 @@ mod tests {
             )
             .unwrap();
         assert_eq!(receipt_count, 1);
+        let ingress_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ingress_provenance
+                 WHERE intent_id = 'semantic-intent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ingress_count, 2);
+    }
+
+    #[test]
+    fn audit_failure_rolls_back_message_navigation_and_receipt() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        ensure_execution_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO ingress_provenance
+                (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)
+             VALUES ('rest:maker-main:atomic-intent', 'different-intent', 'rest', 'old', 'hmac', 'maker-main')",
+            [],
+        )
+        .unwrap();
+
+        let identity = test_identity();
+        let (authority, intent, ingress) = test_request_parts("atomic-intent");
+        let result = execute_message_intent(
+            &conn,
+            &identity,
+            MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
+                channel: "blackboard-lounge",
+                kind: "message",
+                body: "hello",
+                reply_to: None,
+            },
+        );
+        assert!(result.is_err());
+
+        let message_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE instance = 'maker-main' AND body = 'hello'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let navigation_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM navigation_writes
+                 WHERE instance = 'maker-main' AND nonce = 'atomic-intent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let receipt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM execution_receipts
+                 WHERE participant_id = 'maker-main' AND intent_id = 'atomic-intent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_count, 0);
+        assert_eq!(navigation_count, 0);
+        assert_eq!(receipt_count, 0);
     }
 }
