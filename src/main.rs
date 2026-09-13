@@ -12,6 +12,8 @@ mod contract_schema;
 mod db;
 mod execution;
 mod execution_audit;
+#[cfg(test)]
+mod execution_integrity_tests;
 mod github_webhook;
 mod grant_admin;
 mod history;
@@ -376,6 +378,37 @@ mod tests {
                 command: execution_audit::ExecutionCommand::Audit { .. }
             })
         ));
+    }
+
+    #[test]
+    fn execution_verify_audit_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "execution",
+            "verify-audit",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+            "--intent-id",
+            "intent-85",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Execution {
+                command:
+                    execution_audit::ExecutionCommand::VerifyAudit {
+                        participant_id,
+                        intent_id,
+                        ..
+                    },
+            }) => {
+                assert_eq!(participant_id, "maker-main");
+                assert_eq!(intent_id, "intent-85");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

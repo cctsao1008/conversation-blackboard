@@ -79,6 +79,15 @@ pub struct ExecutionAuditBundle {
     pub ingress: Vec<IngressAuditRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionAuditIntegrityReport {
+    pub participant_id: String,
+    pub intent_id: String,
+    pub valid: bool,
+    pub checks: Vec<String>,
+    pub violations: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct MessageExecutionRequest<'a> {
     pub authority: &'a AuthorityContext,
@@ -265,6 +274,131 @@ pub fn get_execution_audit_bundle(
         authorization,
         ingress,
     }))
+}
+
+pub fn verify_execution_audit_integrity(
+    conn: &Connection,
+    participant_id: &str,
+    intent_id: &str,
+) -> rusqlite::Result<ExecutionAuditIntegrityReport> {
+    ensure_execution_tables(conn)?;
+    let mut checks = Vec::new();
+    let mut violations = Vec::new();
+
+    let receipt = get_execution_receipt(conn, participant_id, intent_id)?;
+    let Some(receipt) = receipt else {
+        violations.push("receipt_missing".to_owned());
+        return Ok(ExecutionAuditIntegrityReport {
+            participant_id: participant_id.to_owned(),
+            intent_id: intent_id.to_owned(),
+            valid: false,
+            checks,
+            violations,
+        });
+    };
+    checks.push("receipt_present".to_owned());
+
+    if receipt.participant_id != participant_id || receipt.intent_id != intent_id {
+        violations.push("receipt_binding_mismatch".to_owned());
+    }
+    if receipt.status == "committed" {
+        checks.push("receipt_status_committed".to_owned());
+    } else {
+        violations.push("invalid_receipt_status".to_owned());
+    }
+
+    let message_exists = conn
+        .query_row(
+            "SELECT 1 FROM messages WHERE id = ?1",
+            [receipt.message_id],
+            |_| Ok(1_i64),
+        )
+        .optional()?
+        .is_some();
+    if message_exists {
+        checks.push("message_effect_present".to_owned());
+    } else {
+        violations.push("message_effect_missing".to_owned());
+    }
+
+    let authorization_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM execution_authorization_provenance
+         WHERE participant_id = ?1 AND intent_id = ?2",
+        params![participant_id, intent_id],
+        |row| row.get(0),
+    )?;
+    match authorization_count {
+        0 => violations.push("authorization_provenance_missing".to_owned()),
+        1 => {
+            checks.push("authorization_provenance_present".to_owned());
+            if let Some(auth) = get_authorization_provenance(conn, participant_id, intent_id)? {
+                if auth.participant_id != participant_id || auth.intent_id != intent_id {
+                    violations.push("authorization_binding_mismatch".to_owned());
+                }
+            }
+        }
+        _ => violations.push("authorization_provenance_duplicate".to_owned()),
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT delivery_id, intent_id, transport, external_ref,
+                principal_provider, principal_subject
+         FROM ingress_provenance
+         WHERE intent_id = ?1
+         ORDER BY created_at, delivery_id",
+    )?;
+    let ingress = stmt
+        .query_map([intent_id], |row| {
+            Ok(IngressAuditRecord {
+                delivery_id: row.get(0)?,
+                intent_id: row.get(1)?,
+                transport: row.get(2)?,
+                external_ref: row.get(3)?,
+                principal: Principal {
+                    provider: row.get(4)?,
+                    subject: row.get(5)?,
+                },
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut ingress_metadata_invalid = false;
+    let mut ingress_binding_mismatch = false;
+    for row in &ingress {
+        if row.intent_id != intent_id {
+            ingress_binding_mismatch = true;
+        }
+        if row.delivery_id.trim().is_empty()
+            || row.transport.trim().is_empty()
+            || row.external_ref.trim().is_empty()
+            || row.principal.provider.trim().is_empty()
+            || row.principal.subject.trim().is_empty()
+        {
+            ingress_metadata_invalid = true;
+        }
+    }
+    if ingress_binding_mismatch {
+        violations.push("ingress_binding_mismatch".to_owned());
+    } else {
+        checks.push("ingress_binding_valid".to_owned());
+    }
+    if ingress_metadata_invalid {
+        violations.push("ingress_metadata_invalid".to_owned());
+    } else {
+        checks.push("ingress_metadata_valid".to_owned());
+    }
+
+    let valid = violations.is_empty();
+    if valid {
+        checks.push("valid_committed_audit".to_owned());
+    }
+    Ok(ExecutionAuditIntegrityReport {
+        participant_id: participant_id.to_owned(),
+        intent_id: intent_id.to_owned(),
+        valid,
+        checks,
+        violations,
+    })
 }
 
 pub fn execute_message_intent(

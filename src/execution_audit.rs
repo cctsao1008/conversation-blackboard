@@ -20,6 +20,15 @@ pub enum ExecutionCommand {
         #[arg(long)]
         intent_id: String,
     },
+    /// Verify structural integrity of committed execution evidence without repairing it.
+    VerifyAudit {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: String,
+        #[arg(long)]
+        intent_id: String,
+    },
 }
 
 pub fn dispatch(command: ExecutionCommand) -> DynResult {
@@ -75,6 +84,35 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
                 );
             }
             Ok(())
+        }
+        ExecutionCommand::VerifyAudit {
+            db: path,
+            participant_id,
+            intent_id,
+        } => {
+            require_database(&path)?;
+            let participant_id = identity::validate_participant_id(&participant_id)
+                .ok_or("invalid participant_id")?;
+            let intent_id =
+                execution::normalize_intent_id(&intent_id).map_err(|_| "invalid intent_id")?;
+            let conn = db::connect(&path)?;
+            let report =
+                execution::verify_execution_audit_integrity(&conn, &participant_id, &intent_id)?;
+            println!("EXECUTION AUDIT INTEGRITY");
+            println!("participant_id : {}", report.participant_id);
+            println!("intent_id      : {}", report.intent_id);
+            println!("valid          : {}", report.valid);
+            for check in report.checks {
+                println!("check          : {check}");
+            }
+            for violation in report.violations {
+                println!("violation      : {violation}");
+            }
+            if report.valid {
+                Ok(())
+            } else {
+                Err("execution audit integrity verification failed".into())
+            }
         }
     }
 }
