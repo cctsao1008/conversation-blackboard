@@ -1,6 +1,6 @@
 name: Issue 72 ingress convergence
 
-# Retry after execution-boundary clippy cleanup.
+# Retry after access-context wiring and rustfmt feedback.
 on:
   push:
     paths:
