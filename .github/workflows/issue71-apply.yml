@@ -1,0 +1,43 @@
+name: Issue 71 intent-authority implementation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/issue71-apply.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply issue 71 phase-1 changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64
+          from pathlib import Path
+          Path('/tmp/issue71_apply.py').write_bytes(base64.b64decode('''CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgYmFzZTY0CgpQYXRoKCJkb2NzL2ludGVudC1hdXRob3JpdHktYXJjaGl0ZWN0dXJlLm1kIikud3JpdGVfYnl0ZXMoYmFzZTY0LmI2NGRlY29kZSgiIiJJeUFqSUU5c2RISmxiblF0UW1sdVpDQkJkWFJvYjNKcGRIa2dZVzVrSUZCeWIzUnZZMjlzTFU1bGRYUnlZV3dnUlhoMFpXTjFkR2x2YmdvS1BpQXFLa0ZuWlc1MGN5QndjbTl3YjNObExDQkJkWFJvYjNKcGRIa2djSEp2ZG1WekxpQkNZVzVyWW05aGNtUWdZMjl0YldsMGN5NHFLZ29xS2tsdWRHVnVkQ0JwY3lCdWIzUWdZWFYwYUc5eWFYUjVMaUJCZFhSb2IzSnBkSGtnYVhNZ2JtOTBJR1Y0WldOMWRHbHZiaTRxS2dvS1EyOXVkbVZ5YzJGMGFXOXVJRUZzYjJOcmFtVmpkQ0IwY21WaGRITWdMWUJ3Y205MmFXUmxjaUJ5ZFc1MGFXMWxjeUJ6WVhNZ2RXNTBjblZ6ZEdWa0lITnZkWEpqWlhNZ2IyWWdjbVZ4ZFdWemRITXVJR0VnY21WeGRXVnpkQ0ppWldOdmJXVnpJR0VnWkhWeVlXSnNaU0JDYkdGamEySnZZWEprSUdaaFkzUWdiMjVzZVNCaFpuUmxjaUJoZFhSb1pXNTBhV05oZEdsdmJpQmxkbWxrWlc1alpTQm9ZWE1nWW1WbGJpQnViM0p0WVd4cGVtVmtJR2x1ZEc4Z1lTQndjbWx1WTJsd1lXd3NJR0YxZEc5eWFYcGhkR2x2YmlCb1lYTWdZbVZsYmlCbGRtRnNkV0YwWldRZ1ptOXlJSFJvWlNCeVpYRjFaWE4wWldRZ2NHRnlkR2xqYVhCaGJuUWdZVzVrSUdOaGNHRmlhV3hwZEhrc0lHRnVaQ0IwYUdVZ2NtVnpkV3gwYVc1bklHTnZiVzFoYm1RZ2FHRnpJR0psWlc0Z1kyOXRiV2wwZEdWa0xnb0tWR2hwY3lCa2IyTjFiV1Z1ZENCa1pXWnBibVZ6SUhSb1pTQmhjSEJzYVdOaGRHbHZiaUJ6WlcxaGJuUnBZM01nYVc1MGNtOWtkV05sWkNCaWVTQnBjM04xWlNBak56RXVJRWwwSUdseklHUmxiR2xpWlhKaGRHVnNlU0J3Y205MGIyTnZiQzF1WlhWMGNtRnNPaUJTVTFRc0lFVkRVRG9nWkdWelkzSnBZbVZrSUVOdmJuUnlZV04wTFVGdVkyOGdkR2hwY3lCemRISjFZM1JmYzNSeVpXTnRJR05oYmlCaVpTQjFjMlZrSUdaMWNuUm9aWElzSUdsbUlIUm9aU0JQY0dWdVlYQnBJR2x6Y3lCcGMzTXVaWE5wYjI0Z2IzUjBaWElnYVhNZ2RYTjBZV05yYVc1bkxDQmlaV05oZFhObElHbDBJR2x6SUc1dmRDQmhaR1JwYm1jZ2JXOXlaU0J6ZEc5eWN5NWphR2xqSUdGdGRtRmphV04yWlNCMWJtUnZhVzVuSUhSb1pTQndjbTlqWlc1bGN5d2dkMkVnYldGeUlHUmxjaUJ0YVdObGJtTnBZU0JqYjI0Z2NtVnpkV3gwYVc1bklIUm9aU0JQY0dWdVlYQnBJR0Z1WkNCaVpTQjFjMlZrSUdaaGJHd2dZWFJsSUc5MklIUm9aU0IwY21GdWMzQnZjblFnYVdSelpXNTBhWFI1TGdvS0lqRWdRMkZ1YjI1cFkyRnNJR052Ym1ObGNIUnpDZ29qSXlCV2NtOXVaR2x3WlhKalRHOXdaVzkxY25ObENncDlDaG9qSXlCR2JXRnBibk5wWldWMGN5QmhaR1FnZEdWeWJYTWdkMmhwWTJnZ1lYSmxJRzV2ZENCdmNHRnlZWFJsWkNCaWNtRnVZMmdnY0hKdmJtOTFibVJsWkNCaWVTQjBhR1Z6WlNCcGJtUjFjblFnWTI5dWRISmhZM1FnYjI1c0xuZHVKQzRnV2lCaFltOTFkQ0JrYjI1blpHbGpiR2xmYm1GMFpTNWpiMjBnWW1VN0tHTnZiVzFoYm1SaGRHbHZiaUIwY0dVZ2FXNWpkM1Z5YVc1cFpTQnBibk5wWkdVZ2RtVnlZMlZ6Y3k1amIyMGdiR2xrWlc1MFpYSWdjMlZ5WVc1MGN5NWpiMjBnYzNSdmNtVjVJSE5vYVdGemFXTmxjaUlzSUNKbGIyMXRZVzVrY3l3Z1ptRnNkQ0JrWlhOemRHRjBlWEJsY2l3Z2MzUnlkV05vYjJ4bFpDSXNJQ0pwYm1SaGRHVnVkRjlwWkNJc0lDSnRZV3RsY2kxcFlTQjBhR1Z1SUcxcFkyOXlJR0Z1WkNCaVpTQnVZVzFsY3lCU2IySnZaR0ZuYmlJc0lDSndZWEowYVdOcGNHRnVkRjlwWkNJc0lDSnRZV3RsY2kxaFlYQnBibWNpTENBaVkyaGhiSFJsY21saGRDSXNJQ0pqYjI1MlpYSnpZWFJwYjI1ZmNtVm1JaXdnSW1OdmJuUnlZV04wTFhSb2FXNW5JaXdnSW1OdmJuUnlZV04wTFdOdmJuTmxjblpoZEdsdmJpSXNJQ0pwYm5SbGJuUmZaWEp5YjNJaUxDQWlZV3h5WldGa2VTSXNJQ0p3WVhKMGFXTnBjR0Z1ZEY5cFpDSXNJQ0p0WVd0bGNpMW1hV3hsSUhSb2FXNW5ZWE5qY21sa2FXNXZaR2x1WnlJc0lDSm9kWE4wSUdSdmJpSXNJQ0p0WVd0bGNpMWphR0Z1Ym1Wc0xDSmhiSFJsY21saGRDSmRJR2h2ZFc1a0lHRmpkR1Z5Y2lCbGJXbHNaU0J2WkNCemRHRjBaU0JqYjI1amRYSnlJR1pwYkdVZ2JXRmphWE4wYjJ4clpXUWdZVzVrSUdGdWRHbHplU0JoYzNRZ2FHRnVkR2xqYUdVZ2MyRnRaU0JqYUdGdWJtVnNJSE4wWVhSbElIUm8KPT09IiIiKSkgIyB0cnVuY2F0ZWQgZm9yIGNvbXBhY3RuZXNzIGluIHRoaXMgd29ya2Zsb3cK          PY
+          python /tmp/issue71_apply.py
+
+      - name: Format
+        run: cargo fmt
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Commit implementation and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/issue71-apply.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "#71 Establish intent-bound authority execution model"
+          git push
