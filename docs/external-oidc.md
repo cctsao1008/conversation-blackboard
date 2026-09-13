@@ -35,3 +35,9 @@ Principal × Capability × Participant × Resource -> allow / deny
 ```
 
 Existing GitHub, participant HMAC, Human Web/TOTP, and native bearer mechanisms remain separate adapters and are unchanged.
+
+## Verification boundary
+
+OIDC acceptance is covered by normal repository CI, not by provider-specific assumptions. Tests generate an ephemeral RSA keypair at runtime and verify that a correctly signed short-lived token normalizes to the expected issuer/subject principal, while wrong issuer, wrong audience, expired tokens, tampered signatures, malformed tokens, and non-HTTPS configuration are rejected. The same scoped-grant kernel is exercised to prove that external identity does not bypass participant/capability/resource authorization.
+
+Linux and Windows `core-ci` are the release acceptance boundary for this adapter.
