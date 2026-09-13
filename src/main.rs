@@ -4,6 +4,7 @@ mod admin;
 mod client;
 mod client_cli;
 mod db;
+mod execution;
 mod github_webhook;
 mod history;
 mod http;
