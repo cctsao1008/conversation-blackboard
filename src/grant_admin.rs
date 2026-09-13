@@ -6,7 +6,12 @@ use std::{
 use clap::Subcommand;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::{authorization, db, identity};
+use crate::{
+    authorization::{self, IntentAuthorization},
+    db,
+    execution::Principal,
+    identity,
+};
 
 type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -43,6 +48,15 @@ struct GrantCreateSpec<'a> {
     one_shot: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrantExplanation {
+    allowed: bool,
+    reason: String,
+    source: String,
+    grant_id: Option<i64>,
+    consume_on_commit: bool,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum GrantCommand {
     /// Create a delegated authorization grant. No credential material is stored.
@@ -74,6 +88,23 @@ pub enum GrantCommand {
         db: PathBuf,
         #[arg(long)]
         participant_id: Option<String>,
+    },
+    /// Explain a read-only authorization decision using the authoritative policy evaluator.
+    Explain {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        principal_provider: String,
+        #[arg(long)]
+        principal_subject: String,
+        #[arg(long)]
+        participant_id: String,
+        #[arg(long)]
+        capability: String,
+        #[arg(long)]
+        resource: Option<String>,
+        #[arg(long)]
+        intent_id: Option<String>,
     },
     /// Deactivate a delegated grant without deleting history.
     Deactivate {
@@ -165,6 +196,65 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                     grant.status,
                 );
             }
+            Ok(())
+        }
+        GrantCommand::Explain {
+            db: path,
+            principal_provider,
+            principal_subject,
+            participant_id,
+            capability,
+            resource,
+            intent_id,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect(&path)?;
+            let principal = Principal {
+                provider: normalize(
+                    &principal_provider,
+                    MAX_PROVIDER_BYTES,
+                    "principal_provider",
+                )?,
+                subject: normalize(
+                    &principal_subject,
+                    MAX_SUBJECT_BYTES,
+                    "principal_subject",
+                )?,
+            };
+            let participant_id = identity::validate_participant_id(&participant_id)
+                .ok_or("invalid participant_id")?;
+            let capability = normalize(&capability, MAX_CAPABILITY_BYTES, "capability")?;
+            let resource = normalize_optional(resource.as_deref(), MAX_RESOURCE_BYTES, "resource")?;
+            let intent_id = match intent_id.as_deref() {
+                Some(value) => Some(
+                    crate::execution::normalize_intent_id(value)
+                        .map_err(|_| "invalid intent_id")?,
+                ),
+                None => None,
+            };
+            let explanation = explain_grant(
+                &conn,
+                &principal,
+                &participant_id,
+                &capability,
+                resource.as_deref(),
+                intent_id.as_deref(),
+            )?;
+            println!("AUTHORIZATION EXPLANATION");
+            println!(
+                "decision          : {}",
+                if explanation.allowed { "allow" } else { "deny" }
+            );
+            println!("reason            : {}", explanation.reason);
+            println!("source            : {}", explanation.source);
+            println!(
+                "grant_id          : {}",
+                explanation
+                    .grant_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_owned())
+            );
+            println!("consume_on_commit : {}", explanation.consume_on_commit);
             Ok(())
         }
         GrantCommand::Deactivate { db: path, grant_id } => {
@@ -285,6 +375,292 @@ fn list_grants(
         stmt.query_map([], map_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
     }
+}
+
+fn explain_grant(
+    conn: &Connection,
+    principal: &Principal,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> rusqlite::Result<GrantExplanation> {
+    authorization::ensure_grant_schema(conn)?;
+
+    let participant = conn
+        .query_row(
+            "SELECT status, role, owner_provider, owner_subject
+             FROM web_participants
+             WHERE participant_id = ?1",
+            [participant_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((status, role, owner_provider, owner_subject)) = participant else {
+        return Ok(GrantExplanation {
+            allowed: false,
+            reason: "participant_missing".to_owned(),
+            source: "participant_lifecycle".to_owned(),
+            grant_id: None,
+            consume_on_commit: false,
+        });
+    };
+    if status != "active" {
+        return Ok(GrantExplanation {
+            allowed: false,
+            reason: "participant_inactive".to_owned(),
+            source: "participant_lifecycle".to_owned(),
+            grant_id: None,
+            consume_on_commit: false,
+        });
+    }
+
+    let (allowed, consume_grant_id) = if let Some(intent_id) = intent_id {
+        match authorization::authorize_for_intent(
+            conn,
+            principal,
+            participant_id,
+            capability,
+            resource,
+            intent_id,
+        )? {
+            IntentAuthorization::Denied => (false, None),
+            IntentAuthorization::Allowed { consume_grant_id } => (true, consume_grant_id),
+        }
+    } else {
+        (
+            authorization::authorize(conn, principal, participant_id, capability, resource)?,
+            None,
+        )
+    };
+
+    let explicit_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+         FROM principal_grants
+         WHERE principal_provider = ?1
+           AND principal_subject = ?2
+           AND participant_id = ?3
+           AND capability = ?4
+           AND status = 'active'",
+        params![
+            principal.provider,
+            principal.subject,
+            participant_id,
+            capability
+        ],
+        |row| row.get(0),
+    )?;
+    if explicit_count > 0 {
+        let explicit_match: Option<i64> = conn
+            .query_row(
+                "SELECT id
+                 FROM principal_grants
+                 WHERE principal_provider = ?1
+                   AND principal_subject = ?2
+                   AND participant_id = ?3
+                   AND capability = ?4
+                   AND status = 'active'
+                   AND (resource IS NULL OR resource = ?5)
+                 ORDER BY (resource IS NOT NULL) DESC, id ASC
+                 LIMIT 1",
+                params![
+                    principal.provider,
+                    principal.subject,
+                    participant_id,
+                    capability,
+                    resource
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(grant_id) = explicit_match {
+            return Ok(GrantExplanation {
+                allowed,
+                reason: "explicit_durable_grant_match".to_owned(),
+                source: "principal_grants".to_owned(),
+                grant_id: Some(grant_id),
+                consume_on_commit: false,
+            });
+        }
+    } else if allowed {
+        let self_authenticated = matches!(
+            principal.provider.as_str(),
+            "participant-hmac" | "human-web"
+        ) && principal.subject == participant_id;
+        if self_authenticated {
+            let reason = if principal.provider == "participant-hmac" {
+                "implicit_participant_hmac"
+            } else if capability == authorization::MANAGE_CHANNELS && role == "admin" {
+                "implicit_human_web_admin"
+            } else {
+                "implicit_human_web"
+            };
+            return Ok(GrantExplanation {
+                allowed: true,
+                reason: reason.to_owned(),
+                source: "implicit_authority".to_owned(),
+                grant_id: None,
+                consume_on_commit: false,
+            });
+        }
+        let github_owner = principal.provider == "github"
+            && owner_provider.as_deref() == Some("github")
+            && owner_subject.as_deref() == Some(principal.subject.as_str());
+        if github_owner {
+            return Ok(GrantExplanation {
+                allowed: true,
+                reason: "implicit_github_owner".to_owned(),
+                source: "implicit_authority".to_owned(),
+                grant_id: None,
+                consume_on_commit: false,
+            });
+        }
+    }
+
+    if let Some(intent_id) = intent_id {
+        let now: i64 = conn.query_row("SELECT unixepoch()", [], |row| row.get(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, resource, intent_id, expires_at, one_shot, consumed_at, consumed_intent_id
+             FROM delegated_grants
+             WHERE principal_provider = ?1
+               AND principal_subject = ?2
+               AND participant_id = ?3
+               AND capability = ?4
+               AND status = 'active'
+             ORDER BY
+               (intent_id IS NOT NULL) DESC,
+               (resource IS NOT NULL) DESC,
+               one_shot DESC,
+               id ASC",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    principal.provider,
+                    principal.subject,
+                    participant_id,
+                    capability
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, i64>(4)? != 0,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut first_denial: Option<GrantExplanation> = None;
+        for (
+            grant_id,
+            grant_resource,
+            grant_intent,
+            expires_at,
+            one_shot,
+            consumed_at,
+            consumed_intent_id,
+        ) in rows
+        {
+            let denial = if grant_resource.as_deref().is_some_and(|value| Some(value) != resource) {
+                Some("delegated_resource_mismatch")
+            } else if grant_intent
+                .as_deref()
+                .is_some_and(|value| value != intent_id)
+            {
+                Some("delegated_intent_mismatch")
+            } else if one_shot
+                && consumed_at.is_some()
+                && consumed_intent_id.as_deref() != Some(intent_id)
+            {
+                Some("delegated_consumed_different_intent")
+            } else if expires_at.is_some_and(|value| value <= now)
+                && !(one_shot && consumed_intent_id.as_deref() == Some(intent_id))
+            {
+                Some("delegated_grant_expired")
+            } else {
+                None
+            };
+
+            if let Some(reason) = denial {
+                first_denial.get_or_insert(GrantExplanation {
+                    allowed: false,
+                    reason: reason.to_owned(),
+                    source: "delegated_grants".to_owned(),
+                    grant_id: Some(grant_id),
+                    consume_on_commit: false,
+                });
+                continue;
+            }
+
+            if one_shot && consumed_at.is_some() {
+                let committed: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                     FROM execution_receipts
+                     WHERE participant_id = ?1
+                       AND intent_id = ?2
+                       AND status = 'committed'",
+                    params![participant_id, intent_id],
+                    |row| row.get(0),
+                )?;
+                return Ok(GrantExplanation {
+                    allowed,
+                    reason: if committed > 0 {
+                        "delegated_committed_replay"
+                    } else {
+                        "delegated_consumed_without_committed_receipt"
+                    }
+                    .to_owned(),
+                    source: "delegated_grants".to_owned(),
+                    grant_id: Some(grant_id),
+                    consume_on_commit: false,
+                });
+            }
+
+            if allowed {
+                return Ok(GrantExplanation {
+                    allowed: true,
+                    reason: "delegated_grant_match".to_owned(),
+                    source: "delegated_grants".to_owned(),
+                    grant_id: consume_grant_id.or(Some(grant_id)),
+                    consume_on_commit: consume_grant_id.is_some(),
+                });
+            }
+        }
+
+        if let Some(explanation) = first_denial {
+            return Ok(explanation);
+        }
+    }
+
+    if explicit_count > 0 {
+        return Ok(GrantExplanation {
+            allowed: false,
+            reason: "explicit_resource_scope_mismatch".to_owned(),
+            source: "principal_grants".to_owned(),
+            grant_id: None,
+            consume_on_commit: false,
+        });
+    }
+
+    Ok(GrantExplanation {
+        allowed,
+        reason: "no_matching_authority".to_owned(),
+        source: "policy".to_owned(),
+        grant_id: None,
+        consume_on_commit: false,
+    })
 }
 
 fn deactivate_grant(conn: &Connection, grant_id: i64) -> rusqlite::Result<bool> {
@@ -437,5 +813,62 @@ mod tests {
             ..blank
         };
         assert!(create_grant(&conn, &control).is_err());
+    }
+
+    #[test]
+    fn explain_reports_explicit_resource_scope_mismatch() {
+        let (_dir, conn) = setup();
+        authorization::ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', 'blackboard-lounge')",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "agent-1".to_owned(),
+        };
+        let explanation = explain_grant(
+            &conn,
+            &principal,
+            "maker-main",
+            authorization::POST_MESSAGE,
+            Some("control-systems"),
+            None,
+        )
+        .unwrap();
+        assert!(!explanation.allowed);
+        assert_eq!(explanation.reason, "explicit_resource_scope_mismatch");
+    }
+
+    #[test]
+    fn explain_reports_expired_delegated_grant() {
+        let (_dir, conn) = setup();
+        authorization::ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', 'control-systems', 'intent-80', unixepoch() - 1, 1)",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "agent-1".to_owned(),
+        };
+        let explanation = explain_grant(
+            &conn,
+            &principal,
+            "maker-main",
+            authorization::POST_MESSAGE,
+            Some("control-systems"),
+            Some("intent-80"),
+        )
+        .unwrap();
+        assert!(!explanation.allowed);
+        assert_eq!(explanation.reason, "delegated_grant_expired");
+        assert_eq!(explanation.source, "delegated_grants");
     }
 }
