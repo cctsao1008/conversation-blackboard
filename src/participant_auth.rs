@@ -32,10 +32,34 @@ pub fn canonical_write_bytes(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Vec<u8> {
+    canonical_write_bytes_with_intent(
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn canonical_write_bytes_with_intent(
+    participant_id: &str,
+    channel: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<i64>,
+    nonce: &str,
+    intent_id: Option<&str>,
+) -> Vec<u8> {
     let mut payload = BTreeMap::<String, Value>::new();
     payload.insert("auth_version".into(), json!(AUTH_SCHEME));
     payload.insert("body".into(), json!(body));
     payload.insert("channel".into(), json!(channel));
+    if let Some(intent_id) = intent_id {
+        payload.insert("intent_id".into(), json!(intent_id));
+    }
     payload.insert("kind".into(), json!(kind));
     payload.insert("nonce".into(), json!(nonce));
     payload.insert("participant_id".into(), json!(participant_id));
@@ -70,7 +94,39 @@ pub fn compute_write_proof(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Option<String> {
-    let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
+    compute_write_proof_with_intent(
+        secret,
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+        None,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_write_proof_with_intent(
+    secret: &str,
+    participant_id: &str,
+    channel: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<i64>,
+    nonce: &str,
+    intent_id: Option<&str>,
+) -> Option<String> {
+    let canonical = canonical_write_bytes_with_intent(
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+        intent_id,
+    );
     compute_message_proof(secret, &canonical)
 }
 
@@ -118,7 +174,40 @@ pub fn verify_write_proof(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> bool {
-    let canonical = canonical_write_bytes(participant_id, channel, kind, body, reply_to, nonce);
+    verify_write_proof_with_intent(
+        secret,
+        proof,
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn verify_write_proof_with_intent(
+    secret: &str,
+    proof: &str,
+    participant_id: &str,
+    channel: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<i64>,
+    nonce: &str,
+    intent_id: Option<&str>,
+) -> bool {
+    let canonical = canonical_write_bytes_with_intent(
+        participant_id,
+        channel,
+        kind,
+        body,
+        reply_to,
+        nonce,
+        intent_id,
+    );
     verify_message_proof(secret, proof, &canonical)
 }
 
@@ -173,6 +262,77 @@ mod tests {
             "hello",
             None,
             "maker-001",
+        ));
+    }
+
+    #[test]
+    fn explicit_intent_is_authenticated_without_changing_legacy_proofs() {
+        let (secret, registered) = generate_secret();
+        let legacy = compute_write_proof(
+            &secret,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-1",
+        )
+        .unwrap();
+        assert!(verify_write_proof_with_intent(
+            &registered,
+            &legacy,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-1",
+            None,
+        ));
+        assert!(!verify_write_proof_with_intent(
+            &registered,
+            &legacy,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-1",
+            Some("intent-a"),
+        ));
+
+        let explicit = compute_write_proof_with_intent(
+            &secret,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-2",
+            Some("intent-a"),
+        )
+        .unwrap();
+        assert!(verify_write_proof_with_intent(
+            &registered,
+            &explicit,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-2",
+            Some("intent-a"),
+        ));
+        assert!(!verify_write_proof_with_intent(
+            &registered,
+            &explicit,
+            "maker-main",
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            "delivery-2",
+            Some("intent-b"),
         ));
     }
 
