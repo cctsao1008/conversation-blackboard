@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
 use crate::execution::Principal;
@@ -22,6 +22,12 @@ pub struct EffectiveGrant {
     pub capability: String,
     pub resource: Option<String>,
     pub origin: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntentAuthorization {
+    Denied,
+    Allowed { consume_grant_id: Option<i64> },
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +61,32 @@ pub fn ensure_grant_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_principal_grants_lookup
             ON principal_grants (
+                principal_provider,
+                principal_subject,
+                participant_id,
+                capability,
+                status
+            );
+
+        CREATE TABLE IF NOT EXISTS delegated_grants (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            principal_provider  TEXT NOT NULL,
+            principal_subject   TEXT NOT NULL,
+            participant_id      TEXT NOT NULL,
+            capability          TEXT NOT NULL,
+            resource            TEXT,
+            intent_id           TEXT,
+            expires_at          INTEGER,
+            one_shot            INTEGER NOT NULL DEFAULT 0 CHECK (one_shot IN (0, 1)),
+            consumed_at         INTEGER,
+            consumed_intent_id  TEXT,
+            status              TEXT NOT NULL DEFAULT 'active'
+                                CHECK (status IN ('active', 'inactive')),
+            created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_delegated_grants_lookup
+            ON delegated_grants (
                 principal_provider,
                 principal_subject,
                 participant_id,
@@ -124,6 +156,122 @@ pub fn authorize(
         capability,
         &participant,
     ))
+}
+
+pub fn authorize_for_intent(
+    conn: &Connection,
+    principal: &Principal,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: &str,
+) -> rusqlite::Result<IntentAuthorization> {
+    ensure_grant_schema(conn)?;
+    let Some(participant) = participant_policy_row(conn, participant_id)? else {
+        return Ok(IntentAuthorization::Denied);
+    };
+    if participant.status != "active" {
+        return Ok(IntentAuthorization::Denied);
+    }
+
+    if authorize(conn, principal, participant_id, capability, resource)? {
+        return Ok(IntentAuthorization::Allowed {
+            consume_grant_id: None,
+        });
+    }
+
+    let delegated = conn
+        .query_row(
+            "SELECT id, one_shot, consumed_at, consumed_intent_id
+             FROM delegated_grants
+             WHERE principal_provider = ?1
+               AND principal_subject = ?2
+               AND participant_id = ?3
+               AND capability = ?4
+               AND status = 'active'
+               AND (resource IS NULL OR resource = ?5)
+               AND (intent_id IS NULL OR intent_id = ?6)
+               AND (
+                    expires_at IS NULL
+                    OR expires_at > unixepoch()
+                    OR (one_shot = 1 AND consumed_intent_id = ?6)
+               )
+               AND (
+                    one_shot = 0
+                    OR consumed_at IS NULL
+                    OR consumed_intent_id = ?6
+               )
+             ORDER BY
+               (intent_id IS NOT NULL) DESC,
+               (resource IS NOT NULL) DESC,
+               one_shot DESC,
+               id ASC
+             LIMIT 1",
+            params![
+                principal.provider,
+                principal.subject,
+                participant_id,
+                capability,
+                resource,
+                intent_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)? != 0,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((grant_id, one_shot, consumed_at, consumed_intent_id)) = delegated else {
+        return Ok(IntentAuthorization::Denied);
+    };
+
+    if one_shot && consumed_at.is_some() {
+        if consumed_intent_id.as_deref() != Some(intent_id) {
+            return Ok(IntentAuthorization::Denied);
+        }
+        let committed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM execution_receipts
+             WHERE participant_id = ?1 AND intent_id = ?2 AND status = 'committed'",
+            params![participant_id, intent_id],
+            |row| row.get(0),
+        )?;
+        return Ok(if committed > 0 {
+            IntentAuthorization::Allowed {
+                consume_grant_id: None,
+            }
+        } else {
+            IntentAuthorization::Denied
+        });
+    }
+
+    Ok(IntentAuthorization::Allowed {
+        consume_grant_id: one_shot.then_some(grant_id),
+    })
+}
+
+pub fn consume_delegated_grant_in_tx(
+    tx: &Transaction<'_>,
+    grant_id: i64,
+    intent_id: &str,
+) -> rusqlite::Result<()> {
+    let changed = tx.execute(
+        "UPDATE delegated_grants
+         SET consumed_at = unixepoch(), consumed_intent_id = ?2, updated_at = unixepoch()
+         WHERE id = ?1
+           AND status = 'active'
+           AND one_shot = 1
+           AND consumed_at IS NULL",
+        params![grant_id, intent_id],
+    )?;
+    if changed != 1 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    Ok(())
 }
 
 pub fn effective_grants(
@@ -318,6 +466,78 @@ mod tests {
                 && grant.resource.is_none()
                 && grant.origin == "implicit"
         }));
+    }
+
+    #[test]
+    fn delegated_grant_enforces_resource_intent_and_expiry() {
+        let (_dir, conn) = setup();
+        ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', 'control-systems', 'intent-1', unixepoch() + 3600, 1)",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".into(),
+            subject: "agent-1".into(),
+        };
+        assert!(matches!(
+            authorize_for_intent(
+                &conn,
+                &principal,
+                "maker-main",
+                POST_MESSAGE,
+                Some("control-systems"),
+                "intent-1"
+            )
+            .unwrap(),
+            IntentAuthorization::Allowed {
+                consume_grant_id: Some(_)
+            }
+        ));
+        assert_eq!(
+            authorize_for_intent(
+                &conn,
+                &principal,
+                "maker-main",
+                POST_MESSAGE,
+                Some("blackboard-lounge"),
+                "intent-1"
+            )
+            .unwrap(),
+            IntentAuthorization::Denied
+        );
+        assert_eq!(
+            authorize_for_intent(
+                &conn,
+                &principal,
+                "maker-main",
+                POST_MESSAGE,
+                Some("control-systems"),
+                "intent-2"
+            )
+            .unwrap(),
+            IntentAuthorization::Denied
+        );
+        conn.execute(
+            "UPDATE delegated_grants SET expires_at = unixepoch() - 1 WHERE principal_subject = 'agent-1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            authorize_for_intent(
+                &conn,
+                &principal,
+                "maker-main",
+                POST_MESSAGE,
+                Some("control-systems"),
+                "intent-1"
+            )
+            .unwrap(),
+            IntentAuthorization::Denied
+        );
     }
 
     #[test]

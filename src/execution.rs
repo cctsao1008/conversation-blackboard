@@ -196,17 +196,20 @@ pub fn execute_message_intent(
         return Err(rusqlite::Error::InvalidQuery);
     }
 
-    if !authorization::authorize(
-        conn,
+    let tx = conn.unchecked_transaction()?;
+    let consume_grant_id = match authorization::authorize_for_intent(
+        &tx,
         &request.authority.principal,
         &request.intent.participant_id,
         &request.intent.capability,
         Some(&request.intent.resource),
+        &request.intent.intent_id,
     )? {
-        return Ok(MessageExecutionResult::AuthorizationDenied);
-    }
-
-    let tx = conn.unchecked_transaction()?;
+        authorization::IntentAuthorization::Denied => {
+            return Ok(MessageExecutionResult::AuthorizationDenied)
+        }
+        authorization::IntentAuthorization::Allowed { consume_grant_id } => consume_grant_id,
+    };
     let visibility = if request.channel == "blackboard-lounge" {
         "public"
     } else {
@@ -305,6 +308,11 @@ pub fn execute_message_intent(
         status: "committed".to_owned(),
     };
     record_execution_in_tx(&tx, request.ingress, &receipt)?;
+    if created {
+        if let Some(grant_id) = consume_grant_id {
+            authorization::consume_delegated_grant_in_tx(&tx, grant_id, &request.intent.intent_id)?;
+        }
+    }
     tx.commit()?;
 
     Ok(if created {
@@ -613,6 +621,220 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ingress_count, 2);
+    }
+
+    #[test]
+    fn one_shot_delegated_grant_is_consumed_atomically_and_replays_idempotently() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        provision_test_participant(&conn);
+        authorization::ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', 'blackboard-lounge', 'delegated-intent-1', unixepoch() + 3600, 1)",
+            [],
+        )
+        .unwrap();
+
+        let identity = test_identity();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".into(),
+            subject: "agent-1".into(),
+        };
+        let authority = AuthorityContext {
+            principal: principal.clone(),
+            mechanism: "oidc-bearer-jwt".into(),
+        };
+        let intent = IntentEnvelope {
+            intent_id: "delegated-intent-1".into(),
+            participant_id: "maker-main".into(),
+            conversation_ref: None,
+            capability: POST_MESSAGE_CAPABILITY.into(),
+            resource: "blackboard-lounge".into(),
+            request_hash: message_request_hash(
+                "blackboard-lounge",
+                "message",
+                "delegated",
+                None,
+                None,
+            ),
+        };
+        let ingress = IngressProvenance {
+            delivery_id: "oidc:agent-1:delivery-1".into(),
+            intent_id: intent.intent_id.clone(),
+            transport: "oidc-http".into(),
+            external_ref: "delivery-1".into(),
+            principal: principal.clone(),
+        };
+
+        let first = execute_message_intent(
+            &conn,
+            &identity,
+            MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
+                channel: "blackboard-lounge",
+                kind: "message",
+                body: "delegated",
+                reply_to: None,
+            },
+        )
+        .unwrap();
+        let first_id = match first {
+            MessageExecutionResult::Created(message) => message.id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+
+        let consumed: (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT consumed_at, consumed_intent_id FROM delegated_grants WHERE principal_subject = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(consumed.0.is_some());
+        assert_eq!(consumed.1.as_deref(), Some("delegated-intent-1"));
+
+        let replay_ingress = IngressProvenance {
+            delivery_id: "oidc:agent-1:delivery-2".into(),
+            intent_id: intent.intent_id.clone(),
+            transport: "oidc-http".into(),
+            external_ref: "delivery-2".into(),
+            principal,
+        };
+        let replay = execute_message_intent(
+            &conn,
+            &identity,
+            MessageExecutionRequest {
+                authority: &authority,
+                ingress: &replay_ingress,
+                intent: &intent,
+                channel: "blackboard-lounge",
+                kind: "message",
+                body: "delegated",
+                reply_to: None,
+            },
+        )
+        .unwrap();
+        match replay {
+            MessageExecutionResult::Existing(message) => assert_eq!(message.id, first_id),
+            other => panic!("unexpected replay result: {other:?}"),
+        }
+
+        let other_intent = IntentEnvelope {
+            intent_id: "delegated-intent-2".into(),
+            participant_id: "maker-main".into(),
+            conversation_ref: None,
+            capability: POST_MESSAGE_CAPABILITY.into(),
+            resource: "blackboard-lounge".into(),
+            request_hash: message_request_hash(
+                "blackboard-lounge",
+                "message",
+                "second",
+                None,
+                None,
+            ),
+        };
+        let other_ingress = IngressProvenance {
+            delivery_id: "oidc:agent-1:delivery-3".into(),
+            intent_id: other_intent.intent_id.clone(),
+            transport: "oidc-http".into(),
+            external_ref: "delivery-3".into(),
+            principal: authority.principal.clone(),
+        };
+        assert!(matches!(
+            execute_message_intent(
+                &conn,
+                &identity,
+                MessageExecutionRequest {
+                    authority: &authority,
+                    ingress: &other_ingress,
+                    intent: &other_intent,
+                    channel: "blackboard-lounge",
+                    kind: "message",
+                    body: "second",
+                    reply_to: None,
+                },
+            )
+            .unwrap(),
+            MessageExecutionResult::AuthorizationDenied
+        ));
+    }
+
+    #[test]
+    fn failed_execution_does_not_consume_one_shot_delegated_grant() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        provision_test_participant(&conn);
+        authorization::ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-2', 'maker-main', 'post_message', 'blackboard-lounge', 'delegated-fail-1', unixepoch() + 3600, 1)",
+            [],
+        )
+        .unwrap();
+        let identity = test_identity();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".into(),
+            subject: "agent-2".into(),
+        };
+        let authority = AuthorityContext {
+            principal: principal.clone(),
+            mechanism: "oidc-bearer-jwt".into(),
+        };
+        let intent = IntentEnvelope {
+            intent_id: "delegated-fail-1".into(),
+            participant_id: "maker-main".into(),
+            conversation_ref: None,
+            capability: POST_MESSAGE_CAPABILITY.into(),
+            resource: "blackboard-lounge".into(),
+            request_hash: message_request_hash(
+                "blackboard-lounge",
+                "message",
+                "will-fail",
+                None,
+                Some(999999),
+            ),
+        };
+        let ingress = IngressProvenance {
+            delivery_id: "oidc:agent-2:delivery-1".into(),
+            intent_id: intent.intent_id.clone(),
+            transport: "oidc-http".into(),
+            external_ref: "delivery-1".into(),
+            principal,
+        };
+        assert!(matches!(
+            execute_message_intent(
+                &conn,
+                &identity,
+                MessageExecutionRequest {
+                    authority: &authority,
+                    ingress: &ingress,
+                    intent: &intent,
+                    channel: "blackboard-lounge",
+                    kind: "message",
+                    body: "will-fail",
+                    reply_to: Some(999999),
+                },
+            )
+            .unwrap(),
+            MessageExecutionResult::ReplyTargetNotFound
+        ));
+        let consumed_at: Option<i64> = conn
+            .query_row(
+                "SELECT consumed_at FROM delegated_grants WHERE principal_subject = 'agent-2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(consumed_at.is_none());
     }
 
     #[test]
