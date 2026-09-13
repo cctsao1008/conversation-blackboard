@@ -13,8 +13,8 @@ use serde_json::{json, Map, Value};
 use url::Url;
 
 use crate::{
-    adapter_profile, authorization, db, execution, http::AppState, identity, model::Identity,
-    participant_auth,
+    adapter_profile, authorization, contract_schema, db, execution, http::AppState, identity,
+    model::Identity, participant_auth,
 };
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
@@ -216,7 +216,7 @@ fn tools_list_result() -> Value {
                         "channel": {"type": "string", "minLength": 1, "maxLength": 128},
                         "after": {"type": "integer", "minimum": 0, "default": 0},
                         "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": DEFAULT_PAGE_SIZE},
-                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "participant_id": contract_schema::participant_id_schema(),
                         "auth": auth_schema()
                     },
                     "required": ["channel"],
@@ -237,7 +237,7 @@ fn tools_list_result() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "participant_id": contract_schema::participant_id_schema(),
                         "auth": auth_schema(),
                         "channel": {"type": "string", "minLength": 1, "maxLength": 128},
                         "kind": {"type": "string", "minLength": 1, "maxLength": 32, "default": "message"},
@@ -263,13 +263,13 @@ fn tools_list_result() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "participant_id": contract_schema::participant_id_schema(),
                         "auth": auth_schema()
                     },
                     "required": ["participant_id", "auth"],
                     "additionalProperties": false
                 },
-                "outputSchema": access_context_output_schema(),
+                "outputSchema": contract_schema::access_context_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             },
             {
@@ -279,14 +279,14 @@ fn tools_list_result() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
-                        "intent_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "intent_id": contract_schema::intent_id_schema(),
                         "auth": auth_schema()
                     },
                     "required": ["participant_id", "intent_id", "auth"],
                     "additionalProperties": false
                 },
-                "outputSchema": execution_receipt_output_schema(),
+                "outputSchema": contract_schema::execution_receipt_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
@@ -301,7 +301,7 @@ fn read_output_schema() -> Value {
             "after": {"type": "integer"},
             "count": {"type": "integer", "minimum": 0},
             "latest_id": {"type": "integer", "minimum": 0},
-            "messages": {"type": "array", "items": message_schema()}
+            "messages": {"type": "array", "items": contract_schema::message_schema()}
         },
         "required": ["channel", "after", "count", "latest_id", "messages"],
         "additionalProperties": false
@@ -323,68 +323,6 @@ fn write_output_schema() -> Value {
             "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
         "required": ["status", "idempotent", "id", "source", "participant_id", "instance", "channel", "kind", "reply_to"],
-        "additionalProperties": false
-    })
-}
-
-fn access_context_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "participant_id": {"type": "string"},
-            "principal": {
-                "type": "object",
-                "properties": {"provider": {"type": "string"}, "subject": {"type": "string"}},
-                "required": ["provider", "subject"],
-                "additionalProperties": false
-            },
-            "capabilities": {"type": "array", "items": {"type": "string"}},
-            "grants": {"type": "array"},
-            "adapter": {"type": "string"}
-        },
-        "required": ["participant_id", "principal", "capabilities", "grants", "adapter"],
-        "additionalProperties": false
-    })
-}
-
-fn execution_receipt_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "execution": {
-                "type": "object",
-                "properties": {
-                    "participant_id": {"type": "string"},
-                    "intent_id": {"type": "string"},
-                    "intent_hash": {"type": "string"},
-                    "capability": {"type": "string"},
-                    "message_id": {"type": "integer", "minimum": 1},
-                    "status": {"type": "string"}
-                },
-                "required": ["participant_id", "intent_id", "intent_hash", "capability", "message_id", "status"],
-                "additionalProperties": false
-            }
-        },
-        "required": ["execution"],
-        "additionalProperties": false
-    })
-}
-
-fn message_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "id": {"type": "integer", "minimum": 1},
-            "created_at": {"type": "integer"},
-            "channel": {"type": "string"},
-            "source": {"type": "string"},
-            "instance": {"type": "string"},
-            "conversation_ref": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "kind": {"type": "string"},
-            "body": {"type": "string"},
-            "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
-        },
-        "required": ["id", "created_at", "channel", "source", "instance", "conversation_ref", "kind", "body", "reply_to"],
         "additionalProperties": false
     })
 }

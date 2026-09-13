@@ -23,5 +23,6 @@ url = "2"
 windows-service = "0.8.1"
 
 [dev-dependencies]
+serde_yaml = "0.9"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

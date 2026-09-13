@@ -30,29 +30,70 @@
       },
       "outputs": {
         "type": "object",
-        "required": ["messages"],
+        "required": [
+          "messages"
+        ],
         "properties": {
           "messages": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["id", "created_at", "channel", "source", "instance", "conversation_ref", "kind", "body"],
+              "required": [
+                "id",
+                "created_at",
+                "channel",
+                "source",
+                "instance",
+                "conversation_ref",
+                "kind",
+                "body"
+              ],
               "properties": {
-                "id": { "type": "integer" },
-                "created_at": { "type": "integer", "description": "Unix timestamp in seconds." },
-                "channel": { "type": "string" },
-                "source": { "type": "string" },
-                "instance": { "type": "string" },
-                "conversation_ref": { "type": ["string", "null"], "description": "Optional provider-side conversation provenance. It is not an authentication or authorization credential." },
-                "kind": { "type": "string" },
-                "body": { "type": "string" },
-                "reply_to": { "type": ["integer", "null"] }
+                "id": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer",
+                  "description": "Unix timestamp in seconds."
+                },
+                "channel": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "instance": {
+                  "type": "string"
+                },
+                "conversation_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Optional provider-side conversation provenance. It is not an authentication or authorization credential."
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "reply_to": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
               }
             }
           }
         }
       },
-      "tags": ["blackboard", "messages", "read"],
+      "tags": [
+        "blackboard",
+        "messages",
+        "read"
+      ],
       "tool_call_template": {
         "name": "blackboard_read_messages_http",
         "call_template_type": "http",
@@ -74,12 +115,17 @@
       "inputs": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["message"],
+        "required": [
+          "message"
+        ],
         "properties": {
           "message": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["channel", "body"],
+            "required": [
+              "channel",
+              "body"
+            ],
             "properties": {
               "channel": {
                 "type": "string"
@@ -92,7 +138,10 @@
                 "type": "string"
               },
               "reply_to": {
-                "type": ["integer", "null"],
+                "type": [
+                  "integer",
+                  "null"
+                ],
                 "minimum": 1
               }
             }
@@ -101,26 +150,67 @@
       },
       "outputs": {
         "type": "object",
-        "required": ["message"],
+        "required": [
+          "message"
+        ],
         "properties": {
           "message": {
             "type": "object",
-            "required": ["id", "created_at", "channel", "source", "instance", "conversation_ref", "kind", "body"],
+            "required": [
+              "id",
+              "created_at",
+              "channel",
+              "source",
+              "instance",
+              "conversation_ref",
+              "kind",
+              "body"
+            ],
             "properties": {
-              "id": { "type": "integer" },
-              "created_at": { "type": "integer", "description": "Unix timestamp in seconds." },
-              "channel": { "type": "string" },
-              "source": { "type": "string" },
-              "instance": { "type": "string" },
-              "conversation_ref": { "type": ["string", "null"], "description": "Optional provider-side conversation provenance. It is not an authentication or authorization credential." },
-              "kind": { "type": "string" },
-              "body": { "type": "string" },
-              "reply_to": { "type": ["integer", "null"] }
+              "id": {
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "integer",
+                "description": "Unix timestamp in seconds."
+              },
+              "channel": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "conversation_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Optional provider-side conversation provenance. It is not an authentication or authorization credential."
+              },
+              "kind": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "reply_to": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
             }
           }
         }
       },
-      "tags": ["blackboard", "messages", "write"],
+      "tags": [
+        "blackboard",
+        "messages",
+        "write"
+      ],
       "tool_call_template": {
         "name": "blackboard_post_message_http",
         "call_template_type": "http",
@@ -135,6 +225,158 @@
           "location": "header"
         }
       }
+    },
+    {
+      "name": "access_context",
+      "description": "Read effective capabilities and grants from the shared Blackboard authorization kernel. UTCP is discovery metadata, not the authorization source of truth.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "participant_id",
+          "principal",
+          "capabilities",
+          "grants"
+        ],
+        "properties": {
+          "participant_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "object",
+            "required": [
+              "provider",
+              "subject"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "grants": {
+            "type": "array"
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "authorization",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_access_context_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/access-context",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    },
+    {
+      "name": "execution_receipt",
+      "description": "Read a durable semantic execution receipt by intent_id. delivery_id is transport provenance and is intentionally not part of the receipt.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intent_id"
+        ],
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "execution"
+        ],
+        "properties": {
+          "execution": {
+            "type": "object",
+            "required": [
+              "participant_id",
+              "intent_id",
+              "intent_hash",
+              "capability",
+              "message_id",
+              "status"
+            ],
+            "properties": {
+              "participant_id": {
+                "type": "string"
+              },
+              "intent_id": {
+                "type": "string"
+              },
+              "intent_hash": {
+                "type": "string"
+              },
+              "capability": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "execution",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_execution_receipt_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/executions/${intent_id}",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
     }
-  ]
+  ],
+  "contract_projection": {
+    "kind": "utcp-discovery",
+    "authority": "rust-application-kernel",
+    "http_projection": "integrations/openapi.yaml",
+    "note": "UTCP describes discovery/invocation metadata and is not domain authority. intent_id is semantic identity; delivery_id is transport provenance."
+  }
 }

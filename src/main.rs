@@ -6,6 +6,9 @@ mod admin;
 mod authorization;
 mod client;
 mod client_cli;
+#[cfg(test)]
+mod contract_parity_tests;
+mod contract_schema;
 mod db;
 mod execution;
 mod github_webhook;

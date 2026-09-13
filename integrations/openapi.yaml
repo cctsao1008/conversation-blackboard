@@ -3,7 +3,8 @@ info:
   title: conversation-blackboard
   version: 0.3.0
   description: |
-    Native HTTP contract for reading, writing, and administering a conversation-blackboard.
+    Native HTTP projection for reading, writing, and administering a conversation-blackboard.
+    This OpenAPI document is an HTTP projection of Rust application semantics; it is not domain authority.
     Persisted source/instance provenance is resolved by the server; message clients never supply it.
     conversation_ref is optional provider-side provenance on stored messages and carries no authority.
 servers:
@@ -289,6 +290,60 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/access-context:
+    get:
+      operationId: blackboardAccessContext
+      summary: Read the authenticated caller's effective Blackboard access context.
+      description: HTTP projection of the shared authorization kernel.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      responses:
+        '200':
+          description: Effective identity, principal, participant attribution, capabilities, and grants.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessContext'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/executions/{intent_id}:
+    get:
+      operationId: blackboardExecutionReceipt
+      summary: Read one durable semantic execution receipt.
+      description: The intent_id is semantic identity. delivery_id remains transport ingress provenance and is intentionally absent from the receipt.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: intent_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/IntentId'
+      responses:
+        '200':
+          description: Durable execution receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionReceiptEnvelope'
+        '400':
+          description: Invalid semantic intent identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No durable receipt exists for this participant and intent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
@@ -412,6 +467,88 @@ components:
             $ref: '#/components/schemas/Error'
 
   schemas:
+    ParticipantId:
+      type: string
+      minLength: 1
+      maxLength: 64
+      description: Durable Blackboard attribution identity. It is not a transport credential.
+
+    ConversationRef:
+      type: [string, 'null']
+      description: Optional provider-side conversation provenance. It carries no authentication or authorization authority.
+
+    IntentId:
+      type: string
+      minLength: 1
+      maxLength: 256
+      description: Transport-independent semantic operation identity used for idempotency and receipt lookup.
+
+    DeliveryId:
+      type: string
+      minLength: 1
+      maxLength: 256
+      description: Transport delivery provenance identity. Distinct deliveries may carry the same semantic intent_id; delivery_id is not part of the semantic execution receipt.
+
+    Principal:
+      type: object
+      additionalProperties: false
+      required: [provider, subject]
+      properties:
+        provider:
+          type: string
+        subject:
+          type: string
+
+    AccessContext:
+      type: object
+      additionalProperties: false
+      required: [participant_id, principal, capabilities, grants]
+      properties:
+        identity:
+          $ref: '#/components/schemas/Identity'
+        principal:
+          $ref: '#/components/schemas/Principal'
+        participant_id:
+          anyOf:
+            - $ref: '#/components/schemas/ParticipantId'
+            - type: 'null'
+        role:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        grants:
+          type: array
+
+    ExecutionReceipt:
+      type: object
+      additionalProperties: false
+      required: [participant_id, intent_id, intent_hash, capability, message_id, status]
+      description: Durable semantic execution receipt. Transport delivery_id is intentionally excluded and remains ingress provenance.
+      properties:
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        intent_id:
+          $ref: '#/components/schemas/IntentId'
+        intent_hash:
+          type: string
+        capability:
+          type: string
+        message_id:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+
+    ExecutionReceiptEnvelope:
+      type: object
+      additionalProperties: false
+      required: [execution]
+      properties:
+        execution:
+          $ref: '#/components/schemas/ExecutionReceipt'
+
     Identity:
       type: object
       required: [source, instance]
@@ -496,8 +633,7 @@ components:
         instance:
           type: string
         conversation_ref:
-          type: [string, 'null']
-          description: Optional provider-side conversation provenance. It is not an authentication or authorization credential.
+          $ref: '#/components/schemas/ConversationRef'
         kind:
           type: string
         body:
