@@ -33,6 +33,10 @@ GitHub mailbox is intentionally narrower: an asynchronous durable courier for me
 
 The CLI is an operational/client projection rather than a competing domain API. UTCP is discovery/invocation metadata and remains downstream of application semantics.
 
+## Verification boundary
+
+Adapter-profile tests verify intentional capability differences, while MCP contract tests verify that access-context and execution-receipt read-back project the same authorization and execution state used by REST. Transport syntax is allowed to differ; domain semantics are not.
+
 ## Boundary with #76
 
 This document defines which capabilities each adapter intentionally exposes. Schema generation and automated parity across OpenAPI, MCP schemas, and UTCP belong to #76.
