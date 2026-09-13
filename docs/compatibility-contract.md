@@ -192,7 +192,7 @@ Guest and Human Web session tokens remain page-memory state. Authentication cred
 
 ## Verification
 
-The Rust implementation verifies these boundaries through unit/integration tests and release/Windows acceptance.
+The Rust implementation verifies these boundaries through unit/integration tests and release/Windows acceptance. Machine-readable message schemas exposed through MCP, OpenAPI, and UTCP all include nullable `conversation_ref` provenance.
 
 Important scenarios include:
 
