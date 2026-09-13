@@ -1,4 +1,4 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, path::{Path, PathBuf}};
 
 use clap::Subcommand;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -26,6 +26,18 @@ struct GrantInspection {
     consumed_at: Option<i64>,
     consumed_intent_id: Option<String>,
     status: String,
+}
+
+#[derive(Debug, Clone)]
+struct GrantCreateSpec<'a> {
+    principal_provider: &'a str,
+    principal_subject: &'a str,
+    participant_id: &'a str,
+    capability: &'a str,
+    resource: Option<&'a str>,
+    intent_id: Option<&'a str>,
+    expires_at: Option<i64>,
+    one_shot: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -84,17 +96,17 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
         } => {
             require_database(&path)?;
             let conn = db::connect(&path)?;
-            let id = create_grant(
-                &conn,
-                &principal_provider,
-                &principal_subject,
-                &participant_id,
-                &capability,
-                resource.as_deref(),
-                intent_id.as_deref(),
+            let spec = GrantCreateSpec {
+                principal_provider: &principal_provider,
+                principal_subject: &principal_subject,
+                participant_id: &participant_id,
+                capability: &capability,
+                resource: resource.as_deref(),
+                intent_id: intent_id.as_deref(),
                 expires_at,
                 one_shot,
-            )?;
+            };
+            let id = create_grant(&conn, &spec)?;
             println!("DELEGATED GRANT READY");
             println!("grant_id           : {id}");
             println!("principal_provider : {}", principal_provider.trim());
@@ -169,27 +181,24 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
     }
 }
 
-fn create_grant(
-    conn: &Connection,
-    principal_provider: &str,
-    principal_subject: &str,
-    participant_id: &str,
-    capability: &str,
-    resource: Option<&str>,
-    intent_id: Option<&str>,
-    expires_at: Option<i64>,
-    one_shot: bool,
-) -> DynResult<i64> {
+fn create_grant(conn: &Connection, spec: &GrantCreateSpec<'_>) -> DynResult<i64> {
     authorization::ensure_grant_schema(conn)?;
 
-    let principal_provider =
-        normalize(principal_provider, MAX_PROVIDER_BYTES, "principal_provider")?;
-    let principal_subject = normalize(principal_subject, MAX_SUBJECT_BYTES, "principal_subject")?;
-    let participant_id =
-        identity::validate_participant_id(participant_id).ok_or("invalid participant_id")?;
-    let capability = normalize(capability, MAX_CAPABILITY_BYTES, "capability")?;
-    let resource = normalize_optional(resource, MAX_RESOURCE_BYTES, "resource")?;
-    let intent_id = match intent_id {
+    let principal_provider = normalize(
+        spec.principal_provider,
+        MAX_PROVIDER_BYTES,
+        "principal_provider",
+    )?;
+    let principal_subject = normalize(
+        spec.principal_subject,
+        MAX_SUBJECT_BYTES,
+        "principal_subject",
+    )?;
+    let participant_id = identity::validate_participant_id(spec.participant_id)
+        .ok_or("invalid participant_id")?;
+    let capability = normalize(spec.capability, MAX_CAPABILITY_BYTES, "capability")?;
+    let resource = normalize_optional(spec.resource, MAX_RESOURCE_BYTES, "resource")?;
+    let intent_id = match spec.intent_id {
         Some(value) => {
             Some(crate::execution::normalize_intent_id(value).map_err(|_| "invalid intent_id")?)
         }
@@ -209,7 +218,7 @@ fn create_grant(
         None => return Err(format!("unknown participant: {participant_id}").into()),
     }
 
-    if let Some(expires_at) = expires_at {
+    if let Some(expires_at) = spec.expires_at {
         let now: i64 = conn.query_row("SELECT unixepoch()", [], |row| row.get(0))?;
         if expires_at <= now {
             return Err("expires_at must be a future Unix timestamp".into());
@@ -227,8 +236,8 @@ fn create_grant(
             capability,
             resource,
             intent_id,
-            expires_at,
-            i64::from(one_shot)
+            spec.expires_at,
+            i64::from(spec.one_shot)
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -315,7 +324,7 @@ fn normalize_optional(
         .transpose()
 }
 
-fn require_database(path: &PathBuf) -> DynResult {
+fn require_database(path: &Path) -> DynResult {
     if !path.is_file() {
         return Err(format!("database does not exist: {}", path.display()).into());
     }
@@ -344,18 +353,17 @@ mod tests {
         let now: i64 = conn
             .query_row("SELECT unixepoch()", [], |row| row.get(0))
             .unwrap();
-        let id = create_grant(
-            &conn,
-            "oidc:https://issuer.example",
-            "agent-1",
-            "maker-main",
-            "post_message",
-            Some("control-systems"),
-            Some("intent-79"),
-            Some(now + 3600),
-            true,
-        )
-        .unwrap();
+        let spec = GrantCreateSpec {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "agent-1",
+            participant_id: "maker-main",
+            capability: "post_message",
+            resource: Some("control-systems"),
+            intent_id: Some("intent-79"),
+            expires_at: Some(now + 3600),
+            one_shot: true,
+        };
+        let id = create_grant(&conn, &spec).unwrap();
         let grants = list_grants(&conn, Some("maker-main")).unwrap();
         assert_eq!(grants.len(), 1);
         let grant = &grants[0];
@@ -375,77 +383,56 @@ mod tests {
     #[test]
     fn create_rejects_unknown_inactive_and_expired_scope() {
         let (_dir, conn) = setup();
-        assert!(create_grant(
-            &conn,
-            "oidc:https://issuer.example",
-            "agent-1",
-            "missing-main",
-            "post_message",
-            None,
-            None,
-            None,
-            false,
-        )
-        .is_err());
+        let unknown = GrantCreateSpec {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "agent-1",
+            participant_id: "missing-main",
+            capability: "post_message",
+            resource: None,
+            intent_id: None,
+            expires_at: None,
+            one_shot: false,
+        };
+        assert!(create_grant(&conn, &unknown).is_err());
 
         identity::set_web_participant_status(&conn, "maker-main", "inactive").unwrap();
-        assert!(create_grant(
-            &conn,
-            "oidc:https://issuer.example",
-            "agent-1",
-            "maker-main",
-            "post_message",
-            None,
-            None,
-            None,
-            false,
-        )
-        .is_err());
+        let inactive = GrantCreateSpec {
+            participant_id: "maker-main",
+            ..unknown.clone()
+        };
+        assert!(create_grant(&conn, &inactive).is_err());
         identity::set_web_participant_status(&conn, "maker-main", "active").unwrap();
 
         let now: i64 = conn
             .query_row("SELECT unixepoch()", [], |row| row.get(0))
             .unwrap();
-        assert!(create_grant(
-            &conn,
-            "oidc:https://issuer.example",
-            "agent-1",
-            "maker-main",
-            "post_message",
-            None,
-            None,
-            Some(now),
-            false,
-        )
-        .is_err());
+        let expired = GrantCreateSpec {
+            expires_at: Some(now),
+            ..inactive
+        };
+        assert!(create_grant(&conn, &expired).is_err());
     }
 
     #[test]
     fn create_rejects_blank_or_control_values() {
         let (_dir, conn) = setup();
-        assert!(create_grant(
-            &conn,
-            " ",
-            "agent-1",
-            "maker-main",
-            "post_message",
-            None,
-            None,
-            None,
-            false,
-        )
-        .is_err());
-        assert!(create_grant(
-            &conn,
-            "oidc:https://issuer.example",
-            "agent\n1",
-            "maker-main",
-            "post_message",
-            None,
-            None,
-            None,
-            false,
-        )
-        .is_err());
+        let blank = GrantCreateSpec {
+            principal_provider: " ",
+            principal_subject: "agent-1",
+            participant_id: "maker-main",
+            capability: "post_message",
+            resource: None,
+            intent_id: None,
+            expires_at: None,
+            one_shot: false,
+        };
+        assert!(create_grant(&conn, &blank).is_err());
+
+        let control = GrantCreateSpec {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "agent\n1",
+            ..blank
+        };
+        assert!(create_grant(&conn, &control).is_err());
     }
 }
