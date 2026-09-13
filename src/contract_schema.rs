@@ -170,3 +170,28 @@ pub fn execution_audit_envelope_schema() -> Value {
         "additionalProperties": false
     })
 }
+
+pub fn execution_audit_integrity_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "participant_id": participant_id_schema(),
+            "intent_id": intent_id_schema(),
+            "valid": {"type": "boolean"},
+            "checks": {"type": "array", "items": {"type": "string"}},
+            "violations": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["participant_id", "intent_id", "valid", "checks", "violations"],
+        "additionalProperties": false,
+        "description": "Read-only structural integrity report over committed execution evidence. It does not re-evaluate historical authorization policy."
+    })
+}
+
+pub fn execution_audit_integrity_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"integrity": execution_audit_integrity_schema()},
+        "required": ["integrity"],
+        "additionalProperties": false
+    })
+}

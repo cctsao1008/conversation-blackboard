@@ -442,6 +442,86 @@
           "location": "header"
         }
       }
+    },
+    {
+      "name": "execution_audit_integrity",
+      "description": "Verify structural consistency of committed execution audit evidence. Current policy controls access; the verifier does not re-evaluate historical authorization or repair history.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intent_id"
+        ],
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "integrity"
+        ],
+        "properties": {
+          "integrity": {
+            "type": "object",
+            "required": [
+              "participant_id",
+              "intent_id",
+              "valid",
+              "checks",
+              "violations"
+            ],
+            "properties": {
+              "participant_id": {
+                "type": "string"
+              },
+              "intent_id": {
+                "type": "string"
+              },
+              "valid": {
+                "type": "boolean"
+              },
+              "checks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "violations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "execution",
+        "audit",
+        "integrity",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_execution_audit_integrity_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/executions/${intent_id}/audit/integrity",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
     }
   ],
   "contract_projection": {

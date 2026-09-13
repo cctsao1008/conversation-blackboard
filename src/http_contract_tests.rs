@@ -565,6 +565,22 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     );
     assert_eq!(body["audit"]["ingress"].as_array().unwrap().len(), 1);
 
+    let integrity = request(
+        &audit_router,
+        Method::GET,
+        "/api/executions/intent-http-audit/audit/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (integrity_status, integrity_body) = response_json(integrity).await;
+    assert_eq!(integrity_status, StatusCode::OK);
+    assert_eq!(integrity_body["integrity"]["valid"], true);
+    assert!(integrity_body["integrity"]["violations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
     let conn = db::connect(&fixture.db_path).unwrap();
     conn.execute(
         "INSERT INTO principal_grants
@@ -583,4 +599,13 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     )
     .await;
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let integrity_denied = request(
+        &audit_router,
+        Method::GET,
+        "/api/executions/intent-http-audit/audit/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(integrity_denied.status(), StatusCode::FORBIDDEN);
 }

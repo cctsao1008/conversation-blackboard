@@ -129,3 +129,27 @@ fn execution_audit_contracts_match_canonical_rust_shape() {
         .get("delivery_id")
         .is_some());
 }
+
+#[test]
+fn execution_audit_integrity_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/ExecutionAuditIntegrityReport/properties"
+        ),
+        names(
+            &contract_schema::execution_audit_integrity_schema(),
+            "/properties"
+        )
+    );
+    assert!(api["paths"]
+        .get("/api/executions/{intent_id}/audit/integrity")
+        .is_some());
+    let utcp = utcp_json();
+    assert!(utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "execution_audit_integrity"));
+}

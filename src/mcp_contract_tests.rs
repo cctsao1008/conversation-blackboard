@@ -158,7 +158,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 6);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -277,6 +277,30 @@ async fn mcp_access_context_and_execution_receipt_project_shared_domain_state() 
     assert_eq!(
         receipt["result"]["structuredContent"]["execution"]["message_id"],
         message_id
+    );
+
+    let integrity = call_tool(
+        &fixture.router,
+        43,
+        "blackboard_execution_audit_integrity",
+        capability_arguments(
+            &fixture.single_secret,
+            "single-main",
+            authorization::READ_EXECUTION_AUDIT,
+            Some("receipt-001"),
+        ),
+    )
+    .await;
+    assert!(!integrity["result"]["isError"].as_bool().unwrap());
+    assert_eq!(
+        integrity["result"]["structuredContent"]["integrity"]["valid"],
+        true
+    );
+    assert!(
+        integrity["result"]["structuredContent"]["integrity"]["violations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }
 

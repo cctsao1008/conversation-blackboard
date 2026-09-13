@@ -16,6 +16,10 @@ pub fn app(state: AppState) -> Router {
         .route("/api/access-context", get(access_context))
         .route("/api/executions/{intent_id}", get(execution_receipt))
         .route("/api/executions/{intent_id}/audit", get(execution_audit))
+        .route(
+            "/api/executions/{intent_id}/audit/integrity",
+            get(execution_audit_integrity),
+        )
         .with_state(state)
 }
 
@@ -119,6 +123,47 @@ async fn execution_audit(
     let audit =
         audit.ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
     Ok(json_response(StatusCode::OK, json!({"audit": audit})))
+}
+
+async fn execution_audit_integrity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(intent_id): Path<String>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    let intent_id = execution::normalize_intent_id(&intent_id)
+        .map_err(|_| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_intent_id"))?;
+    let participant_id = resolved.instance.clone();
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let lookup_intent = intent_id.clone();
+    let (allowed, report) = with_db(&state, move |conn| {
+        let allowed = authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_EXECUTION_AUDIT,
+            Some(&lookup_intent),
+        )?;
+        let report = if allowed {
+            Some(execution::verify_execution_audit_integrity(
+                conn,
+                &lookup_participant,
+                &lookup_intent,
+            )?)
+        } else {
+            None
+        };
+        Ok((allowed, report))
+    })
+    .await?;
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    let report = report.expect("authorized integrity verification must produce a report");
+    Ok(json_response(StatusCode::OK, json!({"integrity": report})))
 }
 
 fn principal_for_headers(headers: &HeaderMap, resolved: &Identity) -> execution::Principal {

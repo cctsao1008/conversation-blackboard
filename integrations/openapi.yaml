@@ -382,6 +382,38 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/executions/{intent_id}/audit/integrity:
+    get:
+      operationId: blackboardExecutionAuditIntegrity
+      summary: Verify structural integrity of committed execution audit evidence.
+      description: Current policy authorizes access; the report is produced by the canonical read-only integrity verifier and does not re-evaluate historical authorization or repair history.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: intent_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/IntentId'
+      responses:
+        '200':
+          description: Structural integrity report for the requested semantic execution identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionAuditIntegrityEnvelope'
+        '400':
+          description: Invalid semantic intent identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
@@ -645,6 +677,35 @@ components:
       properties:
         audit:
           $ref: '#/components/schemas/ExecutionAuditBundle'
+
+    ExecutionAuditIntegrityReport:
+      type: object
+      additionalProperties: false
+      required: [participant_id, intent_id, valid, checks, violations]
+      description: Read-only structural integrity report over committed execution evidence. Historical authorization is not re-evaluated.
+      properties:
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        intent_id:
+          $ref: '#/components/schemas/IntentId'
+        valid:
+          type: boolean
+        checks:
+          type: array
+          items:
+            type: string
+        violations:
+          type: array
+          items:
+            type: string
+
+    ExecutionAuditIntegrityEnvelope:
+      type: object
+      additionalProperties: false
+      required: [integrity]
+      properties:
+        integrity:
+          $ref: '#/components/schemas/ExecutionAuditIntegrityReport'
 
     Identity:
       type: object
