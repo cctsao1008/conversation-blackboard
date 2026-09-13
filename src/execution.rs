@@ -53,9 +53,20 @@ pub struct ExecutionReceipt {
 }
 
 #[derive(Debug)]
+pub struct MessageExecutionRequest<'a> {
+    pub authority: &'a AuthorityContext,
+    pub ingress: &'a IngressProvenance,
+    pub intent: &'a IntentEnvelope,
+    pub channel: &'a str,
+    pub kind: &'a str,
+    pub body: &'a str,
+    pub reply_to: Option<i64>,
+}
+
+#[derive(Debug)]
 pub enum MessageExecutionResult {
-    Created(Message, ExecutionReceipt),
-    Existing(Message, ExecutionReceipt),
+    Created(Message),
+    Existing(Message),
     IntentConflict,
     ReplyTargetNotFound,
     ChannelArchived,
@@ -136,34 +147,28 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
 pub fn execute_message_intent(
     conn: &Connection,
     identity: &Identity,
-    authority: &AuthorityContext,
-    ingress: &IngressProvenance,
-    intent: &IntentEnvelope,
-    channel: &str,
-    kind: &str,
-    body: &str,
-    reply_to: Option<i64>,
+    request: MessageExecutionRequest<'_>,
 ) -> rusqlite::Result<MessageExecutionResult> {
     ensure_execution_tables(conn)?;
 
     let expected_hash = message_request_hash(
-        channel,
-        kind,
-        body,
-        intent.conversation_ref.as_deref(),
-        reply_to,
+        request.channel,
+        request.kind,
+        request.body,
+        request.intent.conversation_ref.as_deref(),
+        request.reply_to,
     );
-    if authority.principal != ingress.principal
-        || ingress.intent_id != intent.intent_id
-        || identity.instance != intent.participant_id
-        || intent.capability != POST_MESSAGE_CAPABILITY
-        || intent.resource != channel
-        || intent.request_hash != expected_hash
+    if request.authority.principal != request.ingress.principal
+        || request.ingress.intent_id != request.intent.intent_id
+        || identity.instance != request.intent.participant_id
+        || request.intent.capability != POST_MESSAGE_CAPABILITY
+        || request.intent.resource != request.channel
+        || request.intent.request_hash != expected_hash
     {
         return Err(rusqlite::Error::InvalidQuery);
     }
 
-    if !db::ensure_channel_for_write(conn, channel, Some(&identity.instance))? {
+    if !db::ensure_channel_for_write(conn, request.channel, Some(&identity.instance))? {
         return Ok(MessageExecutionResult::ChannelArchived);
     }
 
@@ -171,14 +176,14 @@ pub fn execute_message_intent(
         conn,
         identity,
         db::NavigationMessageInput {
-            channel,
-            kind,
-            body,
-            reply_to,
-            nonce: &intent.intent_id,
-            request_hash: &intent.request_hash,
+            channel: request.channel,
+            kind: request.kind,
+            body: request.body,
+            reply_to: request.reply_to,
+            nonce: &request.intent.intent_id,
+            request_hash: &request.intent.request_hash,
         },
-        intent.conversation_ref.as_deref(),
+        request.intent.conversation_ref.as_deref(),
     )?;
 
     let (message, created) = match append {
@@ -193,19 +198,19 @@ pub fn execute_message_intent(
     };
 
     let receipt = ExecutionReceipt {
-        participant_id: intent.participant_id.clone(),
-        intent_id: intent.intent_id.clone(),
-        intent_hash: intent.request_hash.clone(),
-        capability: intent.capability.clone(),
+        participant_id: request.intent.participant_id.clone(),
+        intent_id: request.intent.intent_id.clone(),
+        intent_hash: request.intent.request_hash.clone(),
+        capability: request.intent.capability.clone(),
         message_id: message.id,
         status: "committed".to_owned(),
     };
-    record_execution(conn, ingress, &receipt)?;
+    record_execution(conn, request.ingress, &receipt)?;
 
     Ok(if created {
-        MessageExecutionResult::Created(message, receipt)
+        MessageExecutionResult::Created(message)
     } else {
-        MessageExecutionResult::Existing(message, receipt)
+        MessageExecutionResult::Existing(message)
     })
 }
 
@@ -299,31 +304,6 @@ pub fn record_execution(
     }
 
     tx.commit()
-}
-
-pub fn execution_receipt(
-    conn: &Connection,
-    participant_id: &str,
-    intent_id: &str,
-) -> rusqlite::Result<Option<ExecutionReceipt>> {
-    ensure_execution_tables(conn)?;
-    conn.query_row(
-        "SELECT participant_id, intent_id, intent_hash, capability, message_id, status
-         FROM execution_receipts
-         WHERE participant_id = ?1 AND intent_id = ?2",
-        params![participant_id, intent_id],
-        |row| {
-            Ok(ExecutionReceipt {
-                participant_id: row.get(0)?,
-                intent_id: row.get(1)?,
-                intent_hash: row.get(2)?,
-                capability: row.get(3)?,
-                message_id: row.get(4)?,
-                status: row.get(5)?,
-            })
-        },
-    )
-    .optional()
 }
 
 #[cfg(test)]
@@ -434,17 +414,19 @@ mod tests {
         let first = execute_message_intent(
             &conn,
             &identity,
-            &authority,
-            &rest_ingress,
-            &intent,
-            "blackboard-lounge",
-            "message",
-            "hello",
-            None,
+            MessageExecutionRequest {
+                authority: &authority,
+                ingress: &rest_ingress,
+                intent: &intent,
+                channel: "blackboard-lounge",
+                kind: "message",
+                body: "hello",
+                reply_to: None,
+            },
         )
         .unwrap();
         let first_id = match first {
-            MessageExecutionResult::Created(message, _) => message.id,
+            MessageExecutionResult::Created(message) => message.id,
             other => panic!("unexpected result: {other:?}"),
         };
 
@@ -458,25 +440,30 @@ mod tests {
         let second = execute_message_intent(
             &conn,
             &identity,
-            &authority,
-            &mcp_ingress,
-            &intent,
-            "blackboard-lounge",
-            "message",
-            "hello",
-            None,
+            MessageExecutionRequest {
+                authority: &authority,
+                ingress: &mcp_ingress,
+                intent: &intent,
+                channel: "blackboard-lounge",
+                kind: "message",
+                body: "hello",
+                reply_to: None,
+            },
         )
         .unwrap();
         match second {
-            MessageExecutionResult::Existing(message, receipt) => {
-                assert_eq!(message.id, first_id);
-                assert_eq!(receipt.message_id, first_id);
-            }
+            MessageExecutionResult::Existing(message) => assert_eq!(message.id, first_id),
             other => panic!("unexpected result: {other:?}"),
         }
 
-        assert!(execution_receipt(&conn, "maker-main", "semantic-intent-1")
-            .unwrap()
-            .is_some());
+        let receipt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM execution_receipts
+                 WHERE participant_id = 'maker-main' AND intent_id = 'semantic-intent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_count, 1);
     }
 }
