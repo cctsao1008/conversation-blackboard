@@ -85,10 +85,7 @@ async fn execution_receipt(
     .await?
     .ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
 
-    Ok(json_response(
-        StatusCode::OK,
-        json!({"execution": receipt}),
-    ))
+    Ok(json_response(StatusCode::OK, json!({"execution": receipt})))
 }
 
 async fn require_identity_for_target(
