@@ -640,8 +640,10 @@ components:
     IngressAuditRecord:
       type: object
       additionalProperties: false
-      required: [delivery_id, intent_id, transport, external_ref, principal]
+      required: [participant_id, delivery_id, intent_id, transport, external_ref, principal]
       properties:
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
         delivery_id:
           $ref: '#/components/schemas/DeliveryId'
         intent_id:

@@ -65,6 +65,7 @@ pub struct AuthorizationProvenance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngressAuditRecord {
+    pub participant_id: String,
     pub delivery_id: String,
     pub intent_id: String,
     pub transport: String,
@@ -156,6 +157,7 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ingress_provenance (
             delivery_id         TEXT PRIMARY KEY,
+            participant_id      TEXT,
             intent_id           TEXT NOT NULL,
             transport           TEXT NOT NULL,
             external_ref        TEXT NOT NULL,
@@ -188,7 +190,44 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
             created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
             PRIMARY KEY (participant_id, intent_id)
         );",
-    )
+    )?;
+
+    let has_participant_id = {
+        let mut stmt = conn.prepare("PRAGMA table_info(ingress_provenance)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        columns.iter().any(|column| column == "participant_id")
+    };
+    if !has_participant_id {
+        conn.execute(
+            "ALTER TABLE ingress_provenance ADD COLUMN participant_id TEXT",
+            [],
+        )?;
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution
+            ON ingress_provenance(participant_id, intent_id);",
+    )?;
+
+    conn.execute(
+        "UPDATE ingress_provenance
+         SET participant_id = (
+             SELECT MIN(er.participant_id)
+             FROM execution_receipts er
+             WHERE er.intent_id = ingress_provenance.intent_id
+         )
+         WHERE participant_id IS NULL
+           AND 1 = (
+             SELECT COUNT(DISTINCT er.participant_id)
+             FROM execution_receipts er
+             WHERE er.intent_id = ingress_provenance.intent_id
+           )",
+        [],
+    )?;
+
+    Ok(())
 }
 
 pub fn get_execution_receipt(
@@ -250,21 +289,23 @@ pub fn get_execution_audit_bundle(
     };
     let authorization = get_authorization_provenance(conn, participant_id, intent_id)?;
     let mut stmt = conn.prepare(
-        "SELECT delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject
+        "SELECT participant_id, delivery_id, intent_id, transport, external_ref,
+                principal_provider, principal_subject
          FROM ingress_provenance
-         WHERE intent_id = ?1
+         WHERE participant_id = ?1 AND intent_id = ?2
          ORDER BY created_at, delivery_id",
     )?;
     let ingress = stmt
-        .query_map([intent_id], |row| {
+        .query_map(params![participant_id, intent_id], |row| {
             Ok(IngressAuditRecord {
-                delivery_id: row.get(0)?,
-                intent_id: row.get(1)?,
-                transport: row.get(2)?,
-                external_ref: row.get(3)?,
+                participant_id: row.get(0)?,
+                delivery_id: row.get(1)?,
+                intent_id: row.get(2)?,
+                transport: row.get(3)?,
+                external_ref: row.get(4)?,
                 principal: Principal {
-                    provider: row.get(4)?,
-                    subject: row.get(5)?,
+                    provider: row.get(5)?,
+                    subject: row.get(6)?,
                 },
             })
         })?
@@ -341,7 +382,7 @@ pub fn verify_execution_audit_integrity(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT delivery_id, intent_id, transport, external_ref,
+        "SELECT participant_id, delivery_id, intent_id, transport, external_ref,
                 principal_provider, principal_subject
          FROM ingress_provenance
          WHERE intent_id = ?1
@@ -349,42 +390,58 @@ pub fn verify_execution_audit_integrity(
     )?;
     let ingress = stmt
         .query_map([intent_id], |row| {
-            Ok(IngressAuditRecord {
-                delivery_id: row.get(0)?,
-                intent_id: row.get(1)?,
-                transport: row.get(2)?,
-                external_ref: row.get(3)?,
-                principal: Principal {
-                    provider: row.get(4)?,
-                    subject: row.get(5)?,
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                IngressAuditRecord {
+                    participant_id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    delivery_id: row.get(1)?,
+                    intent_id: row.get(2)?,
+                    transport: row.get(3)?,
+                    external_ref: row.get(4)?,
+                    principal: Principal {
+                        provider: row.get(5)?,
+                        subject: row.get(6)?,
+                    },
                 },
-            })
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut ingress_metadata_invalid = false;
-    let mut ingress_binding_mismatch = false;
-    for row in &ingress {
-        if row.intent_id != intent_id {
-            ingress_binding_mismatch = true;
-        }
-        if row.delivery_id.trim().is_empty()
-            || row.transport.trim().is_empty()
-            || row.external_ref.trim().is_empty()
-            || row.principal.provider.trim().is_empty()
-            || row.principal.subject.trim().is_empty()
-        {
-            ingress_metadata_invalid = true;
+    let mut ingress_participant_unbound = false;
+    let mut target_ingress_count = 0usize;
+    for (binding, row) in &ingress {
+        match binding.as_deref() {
+            None | Some("") => ingress_participant_unbound = true,
+            Some(bound_participant) if bound_participant == participant_id => {
+                target_ingress_count += 1;
+                if row.intent_id != intent_id || row.participant_id != participant_id {
+                    violations.push("ingress_binding_mismatch".to_owned());
+                }
+                if row.delivery_id.trim().is_empty()
+                    || row.transport.trim().is_empty()
+                    || row.external_ref.trim().is_empty()
+                    || row.principal.provider.trim().is_empty()
+                    || row.principal.subject.trim().is_empty()
+                {
+                    ingress_metadata_invalid = true;
+                }
+            }
+            Some(_) => {}
         }
     }
-    if ingress_binding_mismatch {
-        violations.push("ingress_binding_mismatch".to_owned());
-    } else {
+
+    if ingress_participant_unbound {
+        violations.push("ingress_participant_unbound".to_owned());
+    }
+    if target_ingress_count == 0 {
+        violations.push("ingress_missing".to_owned());
+    } else if !violations.iter().any(|v| v == "ingress_binding_mismatch") {
         checks.push("ingress_binding_valid".to_owned());
     }
     if ingress_metadata_invalid {
         violations.push("ingress_metadata_invalid".to_owned());
-    } else {
+    } else if target_ingress_count > 0 {
         checks.push("ingress_metadata_valid".to_owned());
     }
 
@@ -568,9 +625,10 @@ fn record_execution_in_tx(
     ingress: &IngressProvenance,
     receipt: &ExecutionReceipt,
 ) -> rusqlite::Result<()> {
-    let existing_delivery: Option<(String, String, String, String, String)> = tx
+    let existing_delivery: Option<(Option<String>, String, String, String, String, String)> = tx
         .query_row(
-            "SELECT intent_id, transport, external_ref, principal_provider, principal_subject
+            "SELECT participant_id, intent_id, transport, external_ref,
+                    principal_provider, principal_subject
              FROM ingress_provenance WHERE delivery_id = ?1",
             [&ingress.delivery_id],
             |row| {
@@ -580,6 +638,7 @@ fn record_execution_in_tx(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )
@@ -587,6 +646,7 @@ fn record_execution_in_tx(
 
     if let Some(existing) = existing_delivery {
         let expected = (
+            Some(receipt.participant_id.clone()),
             ingress.intent_id.clone(),
             ingress.transport.clone(),
             ingress.external_ref.clone(),
@@ -599,10 +659,12 @@ fn record_execution_in_tx(
     } else {
         tx.execute(
             "INSERT INTO ingress_provenance
-                (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (delivery_id, participant_id, intent_id, transport, external_ref,
+                 principal_provider, principal_subject)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 ingress.delivery_id,
+                receipt.participant_id,
                 ingress.intent_id,
                 ingress.transport,
                 ingress.external_ref,

@@ -74,7 +74,8 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
             println!("deliveries     : {}", audit.ingress.len());
             for delivery in audit.ingress {
                 println!(
-                    "delivery        : {}\t{}\t{}\t{}:{}\t{}",
+                    "delivery        : {}\t{}\t{}\t{}\t{}:{}\t{}",
+                    delivery.participant_id,
                     delivery.delivery_id,
                     delivery.transport,
                     delivery.external_ref,

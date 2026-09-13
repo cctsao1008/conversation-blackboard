@@ -132,13 +132,14 @@ pub fn ingress_audit_record_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "participant_id": participant_id_schema(),
             "delivery_id": delivery_id_schema(),
             "intent_id": intent_id_schema(),
             "transport": {"type": "string"},
             "external_ref": {"type": "string"},
             "principal": principal_schema()
         },
-        "required": ["delivery_id", "intent_id", "transport", "external_ref", "principal"],
+        "required": ["participant_id", "delivery_id", "intent_id", "transport", "external_ref", "principal"],
         "additionalProperties": false
     })
 }

@@ -144,3 +144,140 @@ fn verifier_is_read_only() {
         .unwrap();
     assert_eq!(before, after);
 }
+
+#[test]
+fn same_intent_across_participants_keeps_ingress_separate() {
+    let conn = fixture();
+    for (message_id, participant) in [(1_i64, "alpha-main"), (2_i64, "beta-main")] {
+        conn.execute(
+            "INSERT INTO messages (id, channel, source, instance, kind, body)
+             VALUES (?1, 'blackboard-lounge', 'test', ?2, 'message', 'audit')",
+            params![message_id, participant],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO execution_receipts
+                (participant_id, intent_id, intent_hash, capability, message_id, status)
+             VALUES (?1, 'shared-intent', 'hash', 'post_message', ?2, 'committed')",
+            params![participant, message_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO execution_authorization_provenance
+                (participant_id, intent_id, source, reason, grant_id)
+             VALUES (?1, 'shared-intent', 'implicit_authority', 'implicit_participant_hmac', NULL)",
+            [participant],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ingress_provenance
+                (delivery_id, participant_id, intent_id, transport, external_ref,
+                 principal_provider, principal_subject)
+             VALUES (?1, ?2, 'shared-intent', 'rest', ?1, 'participant-hmac', ?2)",
+            params![format!("delivery-{participant}"), participant],
+        )
+        .unwrap();
+    }
+
+    let alpha = execution::get_execution_audit_bundle(&conn, "alpha-main", "shared-intent")
+        .unwrap()
+        .unwrap();
+    let beta = execution::get_execution_audit_bundle(&conn, "beta-main", "shared-intent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alpha.ingress.len(), 1);
+    assert_eq!(beta.ingress.len(), 1);
+    assert_eq!(alpha.ingress[0].participant_id, "alpha-main");
+    assert_eq!(beta.ingress[0].participant_id, "beta-main");
+    assert_ne!(alpha.ingress[0].delivery_id, beta.ingress[0].delivery_id);
+
+    assert!(
+        execution::verify_execution_audit_integrity(&conn, "alpha-main", "shared-intent")
+            .unwrap()
+            .valid
+    );
+    assert!(
+        execution::verify_execution_audit_integrity(&conn, "beta-main", "shared-intent")
+            .unwrap()
+            .valid
+    );
+}
+
+#[test]
+fn unambiguous_legacy_ingress_is_backfilled() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE ingress_provenance SET participant_id = NULL WHERE delivery_id = 'delivery-85'",
+        [],
+    )
+    .unwrap();
+    execution::ensure_execution_tables(&conn).unwrap();
+    let participant: Option<String> = conn
+        .query_row(
+            "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'delivery-85'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(participant.as_deref(), Some("maker-main"));
+}
+
+#[test]
+fn ambiguous_legacy_ingress_is_not_guessed() {
+    let conn = fixture();
+    for (message_id, participant) in [(1_i64, "alpha-main"), (2_i64, "beta-main")] {
+        conn.execute(
+            "INSERT INTO messages (id, channel, source, instance, kind, body)
+             VALUES (?1, 'blackboard-lounge', 'test', ?2, 'message', 'audit')",
+            params![message_id, participant],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO execution_receipts
+                (participant_id, intent_id, intent_hash, capability, message_id, status)
+             VALUES (?1, 'ambiguous-intent', 'hash', 'post_message', ?2, 'committed')",
+            params![participant, message_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO execution_authorization_provenance
+                (participant_id, intent_id, source, reason, grant_id)
+             VALUES (?1, 'ambiguous-intent', 'implicit_authority', 'implicit_participant_hmac', NULL)",
+            [participant],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO ingress_provenance
+            (delivery_id, participant_id, intent_id, transport, external_ref,
+             principal_provider, principal_subject)
+         VALUES ('legacy-ambiguous', NULL, 'ambiguous-intent', 'rest', 'legacy',
+                 'participant-hmac', 'unknown')",
+        [],
+    )
+    .unwrap();
+
+    execution::ensure_execution_tables(&conn).unwrap();
+    let participant: Option<String> = conn
+        .query_row(
+            "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'legacy-ambiguous'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(participant.is_none());
+
+    let alpha = execution::get_execution_audit_bundle(&conn, "alpha-main", "ambiguous-intent")
+        .unwrap()
+        .unwrap();
+    assert!(alpha.ingress.is_empty());
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "alpha-main", "ambiguous-intent")
+            .unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "ingress_participant_unbound"));
+}
