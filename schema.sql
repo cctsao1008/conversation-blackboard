@@ -79,3 +79,30 @@ CREATE TABLE IF NOT EXISTS navigation_writes (
     created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
     PRIMARY KEY (instance, nonce)
 );
+
+CREATE TABLE IF NOT EXISTS ingress_provenance (
+    delivery_id         TEXT PRIMARY KEY,
+    intent_id           TEXT NOT NULL,
+    transport           TEXT NOT NULL,
+    external_ref        TEXT NOT NULL,
+    principal_provider  TEXT NOT NULL,
+    principal_subject   TEXT NOT NULL,
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingress_provenance_intent
+ON ingress_provenance(intent_id);
+
+CREATE TABLE IF NOT EXISTS execution_receipts (
+    participant_id  TEXT NOT NULL,
+    intent_id       TEXT NOT NULL,
+    intent_hash     TEXT NOT NULL,
+    capability      TEXT NOT NULL,
+    message_id      INTEGER NOT NULL,
+    status          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (participant_id, intent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_receipts_message
+ON execution_receipts(message_id);
