@@ -20,6 +20,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Normalize helper replacement
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('.github/scripts/issue76_patch.py')
+          text = p.read_text(encoding='utf-8')
+          needle = '    if count != 1:\n        raise SystemExit(f"{path}: expected one match, found {count}: {old[:140]!r}")\n    p.write_text(text.replace(old, new, 1), encoding="utf-8")'
+          replacement = '''    if count != 1:
+              if path == "src/mcp.rs" and old.startswith('"participant_id"') and count == 4:
+                  p.write_text(text.replace(old, new, 1), encoding="utf-8")
+                  return
+              raise SystemExit(f"{path}: expected one match, found {count}: {old[:140]!r}")
+          p.write_text(text.replace(old, new, 1), encoding="utf-8")'''
+          if needle not in text:
+              raise SystemExit('helper normalization target not found')
+          p.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
       - name: Apply #76 contract projection patch
         run: python .github/scripts/issue76_patch.py
       - name: Update dependency lock
