@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode, Uri},
+    http::{header, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -22,13 +22,14 @@ async fn access_context(
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Response, AccessApiError> {
-    let identity = require_identity_for_target(&state, &headers, "GET", &uri).await?;
-    let lookup = identity.instance.clone();
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let lookup = resolved.instance.clone();
     let role = with_db(&state, move |conn| {
         identity::get_web_participant_role(conn, &lookup)
     })
     .await?;
 
+    let participant_id = role.as_ref().map(|_| resolved.instance.clone());
     let mut capabilities = vec![
         "read_messages",
         execution::POST_MESSAGE_CAPABILITY,
@@ -42,11 +43,11 @@ async fn access_context(
         StatusCode::OK,
         json!({
             "identity": {
-                "source": identity.source,
-                "instance": identity.instance,
-                "label": identity.label,
+                "source": resolved.source,
+                "instance": resolved.instance,
+                "label": resolved.label,
             },
-            "participant_id": role.as_ref().map(|_| identity.instance.clone()),
+            "participant_id": participant_id,
             "role": role.unwrap_or_else(|| "user".to_owned()),
             "capabilities": capabilities,
         }),
@@ -59,10 +60,10 @@ async fn execution_receipt(
     uri: Uri,
     Path(intent_id): Path<String>,
 ) -> Result<Response, AccessApiError> {
-    let identity = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
     let intent_id = execution::normalize_intent_id(&intent_id)
         .map_err(|_| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_intent_id"))?;
-    let participant_id = identity.instance.clone();
+    let participant_id = resolved.instance.clone();
     let receipt = with_db(&state, move |conn| {
         execution::ensure_execution_tables(conn)?;
         conn.query_row(
@@ -147,5 +148,9 @@ impl IntoResponse for AccessApiError {
 }
 
 fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
-    (status, Json(value)).into_response()
+    let mut response = (status, Json(value)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
