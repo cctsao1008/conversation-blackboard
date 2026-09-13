@@ -1,0 +1,39 @@
+name: issue77-jwt-tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/issue77-jwt-tests.yml
+      - .github/scripts/issue77_jwt_tests.py
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply #77 JWT validation tests
+        run: python .github/scripts/issue77_jwt_tests.py
+      - name: Update dependency lock
+        run: cargo test --all-features --no-run
+      - name: Format and validate
+        run: |
+          cargo fmt --all
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+      - name: Commit tests and remove temporary helpers
+        run: |
+          rm -f .github/workflows/issue77-jwt-tests.yml .github/scripts/issue77_jwt_tests.py
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add -A
+          git commit -m "#77 Verify OIDC issuer audience expiry and signature rejection"
+          git push origin main
