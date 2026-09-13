@@ -1,0 +1,39 @@
+name: issue76-contracts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/issue76-contracts.yml
+      - .github/scripts/issue76_patch.py
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply #76 contract projection patch
+        run: python .github/scripts/issue76_patch.py
+      - name: Update dependency lock
+        run: cargo test --all-features --no-run
+      - name: Format and validate
+        run: |
+          cargo fmt --all
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+      - name: Commit implementation and remove temporary helpers
+        run: |
+          rm -f .github/workflows/issue76-contracts.yml .github/scripts/issue76_patch.py
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add -A
+          git commit -m "#76 Derive and validate external contract projections"
+          git push origin main
