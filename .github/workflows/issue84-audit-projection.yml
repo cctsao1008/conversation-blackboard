@@ -6,6 +6,7 @@ on:
       - '.github/scripts/issue84_patch.py'
       - '.github/scripts/issue84_mcp_fix.py'
       - '.github/scripts/issue84_contract_fix.py'
+      - '.github/scripts/issue84_http_probe.py'
       - '.github/workflows/issue84-audit-projection.yml'
 
 permissions:
@@ -26,6 +27,7 @@ jobs:
           python .github/scripts/issue84_patch.py
           python .github/scripts/issue84_mcp_fix.py
           python .github/scripts/issue84_contract_fix.py
+          python .github/scripts/issue84_http_probe.py
       - name: Format and verify
         run: |
           cargo fmt --all
@@ -37,6 +39,7 @@ jobs:
           rm .github/scripts/issue84_patch.py
           rm .github/scripts/issue84_mcp_fix.py
           rm .github/scripts/issue84_contract_fix.py
+          rm .github/scripts/issue84_http_probe.py
           rm .github/workflows/issue84-audit-projection.yml
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
