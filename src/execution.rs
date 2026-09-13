@@ -1,5 +1,12 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::{
+    db,
+    identity,
+    model::{Identity, Message},
+};
 
 pub const MAX_INTENT_ID_BYTES: usize = 256;
 pub const POST_MESSAGE_CAPABILITY: &str = "post_message";
@@ -45,6 +52,15 @@ pub struct ExecutionReceipt {
     pub status: String,
 }
 
+#[derive(Debug)]
+pub enum MessageExecutionResult {
+    Created(Message, ExecutionReceipt),
+    Existing(Message, ExecutionReceipt),
+    IntentConflict,
+    ReplyTargetNotFound,
+    ChannelArchived,
+}
+
 pub fn github_delivery_id(repository_id: u64, issue_number: i64) -> String {
     format!("github:{repository_id}:issue:{issue_number}")
 }
@@ -67,6 +83,25 @@ pub fn normalize_intent_id(value: &str) -> Result<String, ()> {
         return Err(());
     }
     Ok(value.to_owned())
+}
+
+pub fn message_request_hash(
+    channel: &str,
+    kind: &str,
+    body: &str,
+    conversation_ref: Option<&str>,
+    reply_to: Option<i64>,
+) -> String {
+    identity::hash_token(
+        &json!({
+            "channel": channel,
+            "kind": kind,
+            "body": body,
+            "conversation_ref": conversation_ref,
+            "reply_to": reply_to,
+        })
+        .to_string(),
+    )
 }
 
 pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -96,6 +131,82 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_execution_receipts_message
             ON execution_receipts(message_id);",
     )
+}
+
+pub fn execute_message_intent(
+    conn: &Connection,
+    identity: &Identity,
+    authority: &AuthorityContext,
+    ingress: &IngressProvenance,
+    intent: &IntentEnvelope,
+    channel: &str,
+    kind: &str,
+    body: &str,
+    reply_to: Option<i64>,
+) -> rusqlite::Result<MessageExecutionResult> {
+    ensure_execution_tables(conn)?;
+
+    let expected_hash = message_request_hash(
+        channel,
+        kind,
+        body,
+        intent.conversation_ref.as_deref(),
+        reply_to,
+    );
+    if authority.principal != ingress.principal
+        || ingress.intent_id != intent.intent_id
+        || identity.instance != intent.participant_id
+        || intent.capability != POST_MESSAGE_CAPABILITY
+        || intent.resource != channel
+        || intent.request_hash != expected_hash
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    if !db::ensure_channel_for_write(conn, channel, Some(&identity.instance))? {
+        return Ok(MessageExecutionResult::ChannelArchived);
+    }
+
+    let append = db::append_navigation_message_with_conversation(
+        conn,
+        identity,
+        db::NavigationMessageInput {
+            channel,
+            kind,
+            body,
+            reply_to,
+            nonce: &intent.intent_id,
+            request_hash: &intent.request_hash,
+        },
+        intent.conversation_ref.as_deref(),
+    )?;
+
+    let (message, created) = match append {
+        db::NavigationAppendResult::Created(message) => (message, true),
+        db::NavigationAppendResult::Existing(message) => (message, false),
+        db::NavigationAppendResult::NonceConflict => {
+            return Ok(MessageExecutionResult::IntentConflict)
+        }
+        db::NavigationAppendResult::ReplyTargetNotFound => {
+            return Ok(MessageExecutionResult::ReplyTargetNotFound)
+        }
+    };
+
+    let receipt = ExecutionReceipt {
+        participant_id: intent.participant_id.clone(),
+        intent_id: intent.intent_id.clone(),
+        intent_hash: intent.request_hash.clone(),
+        capability: intent.capability.clone(),
+        message_id: message.id,
+        status: "committed".to_owned(),
+    };
+    record_execution(conn, ingress, &receipt)?;
+
+    Ok(if created {
+        MessageExecutionResult::Created(message, receipt)
+    } else {
+        MessageExecutionResult::Existing(message, receipt)
+    })
 }
 
 pub fn record_execution(
@@ -190,9 +301,35 @@ pub fn record_execution(
     tx.commit()
 }
 
+pub fn execution_receipt(
+    conn: &Connection,
+    participant_id: &str,
+    intent_id: &str,
+) -> rusqlite::Result<Option<ExecutionReceipt>> {
+    ensure_execution_tables(conn)?;
+    conn.query_row(
+        "SELECT participant_id, intent_id, intent_hash, capability, message_id, status
+         FROM execution_receipts
+         WHERE participant_id = ?1 AND intent_id = ?2",
+        params![participant_id, intent_id],
+        |row| {
+            Ok(ExecutionReceipt {
+                participant_id: row.get(0)?,
+                intent_id: row.get(1)?,
+                intent_hash: row.get(2)?,
+                capability: row.get(3)?,
+                message_id: row.get(4)?,
+                status: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn github_default_intent_preserves_legacy_nonce() {
@@ -250,5 +387,96 @@ mod tests {
         let mut changed = receipt.clone();
         changed.message_id = 59;
         assert!(record_execution(&conn, &ingress, &changed).is_err());
+    }
+
+    #[test]
+    fn shared_execution_boundary_deduplicates_across_transports() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("board.db");
+        db::initialize(&path).unwrap();
+        let conn = db::connect(&path).unwrap();
+        let identity = Identity {
+            source: "maker".into(),
+            instance: "maker-main".into(),
+            label: None,
+        };
+        let intent_id = "semantic-intent-1".to_owned();
+        let request_hash = message_request_hash(
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+            None,
+        );
+        let intent = IntentEnvelope {
+            intent_id: intent_id.clone(),
+            participant_id: identity.instance.clone(),
+            conversation_ref: None,
+            capability: POST_MESSAGE_CAPABILITY.into(),
+            resource: "blackboard-lounge".into(),
+            request_hash,
+        };
+        let principal = Principal {
+            provider: "hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let authority = AuthorityContext {
+            principal: principal.clone(),
+            mechanism: "hmac-sha256-v1".into(),
+        };
+        let rest_ingress = IngressProvenance {
+            delivery_id: "rest:maker-main:nonce-1".into(),
+            intent_id: intent_id.clone(),
+            transport: "rest".into(),
+            external_ref: "nonce-1".into(),
+            principal: principal.clone(),
+        };
+        let first = execute_message_intent(
+            &conn,
+            &identity,
+            &authority,
+            &rest_ingress,
+            &intent,
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+        )
+        .unwrap();
+        let first_id = match first {
+            MessageExecutionResult::Created(message, _) => message.id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+
+        let mcp_ingress = IngressProvenance {
+            delivery_id: "mcp:maker-main:nonce-1".into(),
+            intent_id,
+            transport: "mcp".into(),
+            external_ref: "nonce-1".into(),
+            principal,
+        };
+        let second = execute_message_intent(
+            &conn,
+            &identity,
+            &authority,
+            &mcp_ingress,
+            &intent,
+            "blackboard-lounge",
+            "message",
+            "hello",
+            None,
+        )
+        .unwrap();
+        match second {
+            MessageExecutionResult::Existing(message, receipt) => {
+                assert_eq!(message.id, first_id);
+                assert_eq!(receipt.message_id, first_id);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        assert!(execution_receipt(&conn, "maker-main", "semantic-intent-1")
+            .unwrap()
+            .is_some());
     }
 }
