@@ -21,6 +21,7 @@ mod mcp;
 #[cfg(test)]
 mod mcp_contract_tests;
 mod model;
+mod oidc;
 mod participant_admin;
 mod participant_auth;
 mod request_auth;

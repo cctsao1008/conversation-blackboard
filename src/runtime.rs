@@ -1,6 +1,6 @@
 use std::{env, future::Future, net::SocketAddr, path::PathBuf};
 
-use crate::{access_api, db, github_webhook, history, http, mcp};
+use crate::{access_api, db, github_webhook, history, http, mcp, oidc};
 use http::AppState;
 
 #[derive(Clone, Debug)]
@@ -61,12 +61,16 @@ where
         db_path: config.db_path.clone(),
         registration_key: config.registration_key,
     };
-    let github_state = github_webhook::GithubWebhookState::from_env(config.db_path);
-    let app = http::app(state.clone())
+    let github_state = github_webhook::GithubWebhookState::from_env(config.db_path.clone());
+    let oidc_state = oidc::OidcState::from_env(config.db_path).await?;
+    let mut app = http::app(state.clone())
         .merge(history::app(state.clone()))
         .merge(access_api::app(state.clone()))
         .merge(mcp::app(state))
         .merge(github_webhook::app(github_state));
+    if let Some(oidc_state) = oidc_state {
+        app = app.merge(oidc::app(oidc_state));
+    }
 
     println!("conversation-blackboard listening on http://{addr}");
     axum::serve(listener, app)
