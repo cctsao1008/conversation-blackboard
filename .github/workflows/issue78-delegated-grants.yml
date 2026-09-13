@@ -1,0 +1,37 @@
+name: issue78-delegated-grants
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/issue78-delegated-grants.yml
+      - .github/scripts/issue78_delegated_grants.py
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply #78 delegated grant patch
+        run: python .github/scripts/issue78_delegated_grants.py
+      - name: Format and validate
+        run: |
+          cargo fmt --all
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+      - name: Commit implementation and remove temporary helpers
+        run: |
+          rm -f .github/workflows/issue78-delegated-grants.yml .github/scripts/issue78_delegated_grants.py
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add -A
+          git commit -m "#78 Add atomic delegated grant consumption"
+          git push origin main
