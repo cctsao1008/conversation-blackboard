@@ -22,3 +22,7 @@ No external description becomes a second source of domain truth.
 > Generate first. Validate second. Never maintain identical semantics manually in multiple contracts.
 
 Where runtime adapter schemas can directly reuse Rust schema builders, they do. Where an external file format must remain a checked-in projection, `contract_parity_tests` structurally validates the duplicated shape in normal Rust CI. Contract drift therefore fails the same Linux/Windows validation path as implementation drift.
+
+## Verification boundary
+
+Normal `core-ci` is the acceptance boundary for contract projection changes. The Rust test suite parses checked-in OpenAPI and UTCP projections, compares shared semantic shapes against `src/contract_schema.rs`, and verifies that transport delivery identity does not leak into semantic execution receipts. Linux and Windows validation must both remain green before the projection contract is considered complete.
