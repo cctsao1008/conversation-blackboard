@@ -1,5 +1,6 @@
 name: Issue 72 semantic intent convergence
 
+# Retry after GitHub reported a startup_failure before any job was created.
 on:
   push:
     paths:
