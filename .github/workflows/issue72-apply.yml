@@ -1,5 +1,6 @@
 name: Issue 72 ingress convergence
 
+# Retry after execution-boundary clippy cleanup.
 on:
   push:
     paths:
