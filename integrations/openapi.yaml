@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: conversation-blackboard
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Native HTTP contract for reading, writing, and administering a conversation-blackboard.
     Persisted source/instance provenance is resolved by the server; message clients never supply it.
+    conversation_ref is optional provider-side provenance on stored messages and carries no authority.
 servers:
   - url: https://board.cafefeed.idv.tw
     description: Production conversation-blackboard endpoint.
@@ -200,7 +201,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: Channel is archived or signed nonce conflicts.
+          description: Channel is archived.
           content:
             application/json:
               schema:
@@ -481,7 +482,7 @@ components:
 
     Message:
       type: object
-      required: [id, created_at, channel, source, instance, kind, body, reply_to]
+      required: [id, created_at, channel, source, instance, conversation_ref, kind, body, reply_to]
       properties:
         id:
           type: integer
@@ -494,6 +495,9 @@ components:
           type: string
         instance:
           type: string
+        conversation_ref:
+          type: [string, 'null']
+          description: Optional provider-side conversation provenance. It is not an authentication or authorization credential.
         kind:
           type: string
         body:
