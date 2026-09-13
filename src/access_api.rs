@@ -8,7 +8,9 @@ use axum::{
 use rusqlite::OptionalExtension;
 use serde_json::json;
 
-use crate::{execution, http::AppState, identity, model::Identity, request_auth};
+use crate::{
+    authorization, execution, http::AppState, identity, model::Identity, request_auth, web_auth,
+};
 
 pub fn app(state: AppState) -> Router {
     Router::new()
@@ -23,21 +25,27 @@ async fn access_context(
     uri: Uri,
 ) -> Result<Response, AccessApiError> {
     let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
     let lookup = resolved.instance.clone();
-    let role = with_db(&state, move |conn| {
-        identity::get_web_participant_role(conn, &lookup)
+    let principal_for_grants = principal.clone();
+    let (role, grants) = with_db(&state, move |conn| {
+        let role = identity::get_web_participant_role(conn, &lookup)?;
+        let grants = if role.is_some() {
+            authorization::effective_grants(conn, &principal_for_grants, &lookup)?
+        } else {
+            Vec::new()
+        };
+        Ok((role, grants))
     })
     .await?;
 
     let participant_id = role.as_ref().map(|_| resolved.instance.clone());
-    let mut capabilities = vec![
-        "read_messages",
-        execution::POST_MESSAGE_CAPABILITY,
-        "read_execution_receipt",
-    ];
-    if role.as_deref() == Some("admin") {
-        capabilities.push("manage_channels");
-    }
+    let mut capabilities = grants
+        .iter()
+        .map(|grant| grant.capability.clone())
+        .collect::<Vec<_>>();
+    capabilities.sort();
+    capabilities.dedup();
 
     Ok(json_response(
         StatusCode::OK,
@@ -47,9 +55,11 @@ async fn access_context(
                 "instance": resolved.instance,
                 "label": resolved.label,
             },
+            "principal": principal,
             "participant_id": participant_id,
             "role": role.unwrap_or_else(|| "user".to_owned()),
             "capabilities": capabilities,
+            "grants": grants,
         }),
     ))
 }
@@ -86,6 +96,22 @@ async fn execution_receipt(
     .ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
 
     Ok(json_response(StatusCode::OK, json!({"execution": receipt})))
+}
+
+fn principal_for_headers(headers: &HeaderMap, resolved: &Identity) -> execution::Principal {
+    let provider = if headers.contains_key(web_auth::WEB_SESSION_HEADER) {
+        "human-web"
+    } else if headers.contains_key(request_auth::AUTH_PROOF_HEADER)
+        || headers.contains_key(request_auth::AUTH_SCHEME_HEADER)
+    {
+        "participant-hmac"
+    } else {
+        "bearer"
+    };
+    execution::Principal {
+        provider: provider.to_owned(),
+        subject: resolved.instance.clone(),
+    }
 }
 
 async fn require_identity_for_target(
