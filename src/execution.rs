@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    identity,
+    authorization, identity,
     model::{Identity, Message},
 };
 
@@ -72,6 +72,7 @@ pub enum MessageExecutionResult {
     IntentConflict,
     ReplyTargetNotFound,
     ChannelArchived,
+    AuthorizationDenied,
 }
 
 pub fn github_delivery_id(repository_id: u64, issue_number: i64) -> String {
@@ -168,6 +169,16 @@ pub fn execute_message_intent(
         || request.intent.request_hash != expected_hash
     {
         return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    if !authorization::authorize(
+        conn,
+        &request.authority.principal,
+        &request.intent.participant_id,
+        &request.intent.capability,
+        Some(&request.intent.resource),
+    )? {
+        return Ok(MessageExecutionResult::AuthorizationDenied);
     }
 
     let tx = conn.unchecked_transaction()?;
@@ -410,11 +421,17 @@ mod tests {
         }
     }
 
+    fn provision_test_participant(conn: &Connection) {
+        identity::provision_web_participant_identity(conn, "maker-main", "maker", Some("Maker"))
+            .unwrap()
+            .unwrap();
+    }
+
     fn test_request_parts(
         intent_id: &str,
     ) -> (AuthorityContext, IntentEnvelope, IngressProvenance) {
         let principal = Principal {
-            provider: "hmac".into(),
+            provider: "participant-hmac".into(),
             subject: "maker-main".into(),
         };
         let authority = AuthorityContext {
@@ -503,6 +520,7 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
+        provision_test_participant(&conn);
         let identity = test_identity();
         let (authority, intent, rest_ingress) = test_request_parts("semantic-intent-1");
 
@@ -578,6 +596,7 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
+        provision_test_participant(&conn);
         ensure_execution_tables(&conn).unwrap();
 
         conn.execute(

@@ -10,11 +10,11 @@ use axum::{
 };
 use regex::Regex;
 use ring::hmac;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{db, execution, identity, model::Identity};
+use crate::{db, execution, identity};
 
 const GITHUB_PROVIDER: &str = "github";
 const TITLE_PREFIX: &str = "[blackboard]";
@@ -248,7 +248,7 @@ async fn github_issue_webhook(
         tokio::task::spawn_blocking(move || -> rusqlite::Result<WebhookWriteResult> {
             let conn = db::connect(&db_path)?;
             ensure_owner_columns(&conn)?;
-            let identity = get_owned_active_participant(&conn, &participant_id, &owner_subject)?
+            let identity = identity::get_web_participant(&conn, &participant_id)?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             Ok(
                 match execution::execute_message_intent(
@@ -278,6 +278,9 @@ async fn github_issue_webhook(
                     }
                     execution::MessageExecutionResult::ChannelArchived => {
                         WebhookWriteResult::ChannelArchived
+                    }
+                    execution::MessageExecutionResult::AuthorizationDenied => {
+                        WebhookWriteResult::AuthorizationDenied
                     }
                 },
             )
@@ -320,26 +323,10 @@ async fn github_issue_webhook(
         WebhookWriteResult::ChannelArchived => {
             error_response(StatusCode::CONFLICT, "channel_archived")
         }
+        WebhookWriteResult::AuthorizationDenied => {
+            error_response(StatusCode::FORBIDDEN, "github_participant_not_owned")
+        }
     }
-}
-
-fn get_owned_active_participant(
-    conn: &Connection,
-    participant_id: &str,
-    owner_subject: &str,
-) -> rusqlite::Result<Option<Identity>> {
-    conn.query_row(
-        "SELECT source, participant_id, label\n         FROM web_participants\n         WHERE participant_id = ?1\n           AND status = 'active'\n           AND owner_provider = 'github'\n           AND owner_subject = ?2\n         LIMIT 1",
-        params![participant_id, owner_subject],
-        |row| {
-            Ok(Identity {
-                source: row.get(0)?,
-                instance: row.get(1)?,
-                label: row.get(2)?,
-            })
-        },
-    )
-    .optional()
 }
 
 fn normalize_conversation_ref(value: Option<&str>) -> Result<Option<String>, ()> {
@@ -466,6 +453,7 @@ enum WebhookWriteResult {
     NonceConflict,
     ReplyTargetNotFound,
     ChannelArchived,
+    AuthorizationDenied,
 }
 
 #[cfg(test)]
@@ -669,6 +657,24 @@ mod tests {
         let outsider = payload(123456, "NONE", "alice-main");
         let (status, _) = send(router, outsider.clone(), sign(&outsider)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn scoped_grant_restricts_github_write_resource() {
+        let (_dir, path, router) = fixture();
+        let conn = db::connect(&path).unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('github', '123456', 'alice-main', 'post_message', 'control-systems')",
+            [],
+        )
+        .unwrap();
+
+        let body = payload(123456, "COLLABORATOR", "alice-main");
+        let (status, response) = send(router, body.clone(), sign(&body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(response["error"], "github_participant_not_owned");
     }
 
     #[tokio::test]

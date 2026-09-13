@@ -903,6 +903,9 @@ async fn post_signed_message(
         execution::MessageExecutionResult::ChannelArchived => {
             return Err(ApiError::new(StatusCode::CONFLICT, "channel_archived"));
         }
+        execution::MessageExecutionResult::AuthorizationDenied => {
+            return Err(ApiError::forbidden());
+        }
     };
 
     Ok(json_response(

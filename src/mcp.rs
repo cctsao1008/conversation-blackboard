@@ -583,6 +583,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         execution::MessageExecutionResult::ChannelArchived => {
             return tool_error("channel_archived")
         }
+        execution::MessageExecutionResult::AuthorizationDenied => return tool_error("forbidden"),
     };
 
     tool_success(json!({
