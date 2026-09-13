@@ -1,6 +1,6 @@
 use std::{env, future::Future, net::SocketAddr, path::PathBuf};
 
-use crate::{db, github_webhook, history, http, mcp};
+use crate::{access_api, db, github_webhook, history, http, mcp};
 use http::AppState;
 
 #[derive(Clone, Debug)]
@@ -64,6 +64,7 @@ where
     let github_state = github_webhook::GithubWebhookState::from_env(config.db_path);
     let app = http::app(state.clone())
         .merge(history::app(state.clone()))
+        .merge(access_api::app(state.clone()))
         .merge(mcp::app(state))
         .merge(github_webhook::app(github_state));
 
