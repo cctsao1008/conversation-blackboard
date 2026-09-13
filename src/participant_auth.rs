@@ -32,15 +32,7 @@ pub fn canonical_write_bytes(
     reply_to: Option<i64>,
     nonce: &str,
 ) -> Vec<u8> {
-    canonical_write_bytes_with_intent(
-        participant_id,
-        channel,
-        kind,
-        body,
-        reply_to,
-        nonce,
-        None,
-    )
+    canonical_write_bytes_with_intent(participant_id, channel, kind, body, reply_to, nonce, None)
 }
 
 #[allow(clippy::too_many_arguments)]
