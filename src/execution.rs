@@ -147,6 +147,31 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+pub fn get_execution_receipt(
+    conn: &Connection,
+    participant_id: &str,
+    intent_id: &str,
+) -> rusqlite::Result<Option<ExecutionReceipt>> {
+    ensure_execution_tables(conn)?;
+    conn.query_row(
+        "SELECT participant_id, intent_id, intent_hash, capability, message_id, status
+         FROM execution_receipts
+         WHERE participant_id = ?1 AND intent_id = ?2",
+        params![participant_id, intent_id],
+        |row| {
+            Ok(ExecutionReceipt {
+                participant_id: row.get(0)?,
+                intent_id: row.get(1)?,
+                intent_hash: row.get(2)?,
+                capability: row.get(3)?,
+                message_id: row.get(4)?,
+                status: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+}
+
 pub fn execute_message_intent(
     conn: &Connection,
     identity: &Identity,

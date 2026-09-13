@@ -12,7 +12,10 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 use url::Url;
 
-use crate::{db, execution, http::AppState, identity, model::Identity, participant_auth};
+use crate::{
+    adapter_profile, authorization, db, execution, http::AppState, identity, model::Identity,
+    participant_auth,
+};
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES: usize = 64 * 1024;
@@ -179,7 +182,7 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Read public channels with blackboard_read without auth. Private-channel reads require participant_id plus an hmac-sha256-v1 proof over the canonical read request. Participant writes require an hmac-sha256-v1 proof over the canonical write request. The server owns source/instance provenance. Exact retries with the same nonce are idempotent."
+        "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, and blackboard_execution_receipt for semantic execution read-back. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
     }))
 }
 
@@ -252,6 +255,39 @@ fn tools_list_result() -> Value {
                     "idempotentHint": true,
                     "openWorldHint": true
                 }
+            },
+            {
+                "name": "blackboard_access_context",
+                "title": "Read Blackboard Access Context",
+                "description": "Return the authenticated participant's effective capability grants without exposing credentials.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": access_context_output_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
+                "name": "blackboard_execution_receipt",
+                "title": "Read Blackboard Execution Receipt",
+                "description": "Read back the durable semantic execution receipt for one authenticated participant intent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "intent_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "intent_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": execution_receipt_output_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
     })
@@ -287,6 +323,49 @@ fn write_output_schema() -> Value {
             "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
         "required": ["status", "idempotent", "id", "source", "participant_id", "instance", "channel", "kind", "reply_to"],
+        "additionalProperties": false
+    })
+}
+
+fn access_context_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "participant_id": {"type": "string"},
+            "principal": {
+                "type": "object",
+                "properties": {"provider": {"type": "string"}, "subject": {"type": "string"}},
+                "required": ["provider", "subject"],
+                "additionalProperties": false
+            },
+            "capabilities": {"type": "array", "items": {"type": "string"}},
+            "grants": {"type": "array"},
+            "adapter": {"type": "string"}
+        },
+        "required": ["participant_id", "principal", "capabilities", "grants", "adapter"],
+        "additionalProperties": false
+    })
+}
+
+fn execution_receipt_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "execution": {
+                "type": "object",
+                "properties": {
+                    "participant_id": {"type": "string"},
+                    "intent_id": {"type": "string"},
+                    "intent_hash": {"type": "string"},
+                    "capability": {"type": "string"},
+                    "message_id": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string"}
+                },
+                "required": ["participant_id", "intent_id", "intent_hash", "capability", "message_id", "status"],
+                "additionalProperties": false
+            }
+        },
+        "required": ["execution"],
         "additionalProperties": false
     })
 }
@@ -331,6 +410,8 @@ async fn tool_call_result(
     match name {
         "blackboard_read" => Ok(blackboard_read(state, &arguments).await),
         "blackboard_write" => Ok(blackboard_write(state, &arguments).await),
+        "blackboard_access_context" => Ok(blackboard_access_context(state, &arguments).await),
+        "blackboard_execution_receipt" => Ok(blackboard_execution_receipt(state, &arguments).await),
         _ => Err("unknown_tool"),
     }
 }
@@ -356,6 +437,142 @@ fn parse_auth(arguments: &Map<String, Value>) -> Result<(&str, &str), &'static s
         .filter(|value| !value.is_empty() && value.len() <= 128)
         .ok_or("invalid_auth")?;
     Ok((scheme, proof))
+}
+
+async fn resolve_capability_identity(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> Result<Identity, &'static str> {
+    let (_, proof) = parse_auth(arguments)?;
+    let proof = proof.to_owned();
+    let lookup = participant_id.to_owned();
+    let auth = match with_db(state, move |conn| {
+        identity::get_web_participant_auth(conn, &lookup)
+    })
+    .await
+    {
+        Ok(Some(auth)) => auth,
+        Ok(None) => return Err("unauthorized"),
+        Err(()) => return Err("database_unavailable"),
+    };
+    if auth.auth_scheme != participant_auth::AUTH_SCHEME {
+        return Err("unsupported_auth_scheme");
+    }
+    if !participant_auth::verify_capability_proof(
+        &auth.auth_secret,
+        &proof,
+        participant_id,
+        capability,
+        resource,
+    ) {
+        return Err("unauthorized");
+    }
+    Ok(auth.identity)
+}
+
+async fn blackboard_access_context(state: &AppState, arguments: &Map<String, Value>) -> Value {
+    if !only_keys(arguments, &["participant_id", "auth"]) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    if let Err(code) =
+        resolve_capability_identity(state, arguments, &participant_id, "access_context", None).await
+    {
+        return tool_error(code);
+    }
+    let principal = execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.clone(),
+    };
+    let principal_for_grants = principal.clone();
+    let lookup = participant_id.clone();
+    let grants = match with_db(state, move |conn| {
+        authorization::effective_grants(conn, &principal_for_grants, &lookup)
+    })
+    .await
+    {
+        Ok(grants) => grants,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    let mut capabilities = grants
+        .iter()
+        .map(|grant| grant.capability.clone())
+        .collect::<Vec<_>>();
+    capabilities.sort();
+    capabilities.dedup();
+    tool_success(json!({
+        "participant_id": participant_id,
+        "principal": principal,
+        "capabilities": capabilities,
+        "grants": grants,
+        "adapter": adapter_profile::MCP.name
+    }))
+}
+
+async fn blackboard_execution_receipt(state: &AppState, arguments: &Map<String, Value>) -> Value {
+    if !only_keys(arguments, &["participant_id", "intent_id", "auth"]) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    let intent_id = match arguments.get("intent_id").and_then(Value::as_str) {
+        Some(value) => match execution::normalize_intent_id(value) {
+            Ok(value) => value,
+            Err(()) => return tool_error("invalid_intent_id"),
+        },
+        None => return tool_error("invalid_intent_id"),
+    };
+    if let Err(code) = resolve_capability_identity(
+        state,
+        arguments,
+        &participant_id,
+        authorization::READ_EXECUTION_RECEIPT,
+        Some(&intent_id),
+    )
+    .await
+    {
+        return tool_error(code);
+    }
+    let principal = execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.clone(),
+    };
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let lookup_intent = intent_id.clone();
+    let receipt = match with_db(state, move |conn| {
+        if !authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_EXECUTION_RECEIPT,
+            Some(&lookup_intent),
+        )? {
+            return Ok(None);
+        }
+        execution::get_execution_receipt(conn, &lookup_participant, &lookup_intent)
+    })
+    .await
+    {
+        Ok(Some(receipt)) => receipt,
+        Ok(None) => return tool_error("execution_not_found"),
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    tool_success(json!({"execution": receipt}))
 }
 
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {

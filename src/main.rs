@@ -1,6 +1,7 @@
 mod access_api;
 #[cfg(test)]
 mod access_control_contract_tests;
+mod adapter_profile;
 mod admin;
 mod authorization;
 mod client;

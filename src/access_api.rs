@@ -5,7 +5,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use rusqlite::OptionalExtension;
 use serde_json::json;
 
 use crate::{
@@ -75,22 +74,7 @@ async fn execution_receipt(
         .map_err(|_| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_intent_id"))?;
     let participant_id = resolved.instance.clone();
     let receipt = with_db(&state, move |conn| {
-        execution::ensure_execution_tables(conn)?;
-        conn.query_row(
-            "SELECT participant_id, intent_id, intent_hash, capability, message_id, status\n             FROM execution_receipts\n             WHERE participant_id = ?1 AND intent_id = ?2",
-            rusqlite::params![participant_id, intent_id],
-            |row| {
-                Ok(execution::ExecutionReceipt {
-                    participant_id: row.get(0)?,
-                    intent_id: row.get(1)?,
-                    intent_hash: row.get(2)?,
-                    capability: row.get(3)?,
-                    message_id: row.get(4)?,
-                    status: row.get(5)?,
-                })
-            },
-        )
-        .optional()
+        execution::get_execution_receipt(conn, &participant_id, &intent_id)
     })
     .await?
     .ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;

@@ -64,6 +64,42 @@ pub fn canonical_read_bytes(
     serde_json::to_vec(&payload).expect("canonical authenticated-read payload must serialize")
 }
 
+pub fn canonical_capability_bytes(
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> Vec<u8> {
+    let mut payload = BTreeMap::<String, Value>::new();
+    payload.insert("auth_version".into(), json!(AUTH_SCHEME));
+    payload.insert("capability".into(), json!(capability));
+    payload.insert("participant_id".into(), json!(participant_id));
+    payload.insert("purpose".into(), json!("blackboard-capability-v1"));
+    payload.insert("resource".into(), json!(resource));
+    serde_json::to_vec(&payload).expect("canonical capability payload must serialize")
+}
+
+#[cfg(test)]
+pub fn compute_capability_proof(
+    secret: &str,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> Option<String> {
+    let canonical = canonical_capability_bytes(participant_id, capability, resource);
+    compute_message_proof(secret, &canonical)
+}
+
+pub fn verify_capability_proof(
+    secret: &str,
+    proof: &str,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> bool {
+    let canonical = canonical_capability_bytes(participant_id, capability, resource);
+    verify_message_proof(secret, proof, &canonical)
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn compute_write_proof(

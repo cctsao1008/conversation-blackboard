@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
-use crate::{db, http::AppState, identity, mcp, participant_auth};
+use crate::{authorization, db, http::AppState, identity, mcp, participant_auth};
 
 struct Fixture {
     _dir: TempDir,
@@ -158,7 +158,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 2);
+    assert_eq!(tools.len(), 4);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -191,6 +191,93 @@ async fn mcp_read_schema_includes_conversation_ref_provenance() {
     assert!(message["properties"]["conversation_ref"].is_object());
     let required = message["required"].as_array().unwrap();
     assert!(required.iter().any(|field| field == "conversation_ref"));
+}
+
+fn capability_arguments(
+    secret: &str,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> Value {
+    let proof =
+        participant_auth::compute_capability_proof(secret, participant_id, capability, resource)
+            .unwrap();
+    let mut value = json!({
+        "participant_id": participant_id,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    });
+    if let Some(resource) = resource {
+        value["intent_id"] = json!(resource);
+    }
+    value
+}
+
+#[tokio::test]
+async fn mcp_access_context_and_execution_receipt_project_shared_domain_state() {
+    let fixture = fixture();
+    let access = call_tool(
+        &fixture.router,
+        40,
+        "blackboard_access_context",
+        capability_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "access_context",
+            None,
+        ),
+    )
+    .await;
+    assert!(!access["result"]["isError"].as_bool().unwrap());
+    let capabilities = access["result"]["structuredContent"]["capabilities"]
+        .as_array()
+        .unwrap();
+    assert!(capabilities
+        .iter()
+        .any(|value| value == authorization::POST_MESSAGE));
+    assert!(capabilities
+        .iter()
+        .any(|value| value == authorization::READ_EXECUTION_RECEIPT));
+
+    let written = call_tool(
+        &fixture.router,
+        41,
+        "blackboard_write",
+        write_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "blackboard-lounge",
+            "message",
+            "receipt me",
+            None,
+            "receipt-001",
+        ),
+    )
+    .await;
+    let message_id = written["result"]["structuredContent"]["id"]
+        .as_i64()
+        .unwrap();
+
+    let receipt = call_tool(
+        &fixture.router,
+        42,
+        "blackboard_execution_receipt",
+        capability_arguments(
+            &fixture.single_secret,
+            "single-main",
+            authorization::READ_EXECUTION_RECEIPT,
+            Some("receipt-001"),
+        ),
+    )
+    .await;
+    assert!(!receipt["result"]["isError"].as_bool().unwrap());
+    assert_eq!(
+        receipt["result"]["structuredContent"]["execution"]["intent_id"],
+        "receipt-001"
+    );
+    assert_eq!(
+        receipt["result"]["structuredContent"]["execution"]["message_id"],
+        message_id
+    );
 }
 
 #[tokio::test]
