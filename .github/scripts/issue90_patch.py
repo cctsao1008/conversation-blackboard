@@ -195,3 +195,34 @@ fn every_hash_covered_message_field_is_verified_against_receipt() {
 '''
 s += addition
 p.write_text(s, encoding='utf-8')
+
+# Keep the HTTP audit contract fixture semantically valid under the stronger verifier.
+p = Path('src/http_contract_tests.rs')
+s = p.read_text(encoding='utf-8')
+old = '''    conn.execute(
+        "INSERT INTO execution_receipts
+            (participant_id, intent_id, intent_hash, capability, message_id, status)
+         VALUES (?1, 'intent-http-audit', 'hash', 'post_message', 1, 'committed')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+'''
+new = '''    let intent_hash = execution::message_request_hash(
+        "blackboard-lounge",
+        "message",
+        "audit seed",
+        None,
+        None,
+    );
+    conn.execute(
+        "INSERT INTO execution_receipts
+            (participant_id, intent_id, intent_hash, capability, message_id, status)
+         VALUES (?1, 'intent-http-audit', ?2, 'post_message', 1, 'committed')",
+        params![&fixture.participant_id, intent_hash],
+    )
+    .unwrap();
+'''
+if old not in s:
+    raise SystemExit('HTTP audit receipt fixture block not found')
+s = s.replace(old, new, 1)
+p.write_text(s, encoding='utf-8')
