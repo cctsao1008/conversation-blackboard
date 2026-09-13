@@ -54,7 +54,22 @@ replacements.append((
     let db_path = state.db_path.clone();
 
     let write_result =''',
-    '''    let response_conversation_ref = conversation_ref.clone();
+    '''    let intent_envelope = execution::IntentEnvelope {
+        intent_id: intent_id.clone(),
+        participant_id: participant_id.clone(),
+        conversation_ref: conversation_ref.clone(),
+        capability: execution::POST_MESSAGE_CAPABILITY.to_owned(),
+        resource: channel.clone(),
+        request_hash: request_hash.clone(),
+    };
+    let authority_context = execution::AuthorityContext {
+        principal: execution::Principal {
+            provider: GITHUB_PROVIDER.to_owned(),
+            subject: owner_subject.clone(),
+        },
+        mechanism: "github-webhook-hmac-sha256".to_owned(),
+    };
+    let response_conversation_ref = conversation_ref.clone();
     let response_intent_id = intent_id.clone();
     let response_delivery_id = delivery_id.clone();
     let ingress = execution::IngressProvenance {
@@ -62,10 +77,7 @@ replacements.append((
         intent_id: intent_id.clone(),
         transport: "github-webhook".to_owned(),
         external_ref: delivery_id,
-        principal: execution::Principal {
-            provider: GITHUB_PROVIDER.to_owned(),
-            subject: owner_subject.clone(),
-        },
+        principal: authority_context.principal.clone(),
     };
     let db_path = state.db_path.clone();
 
@@ -132,10 +144,10 @@ replacements.append((
                     &conn,
                     &ingress,
                     &execution::ExecutionReceipt {
-                        participant_id: participant_id.clone(),
-                        intent_id: intent_id.clone(),
-                        intent_hash: request_hash.clone(),
-                        capability: execution::POST_MESSAGE_CAPABILITY.to_owned(),
+                        participant_id: intent_envelope.participant_id.clone(),
+                        intent_id: intent_envelope.intent_id.clone(),
+                        intent_hash: intent_envelope.request_hash.clone(),
+                        capability: intent_envelope.capability.clone(),
                         message_id,
                         status: "committed".to_owned(),
                     },
