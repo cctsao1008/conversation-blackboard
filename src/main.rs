@@ -12,6 +12,7 @@ mod contract_schema;
 mod db;
 mod execution;
 mod github_webhook;
+mod grant_admin;
 mod history;
 mod http;
 #[cfg(test)]
@@ -64,6 +65,11 @@ enum Command {
         #[command(subcommand)]
         command: participant_admin::ParticipantCommand,
     },
+    /// Create, inspect, or revoke delegated authorization grants.
+    Grant {
+        #[command(subcommand)]
+        command: grant_admin::GrantCommand,
+    },
     /// Verify a local or public blackboard endpoint.
     Verify {
         #[command(subcommand)]
@@ -97,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Db { command }) => admin::dispatch_db(command),
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
         Some(Command::Participant { command }) => participant_admin::dispatch(command),
+        Some(Command::Grant { command }) => grant_admin::dispatch(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
@@ -298,5 +305,84 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn delegated_grant_create_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "create",
+            "--db",
+            "board.db",
+            "--principal-provider",
+            "oidc:https://issuer.example",
+            "--principal-subject",
+            "agent-1",
+            "--participant-id",
+            "maker-main",
+            "--capability",
+            "post_message",
+            "--resource",
+            "control-systems",
+            "--intent-id",
+            "intent-79",
+            "--expires-at",
+            "2000000000",
+            "--one-shot",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Grant {
+                command:
+                    grant_admin::GrantCommand::Create {
+                        participant_id,
+                        one_shot,
+                        ..
+                    },
+            }) => {
+                assert_eq!(participant_id, "maker-main");
+                assert!(one_shot);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn delegated_grant_list_and_deactivate_cli_parse() {
+        let list = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "list",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::List { .. }
+            })
+        ));
+
+        let deactivate = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "deactivate",
+            "--db",
+            "board.db",
+            "--grant-id",
+            "7",
+        ])
+        .unwrap();
+        assert!(matches!(
+            deactivate.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::Deactivate { grant_id: 7, .. }
+            })
+        ));
     }
 }
