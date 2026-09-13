@@ -60,6 +60,35 @@ CREATE TABLE IF NOT EXISTS web_participants (
     )
 );
 
+CREATE TABLE IF NOT EXISTS principal_grants (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal_provider  TEXT NOT NULL,
+    principal_subject   TEXT NOT NULL,
+    participant_id      TEXT NOT NULL,
+    capability          TEXT NOT NULL,
+    resource            TEXT,
+    status              TEXT NOT NULL DEFAULT 'active',
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+    CHECK (status IN ('active', 'inactive')),
+    UNIQUE (
+        principal_provider,
+        principal_subject,
+        participant_id,
+        capability,
+        resource
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_principal_grants_lookup
+ON principal_grants(
+    principal_provider,
+    principal_subject,
+    participant_id,
+    capability,
+    status
+);
+
 CREATE TABLE IF NOT EXISTS channels (
     name        TEXT PRIMARY KEY,
     visibility  TEXT NOT NULL DEFAULT 'private',
