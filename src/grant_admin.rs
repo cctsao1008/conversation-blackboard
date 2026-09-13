@@ -101,11 +101,19 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
             println!("principal_subject  : {}", principal_subject.trim());
             println!("participant_id     : {}", participant_id.trim());
             println!("capability         : {}", capability.trim());
-            println!("resource           : {}", resource.as_deref().unwrap_or("*"));
-            println!("intent_id          : {}", intent_id.as_deref().unwrap_or("*"));
+            println!(
+                "resource           : {}",
+                resource.as_deref().unwrap_or("*")
+            );
+            println!(
+                "intent_id          : {}",
+                intent_id.as_deref().unwrap_or("*")
+            );
             println!(
                 "expires_at         : {}",
-                expires_at.map(|v| v.to_string()).unwrap_or_else(|| "never".to_owned())
+                expires_at
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "never".to_owned())
             );
             println!("one_shot           : {one_shot}");
             Ok(())
@@ -129,9 +137,15 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                     grant.capability,
                     grant.resource.as_deref().unwrap_or("*"),
                     grant.intent_id.as_deref().unwrap_or("*"),
-                    grant.expires_at.map(|v| v.to_string()).unwrap_or_else(|| "never".to_owned()),
+                    grant
+                        .expires_at
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "never".to_owned()),
                     grant.one_shot,
-                    grant.consumed_at.map(|v| v.to_string()).unwrap_or_else(|| "-".to_owned()),
+                    grant
+                        .consumed_at
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
                     grant.consumed_intent_id.as_deref().unwrap_or("-"),
                     grant.status,
                 );
@@ -168,17 +182,17 @@ fn create_grant(
 ) -> DynResult<i64> {
     authorization::ensure_grant_schema(conn)?;
 
-    let principal_provider = normalize(principal_provider, MAX_PROVIDER_BYTES, "principal_provider")?;
+    let principal_provider =
+        normalize(principal_provider, MAX_PROVIDER_BYTES, "principal_provider")?;
     let principal_subject = normalize(principal_subject, MAX_SUBJECT_BYTES, "principal_subject")?;
-    let participant_id = identity::validate_participant_id(participant_id)
-        .ok_or("invalid participant_id")?;
+    let participant_id =
+        identity::validate_participant_id(participant_id).ok_or("invalid participant_id")?;
     let capability = normalize(capability, MAX_CAPABILITY_BYTES, "capability")?;
     let resource = normalize_optional(resource, MAX_RESOURCE_BYTES, "resource")?;
     let intent_id = match intent_id {
-        Some(value) => Some(
-            crate::execution::normalize_intent_id(value)
-                .map_err(|_| "invalid intent_id")?,
-        ),
+        Some(value) => {
+            Some(crate::execution::normalize_intent_id(value).map_err(|_| "invalid intent_id")?)
+        }
         None => None,
     };
 
@@ -296,7 +310,9 @@ fn normalize_optional(
     max_bytes: usize,
     field: &'static str,
 ) -> DynResult<Option<String>> {
-    value.map(|value| normalize(value, max_bytes, field)).transpose()
+    value
+        .map(|value| normalize(value, max_bytes, field))
+        .transpose()
 }
 
 fn require_database(path: &PathBuf) -> DynResult {
@@ -325,7 +341,9 @@ mod tests {
     #[test]
     fn create_list_and_deactivate_round_trip() {
         let (_dir, conn) = setup();
-        let now: i64 = conn.query_row("SELECT unixepoch()", [], |row| row.get(0)).unwrap();
+        let now: i64 = conn
+            .query_row("SELECT unixepoch()", [], |row| row.get(0))
+            .unwrap();
         let id = create_grant(
             &conn,
             "oidc:https://issuer.example",
@@ -385,7 +403,9 @@ mod tests {
         .is_err());
         identity::set_web_participant_status(&conn, "maker-main", "active").unwrap();
 
-        let now: i64 = conn.query_row("SELECT unixepoch()", [], |row| row.get(0)).unwrap();
+        let now: i64 = conn
+            .query_row("SELECT unixepoch()", [], |row| row.get(0))
+            .unwrap();
         assert!(create_grant(
             &conn,
             "oidc:https://issuer.example",
