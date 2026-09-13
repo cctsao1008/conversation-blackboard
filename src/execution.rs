@@ -197,19 +197,18 @@ pub fn execute_message_intent(
     }
 
     let tx = conn.unchecked_transaction()?;
-    let consume_grant_id = match authorization::authorize_for_intent(
+    let authorization_decision = authorization::evaluate_authorization(
         &tx,
         &request.authority.principal,
         &request.intent.participant_id,
         &request.intent.capability,
         Some(&request.intent.resource),
-        &request.intent.intent_id,
-    )? {
-        authorization::IntentAuthorization::Denied => {
-            return Ok(MessageExecutionResult::AuthorizationDenied)
-        }
-        authorization::IntentAuthorization::Allowed { consume_grant_id } => consume_grant_id,
-    };
+        Some(&request.intent.intent_id),
+    )?;
+    if !authorization_decision.allowed {
+        return Ok(MessageExecutionResult::AuthorizationDenied);
+    }
+    let consume_grant_id = authorization_decision.consume_grant_id;
     let visibility = if request.channel == "blackboard-lounge" {
         "public"
     } else {
