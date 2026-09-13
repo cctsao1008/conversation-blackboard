@@ -54,7 +54,6 @@ pub struct ExecutionReceipt {
     pub status: String,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthorizationProvenance {
     pub participant_id: String,
@@ -62,6 +61,22 @@ pub struct AuthorizationProvenance {
     pub source: String,
     pub reason: String,
     pub grant_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IngressAuditRecord {
+    pub delivery_id: String,
+    pub intent_id: String,
+    pub transport: String,
+    pub external_ref: String,
+    pub principal: Principal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionAuditBundle {
+    pub receipt: ExecutionReceipt,
+    pub authorization: Option<AuthorizationProvenance>,
+    pub ingress: Vec<IngressAuditRecord>,
 }
 
 #[derive(Debug)]
@@ -192,7 +207,6 @@ pub fn get_execution_receipt(
     .optional()
 }
 
-#[cfg(test)]
 pub fn get_authorization_provenance(
     conn: &Connection,
     participant_id: &str,
@@ -215,6 +229,42 @@ pub fn get_authorization_provenance(
         },
     )
     .optional()
+}
+
+pub fn get_execution_audit_bundle(
+    conn: &Connection,
+    participant_id: &str,
+    intent_id: &str,
+) -> rusqlite::Result<Option<ExecutionAuditBundle>> {
+    let Some(receipt) = get_execution_receipt(conn, participant_id, intent_id)? else {
+        return Ok(None);
+    };
+    let authorization = get_authorization_provenance(conn, participant_id, intent_id)?;
+    let mut stmt = conn.prepare(
+        "SELECT delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject
+         FROM ingress_provenance
+         WHERE intent_id = ?1
+         ORDER BY created_at, delivery_id",
+    )?;
+    let ingress = stmt
+        .query_map([intent_id], |row| {
+            Ok(IngressAuditRecord {
+                delivery_id: row.get(0)?,
+                intent_id: row.get(1)?,
+                transport: row.get(2)?,
+                external_ref: row.get(3)?,
+                principal: Principal {
+                    provider: row.get(4)?,
+                    subject: row.get(5)?,
+                },
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Some(ExecutionAuditBundle {
+        receipt,
+        authorization,
+        ingress,
+    }))
 }
 
 pub fn execute_message_intent(
@@ -703,6 +753,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(provenance_count, 1);
+        let audit = get_execution_audit_bundle(&conn, "maker-main", "semantic-intent-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(audit.receipt.message_id, first_id);
+        assert_eq!(audit.ingress.len(), 2);
+        assert_eq!(
+            audit.authorization.as_ref().map(|v| v.reason.as_str()),
+            Some("implicit_participant_hmac")
+        );
     }
 
     #[test]

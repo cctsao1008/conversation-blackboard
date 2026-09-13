@@ -11,6 +11,7 @@ mod contract_parity_tests;
 mod contract_schema;
 mod db;
 mod execution;
+mod execution_audit;
 mod github_webhook;
 mod grant_admin;
 mod history;
@@ -70,6 +71,11 @@ enum Command {
         #[command(subcommand)]
         command: grant_admin::GrantCommand,
     },
+    /// Inspect immutable committed semantic execution evidence.
+    Execution {
+        #[command(subcommand)]
+        command: execution_audit::ExecutionCommand,
+    },
     /// Verify a local or public blackboard endpoint.
     Verify {
         #[command(subcommand)]
@@ -104,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Identity { command }) => admin::dispatch_identity(command),
         Some(Command::Participant { command }) => participant_admin::dispatch(command),
         Some(Command::Grant { command }) => grant_admin::dispatch(command),
+        Some(Command::Execution { command }) => execution_audit::dispatch(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
@@ -347,6 +354,28 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn execution_audit_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "execution",
+            "audit",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+            "--intent-id",
+            "intent-83",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Execution {
+                command: execution_audit::ExecutionCommand::Audit { .. }
+            })
+        ));
     }
 
     #[test]
