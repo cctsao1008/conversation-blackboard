@@ -94,4 +94,4 @@ Representative reason classes include:
 
 Authorization changes are accepted only after formatting, strict Clippy, Rust tests, release build, and Windows service/CLI/smoke/package verification pass in core CI. The #81 migration additionally verifies that execution and `grant explain` consume one canonical policy decision while one-shot consumption remains execution-only and atomic.
 
-The implementation plus verification-boundary documentation passed core-ci run `34764521912`: Linux formatting, strict Clippy, tests, and release build passed; Windows release verification, CLI surface, service/operations/two-identity smoke, packaging, and artifact upload also passed. Recording the evidence is documentation-only and is not treated as a new semantic acceptance boundary.
+The #81 implementation and its verification-boundary documentation passed core-ci run `34764521912`: Linux formatting, strict Clippy, tests, and release build passed; Windows release verification, CLI surface, service/operations/two-identity smoke, packaging, and artifact upload also passed.
