@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/issue75-adapters.yml
+      - .github/scripts/issue75_patch.py
+      - .github/scripts/issue75_fix.py
 
 permissions:
   contents: write
@@ -20,7 +22,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply #75 adapter capability profiles
-        run: python .github/scripts/issue75_patch.py
+        run: |
+          python .github/scripts/issue75_patch.py
+          python .github/scripts/issue75_fix.py
       - name: Format and validate
         run: |
           cargo fmt --all
@@ -29,9 +33,9 @@ jobs:
       - name: Commit implementation and remove temporary helpers
         shell: bash
         run: |
-          rm .github/workflows/issue75-adapters.yml .github/scripts/issue75_patch.py
+          rm .github/workflows/issue75-adapters.yml .github/scripts/issue75_patch.py .github/scripts/issue75_fix.py
           git config user.name "Cheng"
           git config user.email "chiacheng.tsao@gmail.com"
-          git add src/main.rs src/adapter_profile.rs src/participant_auth.rs src/execution.rs src/access_api.rs src/mcp.rs src/mcp_contract_tests.rs docs/adapter-capability-profiles.md .github/workflows/issue75-adapters.yml .github/scripts/issue75_patch.py
+          git add src/main.rs src/adapter_profile.rs src/participant_auth.rs src/execution.rs src/access_api.rs src/mcp.rs src/mcp_contract_tests.rs docs/adapter-capability-profiles.md .github/workflows/issue75-adapters.yml .github/scripts/issue75_patch.py .github/scripts/issue75_fix.py
           git commit -m "#75 Define adapter capability profiles and MCP read-back"
           git push origin HEAD:main
