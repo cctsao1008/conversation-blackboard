@@ -88,18 +88,20 @@ replace_once(
     '''            Ok(match execution::execute_message_intent(
                 &conn,
                 &identity,
-                &authority_context,
-                &ingress,
-                &intent_envelope,
-                &channel,
-                &kind,
-                &message_body,
-                reply_to,
+                execution::MessageExecutionRequest {
+                    authority: &authority_context,
+                    ingress: &ingress,
+                    intent: &intent_envelope,
+                    channel: &channel,
+                    kind: &kind,
+                    body: &message_body,
+                    reply_to,
+                },
             )? {
-                execution::MessageExecutionResult::Created(message, _) => {
+                execution::MessageExecutionResult::Created(message) => {
                     WebhookWriteResult::Created(message.id)
                 }
-                execution::MessageExecutionResult::Existing(message, _) => {
+                execution::MessageExecutionResult::Existing(message) => {
                     WebhookWriteResult::Existing(message.id)
                 }
                 execution::MessageExecutionResult::IntentConflict => {
@@ -205,22 +207,24 @@ replace_once(
         execution::execute_message_intent(
             conn,
             &writer,
-            &authority,
-            &ingress,
-            &intent,
-            &write_channel,
-            &write_kind,
-            &write_body,
-            reply_to,
+            execution::MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
+                channel: &write_channel,
+                kind: &write_kind,
+                body: &write_body,
+                reply_to,
+            },
         )
     })
     .await?;
 
     let (status, persisted, idempotent, http_status) = match result {
-        execution::MessageExecutionResult::Created(message, _) => {
+        execution::MessageExecutionResult::Created(message) => {
             ("created", message, false, StatusCode::CREATED)
         }
-        execution::MessageExecutionResult::Existing(message, _) => {
+        execution::MessageExecutionResult::Existing(message) => {
             ("existing", message, true, StatusCode::OK)
         }
         execution::MessageExecutionResult::IntentConflict => {
@@ -340,13 +344,15 @@ replace_once(
         execution::execute_message_intent(
             conn,
             &writer,
-            &authority,
-            &ingress,
-            &intent,
-            &write_channel,
-            &write_kind,
-            &write_body,
-            reply_to,
+            execution::MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
+                channel: &write_channel,
+                kind: &write_kind,
+                body: &write_body,
+                reply_to,
+            },
         )
     })
     .await
@@ -356,8 +362,8 @@ replace_once(
     };
 
     let (status, persisted, idempotent) = match result {
-        execution::MessageExecutionResult::Created(message, _) => ("created", message, false),
-        execution::MessageExecutionResult::Existing(message, _) => ("existing", message, true),
+        execution::MessageExecutionResult::Created(message) => ("created", message, false),
+        execution::MessageExecutionResult::Existing(message) => ("existing", message, true),
         execution::MessageExecutionResult::IntentConflict => return tool_error("nonce_conflict"),
         execution::MessageExecutionResult::ReplyTargetNotFound => {
             return tool_error("reply_target_not_found")
