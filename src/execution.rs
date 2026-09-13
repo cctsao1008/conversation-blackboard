@@ -406,7 +406,9 @@ mod tests {
         }
     }
 
-    fn test_request_parts(intent_id: &str) -> (AuthorityContext, IntentEnvelope, IngressProvenance) {
+    fn test_request_parts(
+        intent_id: &str,
+    ) -> (AuthorityContext, IntentEnvelope, IngressProvenance) {
         let principal = Principal {
             provider: "hmac".into(),
             subject: "maker-main".into(),
@@ -421,13 +423,7 @@ mod tests {
             conversation_ref: None,
             capability: POST_MESSAGE_CAPABILITY.into(),
             resource: "blackboard-lounge".into(),
-            request_hash: message_request_hash(
-                "blackboard-lounge",
-                "message",
-                "hello",
-                None,
-                None,
-            ),
+            request_hash: message_request_hash("blackboard-lounge", "message", "hello", None, None),
         };
         let ingress = IngressProvenance {
             delivery_id: format!("rest:maker-main:{intent_id}"),
