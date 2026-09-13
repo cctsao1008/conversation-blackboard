@@ -1,6 +1,6 @@
 {
-  "contract_version": 4,
-  "schema_sha256": "cdab24639174a69a24dcdb9396b4cb50d20271f71171c9382278521a074895c6",
+  "contract_version": 5,
+  "schema_sha256": "d585cb174791983cf7fe0fd67db8f72e1222864ac2cccb4ebae37aa8de845c6f",
   "defaults": {
     "host": "127.0.0.1",
     "port": 8766,
@@ -17,6 +17,7 @@
     "participant_id_pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     "provenance": "server-resolved",
     "roles": ["user", "admin"],
+    "status": ["active", "inactive"],
     "admin_authority": "human-web-session-only",
     "human_web_auth": {
       "scheme": "totp-rfc6238-sha1-6",
@@ -35,13 +36,25 @@
       "session_storage": "browser page memory only"
     },
     "agent_auth": {
-      "scheme": "ed25519-v1",
-      "private_key_transport": "never",
-      "verification_material": "registered public key",
-      "navigation_write": "scheme + signature query parameters",
-      "mcp_write": "auth.scheme + auth.signature",
-      "mcp_private_read": "participant_id + auth.scheme + auth.signature"
+      "scheme": "hmac-sha256-v1",
+      "secret_bits": 256,
+      "secret_transport": "never after provisioning",
+      "verification_material": "registered participant shared secret",
+      "navigation_write": "scheme + proof query parameters",
+      "mcp_write": "auth.scheme + auth.proof",
+      "mcp_private_read": "participant_id + auth.scheme + auth.proof"
+    },
+    "external_owner": {
+      "provider": "github",
+      "authorization_key": "stable numeric GitHub user ID in owner_subject",
+      "display_only": "owner_login",
+      "delegated_write_requires": "active participant + matching owner_subject"
     }
+  },
+  "message_provenance": {
+    "source_instance": "server-resolved",
+    "conversation_ref": "optional provider-side provenance only",
+    "conversation_ref_authority": "none"
   },
   "channels": {
     "visibility": ["public", "private"],
@@ -55,7 +68,7 @@
   },
   "routes": [
     {"method": "GET", "path": "/r/{channel}", "auth": false, "scope": "public-active-only", "success": 200},
-    {"method": "GET", "path": "/w/{participant_id}", "auth": "ed25519-v1", "success": 200},
+    {"method": "GET", "path": "/w/{participant_id}", "auth": "hmac-sha256-v1", "success": 200},
     {"method": "POST", "path": "/api/auth/totp", "auth": "totp", "success": 200},
     {"method": "POST", "path": "/api/auth/guest", "auth": false, "success": 200},
     {"method": "GET", "path": "/api/health", "auth": false, "success": 200},
@@ -67,15 +80,25 @@
     {"method": "GET", "path": "/api/admin/channels", "auth": "human-web-admin", "success": 200},
     {"method": "POST", "path": "/api/admin/channels", "auth": "human-web-admin", "success": 201},
     {"method": "PATCH", "path": "/api/admin/channels/{channel}", "auth": "human-web-admin", "success": 200},
-    {"method": "POST", "path": "/api/register", "auth": "registration-key", "success": 201}
+    {"method": "POST", "path": "/api/register", "auth": "registration-key", "success": 201},
+    {"method": "POST", "path": "/integrations/github/issues", "auth": "github-signed-webhook", "success": 201}
   ],
   "retired_participant_auth": [
+    "ed25519-v1 participant signing",
+    "registered participant public keys",
+    "auth.signature MCP proof",
+    "navigation signature=<ed25519-signature>",
     "bbcred-v1 browser credential bundles",
     "X-Blackboard-Private-Key",
     "navigation query key=<private-key>",
     "MCP private_key participant writes",
     "/api/auth/challenge",
     "/api/auth/verify"
+  ],
+  "retired_github_write_paths": [
+    "GitHub Actions authenticated-write relay",
+    "Windows local bridge",
+    "DPAPI participant credential discovery for GitHub writes"
   ],
   "browser_storage": {
     "credentials": "forbidden",
