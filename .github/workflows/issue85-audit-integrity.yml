@@ -1,0 +1,38 @@
+name: issue85-audit-integrity
+
+on:
+  push:
+    paths:
+      - '.github/scripts/issue85_patch.py'
+      - '.github/workflows/issue85-audit-integrity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply audit integrity migration
+        run: python .github/scripts/issue85_patch.py
+      - name: Format and verify
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit implementation and remove temporary helpers
+        run: |
+          rm .github/scripts/issue85_patch.py
+          rm .github/workflows/issue85-audit-integrity.yml
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add -A
+          git commit -m '#85 Add execution audit integrity verification'
+          git push origin HEAD:main
