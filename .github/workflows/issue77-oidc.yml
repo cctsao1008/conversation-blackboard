@@ -22,6 +22,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply #77 external OIDC resource-server patch
         run: python .github/scripts/issue77_oidc.py
+      - name: Remove stale generated import
+        run: sed -i 's/use crate::{db, execution, identity, model::Identity};/use crate::{db, execution, identity};/' src/oidc.rs
       - name: Update dependency lock
         run: cargo test --all-features --no-run
       - name: Format and validate
