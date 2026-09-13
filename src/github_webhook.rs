@@ -208,19 +208,14 @@ async fn github_issue_webhook(
     let kind = kind.to_owned();
     let message_body = intent.body.clone();
     let reply_to = intent.reply_to;
-    // Preserve the legacy GitHub nonce when intent_id is omitted. An explicit
-    // intent_id becomes the semantic idempotency key while delivery_id remains
-    // transport-specific.
-    let nonce = intent_id.clone();
-    let request_hash = identity::hash_token(
-        &json!({
-            "channel": channel,
-            "kind": kind,
-            "body": message_body,
-            "conversation_ref": conversation_ref,
-            "reply_to": reply_to,
-        })
-        .to_string(),
+    // Preserve the legacy GitHub semantic key when intent_id is omitted while
+    // keeping transport delivery identity independent.
+    let request_hash = execution::message_request_hash(
+        &channel,
+        &kind,
+        &message_body,
+        conversation_ref.as_deref(),
+        reply_to,
     );
     let intent_envelope = execution::IntentEnvelope {
         intent_id: intent_id.clone(),
@@ -255,53 +250,37 @@ async fn github_issue_webhook(
             ensure_owner_columns(&conn)?;
             let identity = get_owned_active_participant(&conn, &participant_id, &owner_subject)?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            if !db::ensure_channel_for_write(&conn, &channel, Some(&identity.instance))? {
-                return Ok(WebhookWriteResult::ChannelArchived);
-            }
-            let result = match db::append_navigation_message_with_conversation(
-                &conn,
-                &identity,
-                db::NavigationMessageInput {
-                    channel: &channel,
-                    kind: &kind,
-                    body: &message_body,
-                    reply_to,
-                    nonce: &nonce,
-                    request_hash: &request_hash,
-                },
-                conversation_ref.as_deref(),
-            )? {
-                db::NavigationAppendResult::Created(message) => {
-                    WebhookWriteResult::Created(message.id)
-                }
-                db::NavigationAppendResult::Existing(message) => {
-                    WebhookWriteResult::Existing(message.id)
-                }
-                db::NavigationAppendResult::NonceConflict => WebhookWriteResult::NonceConflict,
-                db::NavigationAppendResult::ReplyTargetNotFound => {
-                    WebhookWriteResult::ReplyTargetNotFound
-                }
-            };
-
-            if let Some(message_id) = match &result {
-                WebhookWriteResult::Created(id) | WebhookWriteResult::Existing(id) => Some(*id),
-                _ => None,
-            } {
-                execution::record_execution(
+            Ok(
+                match execution::execute_message_intent(
                     &conn,
-                    &ingress,
-                    &execution::ExecutionReceipt {
-                        participant_id: intent_envelope.participant_id.clone(),
-                        intent_id: intent_envelope.intent_id.clone(),
-                        intent_hash: intent_envelope.request_hash.clone(),
-                        capability: intent_envelope.capability.clone(),
-                        message_id,
-                        status: "committed".to_owned(),
+                    &identity,
+                    execution::MessageExecutionRequest {
+                        authority: &authority_context,
+                        ingress: &ingress,
+                        intent: &intent_envelope,
+                        channel: &channel,
+                        kind: &kind,
+                        body: &message_body,
+                        reply_to,
                     },
-                )?;
-            }
-
-            Ok(result)
+                )? {
+                    execution::MessageExecutionResult::Created(message) => {
+                        WebhookWriteResult::Created(message.id)
+                    }
+                    execution::MessageExecutionResult::Existing(message) => {
+                        WebhookWriteResult::Existing(message.id)
+                    }
+                    execution::MessageExecutionResult::IntentConflict => {
+                        WebhookWriteResult::NonceConflict
+                    }
+                    execution::MessageExecutionResult::ReplyTargetNotFound => {
+                        WebhookWriteResult::ReplyTargetNotFound
+                    }
+                    execution::MessageExecutionResult::ChannelArchived => {
+                        WebhookWriteResult::ChannelArchived
+                    }
+                },
+            )
         })
         .await;
 

@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::{db, identity, model::Identity, participant_auth, request_auth, web_auth};
+use crate::{db, execution, identity, model::Identity, participant_auth, request_auth, web_auth};
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -839,50 +839,69 @@ async fn post_signed_message(
         return Err(ApiError::new(StatusCode::CONFLICT, "channel_archived"));
     }
 
-    let request_hash = identity::hash_token(
-        &json!({
-            "channel": &channel,
-            "kind": &kind,
-            "body": &message_body,
-            "reply_to": reply_to,
-        })
-        .to_string(),
-    );
+    let request_hash =
+        execution::message_request_hash(&channel, &kind, &message_body, None, reply_to);
+    let principal = execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.clone(),
+    };
+    let authority = execution::AuthorityContext {
+        principal: principal.clone(),
+        mechanism: participant_auth::AUTH_SCHEME.to_owned(),
+    };
+    let intent = execution::IntentEnvelope {
+        intent_id: nonce.clone(),
+        participant_id: participant_id.clone(),
+        conversation_ref: None,
+        capability: execution::POST_MESSAGE_CAPABILITY.to_owned(),
+        resource: channel.clone(),
+        request_hash,
+    };
+    let ingress = execution::IngressProvenance {
+        delivery_id: format!("rest-hmac:{participant_id}:{nonce}"),
+        intent_id: nonce.clone(),
+        transport: "rest".to_owned(),
+        external_ref: nonce.clone(),
+        principal,
+    };
     let write_channel = channel.clone();
     let write_kind = kind.clone();
     let write_body = message_body.clone();
-    let write_nonce = nonce.clone();
     let result = with_db(state, move |conn| {
-        db::append_navigation_message(
+        execution::execute_message_intent(
             conn,
             &writer,
-            db::NavigationMessageInput {
+            execution::MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
                 channel: &write_channel,
                 kind: &write_kind,
                 body: &write_body,
                 reply_to,
-                nonce: &write_nonce,
-                request_hash: &request_hash,
             },
         )
     })
     .await?;
 
     let (status, persisted, idempotent, http_status) = match result {
-        db::NavigationAppendResult::Created(message) => {
+        execution::MessageExecutionResult::Created(message) => {
             ("created", message, false, StatusCode::CREATED)
         }
-        db::NavigationAppendResult::Existing(message) => {
+        execution::MessageExecutionResult::Existing(message) => {
             ("existing", message, true, StatusCode::OK)
         }
-        db::NavigationAppendResult::NonceConflict => {
+        execution::MessageExecutionResult::IntentConflict => {
             return Err(ApiError::new(StatusCode::CONFLICT, "nonce_conflict"));
         }
-        db::NavigationAppendResult::ReplyTargetNotFound => {
+        execution::MessageExecutionResult::ReplyTargetNotFound => {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "reply_target_not_found",
             ));
+        }
+        execution::MessageExecutionResult::ChannelArchived => {
+            return Err(ApiError::new(StatusCode::CONFLICT, "channel_archived"));
         }
     };
 

@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    db,
-    identity,
+    db, identity,
     model::{Identity, Message},
 };
 
@@ -381,13 +380,8 @@ mod tests {
             label: None,
         };
         let intent_id = "semantic-intent-1".to_owned();
-        let request_hash = message_request_hash(
-            "blackboard-lounge",
-            "message",
-            "hello",
-            None,
-            None,
-        );
+        let request_hash =
+            message_request_hash("blackboard-lounge", "message", "hello", None, None);
         let intent = IntentEnvelope {
             intent_id: intent_id.clone(),
             participant_id: identity.instance.clone(),

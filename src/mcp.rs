@@ -12,7 +12,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 use url::Url;
 
-use crate::{db, http::AppState, identity, model::Identity, participant_auth};
+use crate::{db, execution, http::AppState, identity, model::Identity, participant_auth};
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES: usize = 64 * 1024;
@@ -523,45 +523,47 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         Err(code) => return tool_error(code),
     };
 
-    let metadata_channel = channel.clone();
-    let creator = writer.instance.clone();
-    let active = match with_db(state, move |conn| {
-        db::ensure_channel_for_write(conn, &metadata_channel, Some(&creator))
-    })
-    .await
-    {
-        Ok(value) => value,
-        Err(()) => return tool_error("database_unavailable"),
+    let request_hash =
+        execution::message_request_hash(&channel, &kind, &message_body, None, reply_to);
+    let principal = execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.clone(),
     };
-    if !active {
-        return tool_error("channel_archived");
-    }
-
-    let request_hash = identity::hash_token(
-        &json!({
-            "channel": &channel,
-            "kind": &kind,
-            "body": &message_body,
-            "reply_to": reply_to,
-        })
-        .to_string(),
-    );
+    let authority = execution::AuthorityContext {
+        principal: principal.clone(),
+        mechanism: participant_auth::AUTH_SCHEME.to_owned(),
+    };
+    let intent = execution::IntentEnvelope {
+        intent_id: nonce.clone(),
+        participant_id: participant_id.clone(),
+        conversation_ref: None,
+        capability: execution::POST_MESSAGE_CAPABILITY.to_owned(),
+        resource: channel.clone(),
+        request_hash,
+    };
+    let ingress = execution::IngressProvenance {
+        delivery_id: format!("mcp-hmac:{participant_id}:{nonce}"),
+        intent_id: nonce.clone(),
+        transport: "mcp".to_owned(),
+        external_ref: nonce.clone(),
+        principal,
+    };
 
     let write_channel = channel.clone();
     let write_kind = kind.clone();
     let write_body = message_body.clone();
-    let write_nonce = nonce.clone();
     let result = match with_db(state, move |conn| {
-        db::append_navigation_message(
+        execution::execute_message_intent(
             conn,
             &writer,
-            db::NavigationMessageInput {
+            execution::MessageExecutionRequest {
+                authority: &authority,
+                ingress: &ingress,
+                intent: &intent,
                 channel: &write_channel,
                 kind: &write_kind,
                 body: &write_body,
                 reply_to,
-                nonce: &write_nonce,
-                request_hash: &request_hash,
             },
         )
     })
@@ -572,11 +574,14 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
     };
 
     let (status, persisted, idempotent) = match result {
-        db::NavigationAppendResult::Created(message) => ("created", message, false),
-        db::NavigationAppendResult::Existing(message) => ("existing", message, true),
-        db::NavigationAppendResult::NonceConflict => return tool_error("nonce_conflict"),
-        db::NavigationAppendResult::ReplyTargetNotFound => {
+        execution::MessageExecutionResult::Created(message) => ("created", message, false),
+        execution::MessageExecutionResult::Existing(message) => ("existing", message, true),
+        execution::MessageExecutionResult::IntentConflict => return tool_error("nonce_conflict"),
+        execution::MessageExecutionResult::ReplyTargetNotFound => {
             return tool_error("reply_target_not_found")
+        }
+        execution::MessageExecutionResult::ChannelArchived => {
+            return tool_error("channel_archived")
         }
     };
 
