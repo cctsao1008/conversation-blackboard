@@ -203,8 +203,10 @@ fn implicit_authority(
     capability: &str,
     participant: &ParticipantPolicyRow,
 ) -> bool {
-    let self_authenticated = matches!(principal.provider.as_str(), "participant-hmac" | "human-web")
-        && principal.subject == participant_id;
+    let self_authenticated = matches!(
+        principal.provider.as_str(),
+        "participant-hmac" | "human-web"
+    ) && principal.subject == participant_id;
     if self_authenticated {
         if capability == MANAGE_CHANNELS {
             return principal.provider == "human-web" && participant.role == "admin";
@@ -236,14 +238,9 @@ mod tests {
         let path = dir.path().join("board.db");
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
-        identity::provision_web_participant_identity(
-            &conn,
-            "maker-main",
-            "maker",
-            Some("Maker"),
-        )
-        .unwrap()
-        .unwrap();
+        identity::provision_web_participant_identity(&conn, "maker-main", "maker", Some("Maker"))
+            .unwrap()
+            .unwrap();
         conn.execute(
             "UPDATE web_participants
              SET owner_provider = 'github', owner_subject = '543608'
