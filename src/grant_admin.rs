@@ -215,11 +215,7 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                     MAX_PROVIDER_BYTES,
                     "principal_provider",
                 )?,
-                subject: normalize(
-                    &principal_subject,
-                    MAX_SUBJECT_BYTES,
-                    "principal_subject",
-                )?,
+                subject: normalize(&principal_subject, MAX_SUBJECT_BYTES, "principal_subject")?,
             };
             let participant_id = identity::validate_participant_id(&participant_id)
                 .ok_or("invalid participant_id")?;
@@ -573,7 +569,10 @@ fn explain_grant(
             consumed_intent_id,
         ) in rows
         {
-            let denial = if grant_resource.as_deref().is_some_and(|value| Some(value) != resource) {
+            let denial = if grant_resource
+                .as_deref()
+                .is_some_and(|value| Some(value) != resource)
+            {
                 Some("delegated_resource_mismatch")
             } else if grant_intent
                 .as_deref()
