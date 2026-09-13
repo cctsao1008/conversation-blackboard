@@ -9,6 +9,14 @@ pub const REPLY: &str = "reply";
 pub const READ_EXECUTION_RECEIPT: &str = "read_execution_receipt";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
+const KNOWN_CAPABILITIES: [&str; 5] = [
+    READ_MESSAGES,
+    POST_MESSAGE,
+    REPLY,
+    READ_EXECUTION_RECEIPT,
+    MANAGE_CHANNELS,
+];
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct EffectiveGrant {
     pub capability: String,
@@ -152,19 +160,13 @@ pub fn effective_grants(
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !explicit.is_empty() {
-        return Ok(explicit);
-    }
 
-    let mut grants = Vec::new();
-    for capability in [
-        READ_MESSAGES,
-        POST_MESSAGE,
-        REPLY,
-        READ_EXECUTION_RECEIPT,
-        MANAGE_CHANNELS,
-    ] {
-        if implicit_authority(principal, participant_id, capability, &participant) {
+    let mut grants = explicit.clone();
+    for capability in KNOWN_CAPABILITIES {
+        if explicit.iter().any(|grant| grant.capability == capability) {
+            continue;
+        }
+        if authorize(conn, principal, participant_id, capability, None)? {
             grants.push(EffectiveGrant {
                 capability: capability.to_owned(),
                 resource: None,
@@ -172,6 +174,11 @@ pub fn effective_grants(
             });
         }
     }
+    grants.sort_by(|left, right| {
+        left.capability
+            .cmp(&right.capability)
+            .then_with(|| left.resource.cmp(&right.resource))
+    });
     Ok(grants)
 }
 
@@ -299,6 +306,18 @@ mod tests {
             Some("control-systems")
         )
         .unwrap());
+
+        let grants = effective_grants(&conn, &principal, "maker-main").unwrap();
+        assert!(grants.iter().any(|grant| {
+            grant.capability == POST_MESSAGE
+                && grant.resource.as_deref() == Some("blackboard-lounge")
+                && grant.origin == "explicit"
+        }));
+        assert!(grants.iter().any(|grant| {
+            grant.capability == READ_MESSAGES
+                && grant.resource.is_none()
+                && grant.origin == "implicit"
+        }));
     }
 
     #[test]
@@ -317,5 +336,8 @@ mod tests {
             Some("blackboard-lounge")
         )
         .unwrap());
+        assert!(effective_grants(&conn, &principal, "maker-main")
+            .unwrap()
+            .is_empty());
     }
 }
