@@ -172,6 +172,28 @@ async fn mcp_advertises_hmac_only_auth_contract() {
 }
 
 #[tokio::test]
+async fn mcp_read_schema_includes_conversation_ref_provenance() {
+    let fixture = fixture();
+    let response = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        })),
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    let read_tool = &value["result"]["tools"][0];
+    let message = &read_tool["outputSchema"]["properties"]["messages"]["items"];
+    assert!(message["properties"]["conversation_ref"].is_object());
+    let required = message["required"].as_array().unwrap();
+    assert!(required.iter().any(|field| field == "conversation_ref"));
+}
+
+#[tokio::test]
 async fn public_read_is_unsigned_private_read_requires_valid_hmac() {
     let fixture = fixture();
     let public_write = write_arguments(

@@ -300,11 +300,12 @@ fn message_schema() -> Value {
             "channel": {"type": "string"},
             "source": {"type": "string"},
             "instance": {"type": "string"},
+            "conversation_ref": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "kind": {"type": "string"},
             "body": {"type": "string"},
             "reply_to": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
-        "required": ["id", "created_at", "channel", "source", "instance", "kind", "body", "reply_to"],
+        "required": ["id", "created_at", "channel", "source", "instance", "conversation_ref", "kind", "body", "reply_to"],
         "additionalProperties": false
     })
 }
