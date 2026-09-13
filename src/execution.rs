@@ -62,9 +62,7 @@ pub fn github_intent_id(
 
 pub fn normalize_intent_id(value: &str) -> Result<String, ()> {
     let value = value.trim();
-    if value.is_empty()
-        || value.len() > MAX_INTENT_ID_BYTES
-        || value.chars().any(char::is_control)
+    if value.is_empty() || value.len() > MAX_INTENT_ID_BYTES || value.chars().any(char::is_control)
     {
         return Err(());
     }
@@ -243,7 +241,9 @@ mod tests {
         record_execution(&conn, &ingress, &receipt).unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM execution_receipts", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM execution_receipts", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 1);
 
