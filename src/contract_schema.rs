@@ -111,3 +111,62 @@ pub fn execution_receipt_envelope_schema() -> Value {
         "additionalProperties": false
     })
 }
+
+pub fn authorization_provenance_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "participant_id": participant_id_schema(),
+            "intent_id": intent_id_schema(),
+            "source": {"type": "string"},
+            "reason": {"type": "string"},
+            "grant_id": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
+        },
+        "required": ["participant_id", "intent_id", "source", "reason", "grant_id"],
+        "additionalProperties": false,
+        "description": "Historical non-secret authorization decision persisted at execution commit time."
+    })
+}
+
+pub fn ingress_audit_record_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "delivery_id": delivery_id_schema(),
+            "intent_id": intent_id_schema(),
+            "transport": {"type": "string"},
+            "external_ref": {"type": "string"},
+            "principal": principal_schema()
+        },
+        "required": ["delivery_id", "intent_id", "transport", "external_ref", "principal"],
+        "additionalProperties": false
+    })
+}
+
+pub fn execution_audit_bundle_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "receipt": execution_receipt_schema(),
+            "authorization": {
+                "anyOf": [authorization_provenance_schema(), {"type": "null"}]
+            },
+            "ingress": {
+                "type": "array",
+                "items": ingress_audit_record_schema()
+            }
+        },
+        "required": ["receipt", "authorization", "ingress"],
+        "additionalProperties": false,
+        "description": "Immutable historical execution read model assembled from committed receipt, authorization provenance, and ingress provenance."
+    })
+}
+
+pub fn execution_audit_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"audit": execution_audit_bundle_schema()},
+        "required": ["audit"],
+        "additionalProperties": false
+    })
+}

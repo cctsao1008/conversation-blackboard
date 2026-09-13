@@ -15,6 +15,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/access-context", get(access_context))
         .route("/api/executions/{intent_id}", get(execution_receipt))
+        .route("/api/executions/{intent_id}/audit", get(execution_audit))
         .with_state(state)
 }
 
@@ -80,6 +81,44 @@ async fn execution_receipt(
     .ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
 
     Ok(json_response(StatusCode::OK, json!({"execution": receipt})))
+}
+
+async fn execution_audit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(intent_id): Path<String>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    let intent_id = execution::normalize_intent_id(&intent_id)
+        .map_err(|_| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_intent_id"))?;
+    let participant_id = resolved.instance.clone();
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let lookup_intent = intent_id.clone();
+    let (allowed, audit) = with_db(&state, move |conn| {
+        let allowed = authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_EXECUTION_AUDIT,
+            Some(&lookup_intent),
+        )?;
+        let audit = if allowed {
+            execution::get_execution_audit_bundle(conn, &lookup_participant, &lookup_intent)?
+        } else {
+            None
+        };
+        Ok((allowed, audit))
+    })
+    .await?;
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    let audit =
+        audit.ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
+    Ok(json_response(StatusCode::OK, json!({"audit": audit})))
 }
 
 fn principal_for_headers(headers: &HeaderMap, resolved: &Identity) -> execution::Principal {

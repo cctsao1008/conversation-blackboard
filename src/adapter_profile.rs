@@ -16,6 +16,7 @@ pub const REST: AdapterProfile = AdapterProfile {
         "post_message",
         "access_context",
         "execution_receipt",
+        "execution_audit",
         "manage_channels",
     ],
     asynchronous: false,
@@ -29,6 +30,7 @@ pub const MCP: AdapterProfile = AdapterProfile {
         "post_message",
         "access_context",
         "execution_receipt",
+        "execution_audit",
     ],
     asynchronous: false,
 };

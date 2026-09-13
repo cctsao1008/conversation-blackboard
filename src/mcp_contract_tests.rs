@@ -158,7 +158,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 5);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(

@@ -344,6 +344,44 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /api/executions/{intent_id}/audit:
+    get:
+      operationId: blackboardExecutionAudit
+      summary: Read immutable committed execution audit evidence.
+      description: Current policy authorizes access to this historical read model; historical authorization contents are read from persisted evidence and are not re-evaluated.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: intent_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/IntentId'
+      responses:
+        '200':
+          description: Immutable historical execution audit bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionAuditEnvelope'
+        '400':
+          description: Invalid semantic intent identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No committed execution exists for this participant and intent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
@@ -548,6 +586,65 @@ components:
       properties:
         execution:
           $ref: '#/components/schemas/ExecutionReceipt'
+
+    AuthorizationProvenance:
+      type: object
+      additionalProperties: false
+      required: [participant_id, intent_id, source, reason, grant_id]
+      description: Historical non-secret authorization decision persisted at execution commit time.
+      properties:
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        intent_id:
+          $ref: '#/components/schemas/IntentId'
+        source:
+          type: string
+        reason:
+          type: string
+        grant_id:
+          type: [integer, 'null']
+          minimum: 1
+
+    IngressAuditRecord:
+      type: object
+      additionalProperties: false
+      required: [delivery_id, intent_id, transport, external_ref, principal]
+      properties:
+        delivery_id:
+          $ref: '#/components/schemas/DeliveryId'
+        intent_id:
+          $ref: '#/components/schemas/IntentId'
+        transport:
+          type: string
+        external_ref:
+          type: string
+        principal:
+          $ref: '#/components/schemas/Principal'
+
+    ExecutionAuditBundle:
+      type: object
+      additionalProperties: false
+      required: [receipt, authorization, ingress]
+      description: Immutable historical read model assembled from committed execution evidence.
+      properties:
+        receipt:
+          $ref: '#/components/schemas/ExecutionReceipt'
+        authorization:
+          anyOf:
+            - $ref: '#/components/schemas/AuthorizationProvenance'
+            - type: 'null'
+        ingress:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngressAuditRecord'
+
+    ExecutionAuditEnvelope:
+      type: object
+      additionalProperties: false
+      required: [audit]
+      properties:
+        audit:
+          $ref: '#/components/schemas/ExecutionAuditBundle'
 
     Identity:
       type: object

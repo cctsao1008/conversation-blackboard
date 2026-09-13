@@ -75,6 +75,7 @@ fn utcp_is_discovery_projection_and_tracks_http_message_shape() {
     );
     assert!(tools.iter().any(|tool| tool["name"] == "access_context"));
     assert!(tools.iter().any(|tool| tool["name"] == "execution_receipt"));
+    assert!(tools.iter().any(|tool| tool["name"] == "execution_audit"));
 }
 
 #[test]
@@ -88,4 +89,43 @@ fn delivery_identity_never_becomes_semantic_receipt_identity() {
         .unwrap()
         .to_ascii_lowercase()
         .contains("transport"));
+}
+
+#[test]
+fn execution_audit_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    assert_eq!(
+        names(&api, "/components/schemas/ExecutionAuditBundle/properties"),
+        names(
+            &contract_schema::execution_audit_bundle_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationProvenance/properties"
+        ),
+        names(
+            &contract_schema::authorization_provenance_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(&api, "/components/schemas/IngressAuditRecord/properties"),
+        names(
+            &contract_schema::ingress_audit_record_schema(),
+            "/properties"
+        )
+    );
+    assert!(api["paths"]
+        .get("/api/executions/{intent_id}/audit")
+        .is_some());
+    let audit = contract_schema::execution_audit_bundle_schema();
+    assert!(audit["properties"]["receipt"]["properties"]
+        .get("delivery_id")
+        .is_none());
+    assert!(audit["properties"]["ingress"]["items"]["properties"]
+        .get("delivery_id")
+        .is_some());
 }

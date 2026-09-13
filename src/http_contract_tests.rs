@@ -11,7 +11,7 @@ use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
 use crate::{
-    db,
+    authorization, db, execution,
     http::{self, AppState},
     identity,
     model::Identity,
@@ -483,4 +483,104 @@ async fn distinct_hmac_participants_keep_provenance_separate() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].instance, "single-main");
     assert_eq!(rows[1].instance, "rotary-main");
+}
+
+#[tokio::test]
+async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
+    let fixture = fixture("audit");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    execution::ensure_execution_tables(&conn).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    let seed = db::append_message(
+        &conn,
+        &fixture.identity,
+        "blackboard-lounge",
+        "message",
+        "audit seed",
+        None,
+    )
+    .unwrap();
+    assert_eq!(seed.id, 1);
+    conn.execute(
+        "INSERT INTO execution_receipts
+            (participant_id, intent_id, intent_hash, capability, message_id, status)
+         VALUES (?1, 'intent-http-audit', 'hash', 'post_message', 1, 'committed')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO execution_authorization_provenance
+            (participant_id, intent_id, source, reason, grant_id)
+         VALUES (?1, 'intent-http-audit', 'implicit_authority', 'implicit_human_web', NULL)",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ingress_provenance
+            (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)
+         VALUES ('delivery-http-audit', 'intent-http-audit', 'rest', 'ref', 'human-web', ?1)",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    assert!(execution::get_execution_audit_bundle(
+        &conn,
+        &fixture.participant_id,
+        "intent-http-audit",
+    )
+    .unwrap()
+    .is_some());
+    drop(conn);
+
+    let audit_router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let receipt_probe = request(
+        &audit_router,
+        Method::GET,
+        "/api/executions/intent-http-audit",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(receipt_probe.status(), StatusCode::OK);
+    let response = request(
+        &audit_router,
+        Method::GET,
+        "/api/executions/intent-http-audit/audit",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, body) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["audit"]["receipt"]["intent_id"], "intent-http-audit");
+    assert_eq!(
+        body["audit"]["authorization"]["reason"],
+        "implicit_human_web"
+    );
+    assert_eq!(body["audit"]["ingress"].as_array().unwrap().len(), 1);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('human-web', ?1, ?1, 'read_execution_audit', 'different-intent')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let denied = request(
+        &audit_router,
+        Method::GET,
+        "/api/executions/intent-http-audit/audit",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 }

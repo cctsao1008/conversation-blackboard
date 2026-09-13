@@ -7,13 +7,15 @@ pub const READ_MESSAGES: &str = "read_messages";
 pub const POST_MESSAGE: &str = "post_message";
 pub const REPLY: &str = "reply";
 pub const READ_EXECUTION_RECEIPT: &str = "read_execution_receipt";
+pub const READ_EXECUTION_AUDIT: &str = "read_execution_audit";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 5] = [
+const KNOWN_CAPABILITIES: [&str; 6] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
     READ_EXECUTION_RECEIPT,
+    READ_EXECUTION_AUDIT,
     MANAGE_CHANNELS,
 ];
 
@@ -460,7 +462,7 @@ fn implicit_authority_reason(
         }
         if matches!(
             capability,
-            READ_MESSAGES | POST_MESSAGE | REPLY | READ_EXECUTION_RECEIPT
+            READ_MESSAGES | POST_MESSAGE | REPLY | READ_EXECUTION_RECEIPT | READ_EXECUTION_AUDIT
         ) {
             return Some(if principal.provider == "participant-hmac" {
                 "implicit_participant_hmac"
@@ -477,7 +479,7 @@ fn implicit_authority_reason(
     (github_owner
         && matches!(
             capability,
-            READ_MESSAGES | POST_MESSAGE | REPLY | READ_EXECUTION_RECEIPT
+            READ_MESSAGES | POST_MESSAGE | REPLY | READ_EXECUTION_RECEIPT | READ_EXECUTION_AUDIT
         ))
     .then_some("implicit_github_owner")
 }
@@ -773,5 +775,38 @@ mod tests {
         assert!(effective_grants(&conn, &principal, "maker-main")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn explicit_execution_audit_scope_suppresses_implicit_fallback() {
+        let (_dir, conn) = setup();
+        ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('participant-hmac', 'maker-main', 'maker-main', 'read_execution_audit', 'intent-allowed')",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "participant-hmac".into(),
+            subject: "maker-main".into(),
+        };
+        assert!(authorize(
+            &conn,
+            &principal,
+            "maker-main",
+            READ_EXECUTION_AUDIT,
+            Some("intent-allowed"),
+        )
+        .unwrap());
+        assert!(!authorize(
+            &conn,
+            &principal,
+            "maker-main",
+            READ_EXECUTION_AUDIT,
+            Some("intent-denied"),
+        )
+        .unwrap());
     }
 }

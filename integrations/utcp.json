@@ -371,6 +371,77 @@
           "location": "header"
         }
       }
+    },
+    {
+      "name": "execution_audit",
+      "description": "Read immutable committed execution audit evidence. Current policy controls access; historical authorization is not re-evaluated.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intent_id"
+        ],
+        "properties": {
+          "intent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "audit"
+        ],
+        "properties": {
+          "audit": {
+            "type": "object",
+            "required": [
+              "receipt",
+              "authorization",
+              "ingress"
+            ],
+            "properties": {
+              "receipt": {
+                "type": "object"
+              },
+              "authorization": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "ingress": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "execution",
+        "audit",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_execution_audit_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/executions/${intent_id}/audit",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
     }
   ],
   "contract_projection": {
