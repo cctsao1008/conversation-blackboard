@@ -1,4 +1,7 @@
-use std::{error::Error, path::{Path, PathBuf}};
+use std::{
+    error::Error,
+    path::{Path, PathBuf},
+};
 
 use clap::Subcommand;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -194,8 +197,8 @@ fn create_grant(conn: &Connection, spec: &GrantCreateSpec<'_>) -> DynResult<i64>
         MAX_SUBJECT_BYTES,
         "principal_subject",
     )?;
-    let participant_id = identity::validate_participant_id(spec.participant_id)
-        .ok_or("invalid participant_id")?;
+    let participant_id =
+        identity::validate_participant_id(spec.participant_id).ok_or("invalid participant_id")?;
     let capability = normalize(spec.capability, MAX_CAPABILITY_BYTES, "capability")?;
     let resource = normalize_optional(spec.resource, MAX_RESOURCE_BYTES, "resource")?;
     let intent_id = match spec.intent_id {
