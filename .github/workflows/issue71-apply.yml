@@ -36,3 +36,5 @@ jobs:
           git add -A
           git commit -m "#71 Integrate GitHub ingress with intent-bound execution"
           git push
+
+# retry after wiring AuthorityContext and IntentEnvelope into the GitHub path
