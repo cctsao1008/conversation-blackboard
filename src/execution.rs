@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    db, identity,
+    identity,
     model::{Identity, Message},
 };
+
+#[cfg(test)]
+use crate::db;
 
 pub const MAX_INTENT_ID_BYTES: usize = 256;
 pub const POST_MESSAGE_CAPABILITY: &str = "post_message";
@@ -275,6 +278,7 @@ pub fn execute_message_intent(
     })
 }
 
+#[cfg(test)]
 pub fn record_execution(
     conn: &Connection,
     ingress: &IngressProvenance,
