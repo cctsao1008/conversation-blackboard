@@ -348,16 +348,42 @@ pub fn verify_execution_audit_integrity(
         violations.push("invalid_receipt_status".to_owned());
     }
 
-    let message_exists = conn
+    let message = conn
         .query_row(
-            "SELECT 1 FROM messages WHERE id = ?1",
+            "SELECT channel, instance, conversation_ref, kind, body, reply_to
+             FROM messages WHERE id = ?1",
             [receipt.message_id],
-            |_| Ok(1_i64),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            },
         )
-        .optional()?
-        .is_some();
-    if message_exists {
+        .optional()?;
+    if let Some((channel, instance, conversation_ref, kind, body, reply_to)) = message {
         checks.push("message_effect_present".to_owned());
+        if instance == participant_id {
+            checks.push("message_effect_binding_valid".to_owned());
+        } else {
+            violations.push("message_effect_binding_mismatch".to_owned());
+        }
+        let expected_intent_hash = message_request_hash(
+            &channel,
+            &kind,
+            &body,
+            conversation_ref.as_deref(),
+            reply_to,
+        );
+        if receipt.intent_hash == expected_intent_hash {
+            checks.push("intent_hash_matches_effect".to_owned());
+        } else {
+            violations.push("intent_hash_mismatch".to_owned());
+        }
     } else {
         violations.push("message_effect_missing".to_owned());
     }

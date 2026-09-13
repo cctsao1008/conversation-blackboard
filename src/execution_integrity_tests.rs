@@ -29,11 +29,13 @@ fn seed_valid(conn: &Connection) {
         [],
     )
     .unwrap();
+    let intent_hash =
+        execution::message_request_hash("blackboard-lounge", "message", "audit", None, None);
     conn.execute(
         "INSERT INTO execution_receipts
             (participant_id, intent_id, intent_hash, capability, message_id, status)
-         VALUES ('maker-main', 'intent-85', 'hash', 'post_message', 1, 'committed')",
-        [],
+         VALUES ('maker-main', 'intent-85', ?1, 'post_message', 1, 'committed')",
+        [intent_hash],
     )
     .unwrap();
     conn.execute(
@@ -155,11 +157,13 @@ fn same_intent_across_participants_keeps_ingress_separate() {
             params![message_id, participant],
         )
         .unwrap();
+        let intent_hash =
+            execution::message_request_hash("blackboard-lounge", "message", "audit", None, None);
         conn.execute(
             "INSERT INTO execution_receipts
                 (participant_id, intent_id, intent_hash, capability, message_id, status)
-             VALUES (?1, 'shared-intent', 'hash', 'post_message', ?2, 'committed')",
-            params![participant, message_id],
+             VALUES (?1, 'shared-intent', ?2, 'post_message', ?3, 'committed')",
+            params![participant, intent_hash, message_id],
         )
         .unwrap();
         conn.execute(
@@ -233,11 +237,13 @@ fn ambiguous_legacy_ingress_is_not_guessed() {
             params![message_id, participant],
         )
         .unwrap();
+        let intent_hash =
+            execution::message_request_hash("blackboard-lounge", "message", "audit", None, None);
         conn.execute(
             "INSERT INTO execution_receipts
                 (participant_id, intent_id, intent_hash, capability, message_id, status)
-             VALUES (?1, 'ambiguous-intent', 'hash', 'post_message', ?2, 'committed')",
-            params![participant, message_id],
+             VALUES (?1, 'ambiguous-intent', ?2, 'post_message', ?3, 'committed')",
+            params![participant, intent_hash, message_id],
         )
         .unwrap();
         conn.execute(
@@ -280,4 +286,51 @@ fn ambiguous_legacy_ingress_is_not_guessed() {
         .violations
         .iter()
         .any(|value| value == "ingress_participant_unbound"));
+}
+
+#[test]
+fn message_participant_binding_mismatch_is_detected() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE messages SET instance = 'other-main' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "message_effect_binding_mismatch"));
+}
+
+#[test]
+fn every_hash_covered_message_field_is_verified_against_receipt() {
+    let mutations = [
+        "UPDATE messages SET body = 'tampered' WHERE id = 1",
+        "UPDATE messages SET channel = 'other-channel' WHERE id = 1",
+        "UPDATE messages SET kind = 'reply' WHERE id = 1",
+        "UPDATE messages SET conversation_ref = 'changed-ref' WHERE id = 1",
+        "UPDATE messages SET reply_to = 99 WHERE id = 1",
+    ];
+    for mutation in mutations {
+        let conn = fixture();
+        seed_valid(&conn);
+        conn.execute(mutation, []).unwrap();
+        let report =
+            execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+        assert!(
+            !report.valid,
+            "mutation should invalidate audit: {mutation}"
+        );
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|value| value == "intent_hash_mismatch"),
+            "missing intent_hash_mismatch for mutation: {mutation}"
+        );
+    }
 }

@@ -501,11 +501,13 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     )
     .unwrap();
     assert_eq!(seed.id, 1);
+    let intent_hash =
+        execution::message_request_hash("blackboard-lounge", "message", "audit seed", None, None);
     conn.execute(
         "INSERT INTO execution_receipts
             (participant_id, intent_id, intent_hash, capability, message_id, status)
-         VALUES (?1, 'intent-http-audit', 'hash', 'post_message', 1, 'committed')",
-        [&fixture.participant_id],
+         VALUES (?1, 'intent-http-audit', ?2, 'post_message', 1, 'committed')",
+        rusqlite::params![&fixture.participant_id, intent_hash],
     )
     .unwrap();
     conn.execute(
