@@ -872,3 +872,183 @@ async fn mcp_transport_remains_stateless_and_rejects_unknown_origins() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+fn modern_meta(version: &str) -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientInfo": {"name": "contract-test", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+async fn modern_post(
+    router: &Router,
+    body: Value,
+    method_header: &str,
+    name_header: Option<&str>,
+    protocol_header: &str,
+) -> Response {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("mcp-protocol-version", protocol_header)
+        .header("mcp-method", method_header);
+    if let Some(name) = name_header {
+        builder = builder.header("mcp-name", name);
+    }
+    router
+        .clone()
+        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn modern_server_discover_is_stateless_and_advertises_current_version() {
+    let fixture = fixture();
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "discover-1",
+            "method": "server/discover",
+            "params": {"_meta": modern_meta("2026-07-28")}
+        }),
+        "server/discover",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("mcp-session-id").is_none());
+    let (_, value) = response_json(response).await;
+    assert_eq!(value["result"]["resultType"], "complete");
+    assert_eq!(
+        value["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "conversation-blackboard"
+    );
+    let versions = value["result"]["supportedVersions"].as_array().unwrap();
+    assert!(versions.iter().any(|version| version == "2026-07-28"));
+    assert!(versions.iter().any(|version| version == "2025-11-25"));
+}
+
+#[tokio::test]
+async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_result() {
+    let fixture = fixture();
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 90,
+            "method": "tools/list",
+            "params": {"_meta": modern_meta("2026-07-28")}
+        }),
+        "tools/list",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("mcp-session-id").is_none());
+    let (_, value) = response_json(response).await;
+    assert_eq!(value["result"]["resultType"], "complete");
+    assert_eq!(value["result"]["cacheScope"], "public");
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 7);
+}
+
+#[tokio::test]
+async fn modern_streamable_http_rejects_header_body_mismatches() {
+    let fixture = fixture();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 91,
+        "method": "tools/call",
+        "params": {
+            "name": "blackboard_read",
+            "arguments": {"channel": "blackboard-lounge"},
+            "_meta": modern_meta("2026-07-28")
+        }
+    });
+
+    let method_mismatch = modern_post(
+        &fixture.router,
+        body.clone(),
+        "tools/list",
+        Some("blackboard_read"),
+        "2026-07-28",
+    )
+    .await;
+    let (status, value) = response_json(method_mismatch).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], -32020);
+
+    let name_mismatch = modern_post(
+        &fixture.router,
+        body.clone(),
+        "tools/call",
+        Some("blackboard_write"),
+        "2026-07-28",
+    )
+    .await;
+    let (status, value) = response_json(name_mismatch).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], -32020);
+
+    let protocol_mismatch = modern_post(
+        &fixture.router,
+        body,
+        "tools/call",
+        Some("blackboard_read"),
+        "2025-11-25",
+    )
+    .await;
+    let (status, value) = response_json(protocol_mismatch).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], -32020);
+}
+
+#[tokio::test]
+async fn modern_streamable_http_reports_unsupported_version_and_unknown_method() {
+    let fixture = fixture();
+    let unsupported = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/list",
+            "params": {"_meta": modern_meta("2099-01-01")}
+        }),
+        "tools/list",
+        None,
+        "2099-01-01",
+    )
+    .await;
+    let (status, value) = response_json(unsupported).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], -32022);
+    assert_eq!(value["error"]["data"]["requested"], "2099-01-01");
+    assert!(value["error"]["data"]["supported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|version| version == "2026-07-28"));
+
+    let unknown = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 93,
+            "method": "unknown/method",
+            "params": {"_meta": modern_meta("2026-07-28")}
+        }),
+        "unknown/method",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    let (status, value) = response_json(unknown).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(value["error"]["code"], -32601);
+}

@@ -8,6 +8,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,8 +23,11 @@ const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES: usize = 64 * 1024;
 const MAX_PAGE_SIZE: usize = 200;
 const DEFAULT_PAGE_SIZE: usize = 50;
-const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-03-26", "2025-06-18", "2025-11-25"];
+const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
+const LATEST_LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
+const SUPPORTED_LEGACY_PROTOCOL_VERSIONS: &[&str] = &["2025-03-26", "2025-06-18", "2025-11-25"];
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 
 pub fn app(state: AppState) -> Router {
     Router::new()
@@ -108,6 +112,10 @@ pub(crate) async fn stdio_dispatch(state: &AppState, value: &Value) -> Option<Va
     }
 
     let result = match method {
+        "server/discover" => match validate_modern_request_metadata(object) {
+            Ok(()) => Ok(discover_result()),
+            Err(message) => Err((-32602, message)),
+        },
         "initialize" => match initialize_result(object) {
             Ok(result) => Ok(result),
             Err(message) => Err((-32602, message)),
@@ -141,7 +149,9 @@ async fn mcp_options(request: Request<Body>) -> Response {
     );
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type, mcp-protocol-version, mcp-session-id"),
+        HeaderValue::from_static(
+            "content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id",
+        ),
     );
     response
 }
@@ -168,14 +178,6 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
             Value::Null,
             -32600,
             "origin_not_allowed",
-        );
-    }
-    if !protocol_header_supported(&headers) {
-        return jsonrpc_http_error(
-            StatusCode::BAD_REQUEST,
-            Value::Null,
-            -32600,
-            "unsupported_protocol_version",
         );
     }
 
@@ -208,32 +210,59 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
             )
         }
     };
+    let id = object.get("id").cloned().unwrap_or(Value::Null);
     if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return jsonrpc_http_error(
-            StatusCode::BAD_REQUEST,
-            object.get("id").cloned().unwrap_or(Value::Null),
-            -32600,
-            "invalid_request",
-        );
+        return jsonrpc_http_error(StatusCode::BAD_REQUEST, id, -32600, "invalid_request");
     }
 
     let method = match object.get("method").and_then(Value::as_str) {
         Some(method) => method,
         None if object.contains_key("result") || object.contains_key("error") => return accepted(),
-        None => {
-            return jsonrpc_http_error(
-                StatusCode::BAD_REQUEST,
-                object.get("id").cloned().unwrap_or(Value::Null),
-                -32600,
-                "invalid_request",
-            )
-        }
+        None => return jsonrpc_http_error(StatusCode::BAD_REQUEST, id, -32600, "invalid_request"),
     };
+
+    let body_protocol = request_protocol_version(object);
+    let header_protocol = headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok());
+    let modern = body_protocol.is_some()
+        || header_protocol == Some(MODERN_PROTOCOL_VERSION)
+        || method == "server/discover";
+
+    if modern {
+        if let Err(message) = validate_modern_http_metadata(&headers, object, method) {
+            return jsonrpc_http_error(StatusCode::BAD_REQUEST, id, -32020, message);
+        }
+        let requested = body_protocol.expect("validated modern request has protocol version");
+        if requested != MODERN_PROTOCOL_VERSION {
+            return unsupported_protocol_version_response(id, requested);
+        }
+
+        if !object.contains_key("id") {
+            return accepted();
+        }
+
+        let result = match method {
+            "server/discover" => discover_result(),
+            "tools/list" => tools_list_result(),
+            "tools/call" => match tool_call_result(&state, object).await {
+                Ok(result) => result,
+                Err(message) => return jsonrpc_error_response(id, -32602, message),
+            },
+            _ => return jsonrpc_http_error(StatusCode::NOT_FOUND, id, -32601, "method_not_found"),
+        };
+        return jsonrpc_result_response(id, result);
+    }
+
+    if let Some(version) = header_protocol {
+        if !SUPPORTED_LEGACY_PROTOCOL_VERSIONS.contains(&version) {
+            return unsupported_protocol_version_response(id, version);
+        }
+    }
 
     if !object.contains_key("id") {
         return accepted();
     }
-    let id = object.get("id").cloned().unwrap_or(Value::Null);
 
     let result = match method {
         "initialize" => match initialize_result(object) {
@@ -261,10 +290,10 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
         .get("protocolVersion")
         .and_then(Value::as_str)
         .ok_or("invalid_protocol_version")?;
-    let protocol_version = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested) {
+    let protocol_version = if SUPPORTED_LEGACY_PROTOCOL_VERSIONS.contains(&requested) {
         requested
     } else {
-        LATEST_PROTOCOL_VERSION
+        LATEST_LEGACY_PROTOCOL_VERSION
     };
 
     Ok(json!({
@@ -277,6 +306,180 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
         },
         "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, blackboard_execution_receipt for semantic execution read-back, blackboard_execution_audit for immutable historical audit, and blackboard_execution_audit_integrity for structural audit verification. Use blackboard_execution_audit_sweep only with privileged corpus-wide audit authority. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
     }))
+}
+
+fn discover_result() -> Value {
+    json!({
+        "resultType": "complete",
+        "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
+        "capabilities": {"tools": {"listChanged": false}},
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": "conversation-blackboard",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        },
+        "instructions": "Conversation Blackboard exposes MCP as a protocol projection. Blackboard remains authoritative for identity, authorization, semantic execution, durable attribution, and audit.",
+        "ttlMs": 300000,
+        "cacheScope": "public"
+    })
+}
+
+fn request_protocol_version(object: &Map<String, Value>) -> Option<&str> {
+    object
+        .get("params")?
+        .as_object()?
+        .get("_meta")?
+        .as_object()?
+        .get("io.modelcontextprotocol/protocolVersion")?
+        .as_str()
+}
+
+fn validate_modern_request_metadata(object: &Map<String, Value>) -> Result<(), &'static str> {
+    let params = object
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or("invalid_request_metadata")?;
+    let meta = params
+        .get("_meta")
+        .and_then(Value::as_object)
+        .ok_or("invalid_request_metadata")?;
+    let protocol = meta
+        .get("io.modelcontextprotocol/protocolVersion")
+        .and_then(Value::as_str)
+        .ok_or("invalid_request_metadata")?;
+    if protocol != MODERN_PROTOCOL_VERSION {
+        return Err("unsupported_protocol_version");
+    }
+    let client_info = meta
+        .get("io.modelcontextprotocol/clientInfo")
+        .and_then(Value::as_object)
+        .ok_or("invalid_request_metadata")?;
+    if client_info
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        || client_info
+            .get("version")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return Err("invalid_request_metadata");
+    }
+    if !meta
+        .get("io.modelcontextprotocol/clientCapabilities")
+        .is_some_and(Value::is_object)
+    {
+        return Err("invalid_request_metadata");
+    }
+    Ok(())
+}
+
+fn validate_modern_http_metadata(
+    headers: &HeaderMap,
+    object: &Map<String, Value>,
+    method: &str,
+) -> Result<(), &'static str> {
+    let body_protocol = request_protocol_version(object).ok_or("header_mismatch")?;
+    let header_protocol = headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("header_mismatch")?;
+    if header_protocol != body_protocol {
+        return Err("header_mismatch");
+    }
+
+    let header_method = headers
+        .get("mcp-method")
+        .and_then(|value| value.to_str().ok())
+        .ok_or("header_mismatch")?;
+    if header_method != method {
+        return Err("header_mismatch");
+    }
+
+    if method == "tools/call" {
+        let body_name = object
+            .get("params")
+            .and_then(Value::as_object)
+            .and_then(|params| params.get("name"))
+            .and_then(Value::as_str)
+            .ok_or("header_mismatch")?;
+        let header_name = headers
+            .get("mcp-name")
+            .and_then(|value| value.to_str().ok())
+            .and_then(decode_mcp_header_value)
+            .ok_or("header_mismatch")?;
+        if header_name != body_name {
+            return Err("header_mismatch");
+        }
+    }
+
+    let params = object
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or("header_mismatch")?;
+    let meta = params
+        .get("_meta")
+        .and_then(Value::as_object)
+        .ok_or("header_mismatch")?;
+    let client_info = meta
+        .get("io.modelcontextprotocol/clientInfo")
+        .and_then(Value::as_object)
+        .ok_or("header_mismatch")?;
+    if client_info
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        || client_info
+            .get("version")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return Err("header_mismatch");
+    }
+    if !meta
+        .get("io.modelcontextprotocol/clientCapabilities")
+        .is_some_and(Value::is_object)
+    {
+        return Err("header_mismatch");
+    }
+    Ok(())
+}
+
+fn decode_mcp_header_value(value: &str) -> Option<String> {
+    const PREFIX: &str = "=?base64?";
+    const SUFFIX: &str = "?=";
+    if value.starts_with(PREFIX) && value.ends_with(SUFFIX) {
+        let encoded = &value[PREFIX.len()..value.len() - SUFFIX.len()];
+        let decoded = BASE64_STANDARD.decode(encoded).ok()?;
+        return String::from_utf8(decoded).ok();
+    }
+    if value.is_empty()
+        || value.trim() != value
+        || !value
+            .bytes()
+            .all(|byte| byte == b'\t' || byte == b' ' || (0x21..=0x7e).contains(&byte))
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn unsupported_protocol_version_response(id: Value, requested: &str) -> Response {
+    jsonrpc_http_error_data(
+        StatusCode::BAD_REQUEST,
+        id,
+        -32022,
+        "unsupported_protocol_version",
+        json!({
+            "supported": SUPPORTED_PROTOCOL_VERSIONS,
+            "requested": requested
+        }),
+    )
 }
 
 fn auth_schema() -> Value {
@@ -298,6 +501,7 @@ fn auth_schema() -> Value {
 
 fn tools_list_result() -> Value {
     json!({
+        "resultType": "complete",
         "tools": [
             {
                 "name": "blackboard_read",
@@ -432,7 +636,9 @@ fn tools_list_result() -> Value {
                 "outputSchema": contract_schema::execution_audit_sweep_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
-        ]
+        ],
+        "ttlMs": 300000,
+        "cacheScope": "public"
     })
 }
 
@@ -1136,6 +1342,7 @@ fn tool_success(structured_content: Value) -> Value {
     let text = serde_json::to_string(&structured_content)
         .unwrap_or_else(|_| "{\"error\":\"internal_error\"}".to_owned());
     json!({
+        "resultType": "complete",
         "structuredContent": structured_content,
         "content": [{"type": "text", "text": text}],
         "isError": false
@@ -1144,6 +1351,7 @@ fn tool_success(structured_content: Value) -> Value {
 
 fn tool_error(code: &'static str) -> Value {
     json!({
+        "resultType": "complete",
         "content": [{"type": "text", "text": code}],
         "isError": true
     })
@@ -1166,16 +1374,6 @@ fn kind_re() -> &'static Regex {
 fn nonce_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$").unwrap())
-}
-
-fn protocol_header_supported(headers: &HeaderMap) -> bool {
-    match headers
-        .get("mcp-protocol-version")
-        .and_then(|value| value.to_str().ok())
-    {
-        None => true,
-        Some(value) => SUPPORTED_PROTOCOL_VERSIONS.contains(&value),
-    }
 }
 
 fn origin_allowed(headers: &HeaderMap) -> bool {
@@ -1245,6 +1443,19 @@ fn jsonrpc_http_error(status: StatusCode, id: Value, code: i64, message: &'stati
     json_response(
         status,
         json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
+    )
+}
+
+fn jsonrpc_http_error_data(
+    status: StatusCode,
+    id: Value,
+    code: i64,
+    message: &'static str,
+    data: Value,
+) -> Response {
+    json_response(
+        status,
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message, "data": data}}),
     )
 }
 
