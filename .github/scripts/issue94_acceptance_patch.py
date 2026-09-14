@@ -127,7 +127,10 @@ async fn failed_mcp_execution_does_not_burn_one_shot_delegated_grant() {
         ),
     )
     .await;
-    assert_eq!(succeeded["result"]["structuredContent"]["status"], "created");
+    assert_eq!(
+        succeeded["result"]["structuredContent"]["status"],
+        "created"
+    );
 
     let conn = db::connect(&fixture.db_path).unwrap();
     let (consumed_at, consumed_intent, receipt_count): (Option<i64>, Option<String>, i64) = conn
