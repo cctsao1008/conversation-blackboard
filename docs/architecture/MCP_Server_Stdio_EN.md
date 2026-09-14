@@ -241,7 +241,21 @@ The Rust contract tests cover the stdio dispatcher lifecycle, including:
 - CLI parsing for `mcp serve`;
 - the existing MCP authorization, participant isolation, idempotency, execution receipt, audit, and integrity behavior.
 
-The implementation deliberately tests the shared dispatcher rather than creating a second stdio-only tool implementation.
+The integration suite also launches the compiled `conversation-blackboard mcp serve` process and exercises its actual stdin/stdout boundary. That process-level test verifies lifecycle exchange, tool discovery, a real `tools/call`, malformed-JSON handling, protocol-only stdout, and clean EOF shutdown.
+
+Authorization and execution acceptance tests additionally verify two adapter-level boundaries that must not regress:
+
+```text
+explicit resource scope
+    -> cannot be bypassed through MCP
+
+failed semantic execution
+    -> no committed receipt
+    -> no delegated one-shot consumption
+    -> the same uncommitted intent may later succeed atomically
+```
+
+These tests intentionally drive the shared Blackboard kernels through the MCP tool path rather than introducing MCP-specific policy or persistence logic.
 
 ## Compatibility boundary
 
