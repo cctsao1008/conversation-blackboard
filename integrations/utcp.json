@@ -1,6 +1,6 @@
 {
   "utcp_version": "1.1.4",
-  "manual_version": "1.0.1",
+  "manual_version": "1.0.2",
   "tools": [
     {
       "name": "read_messages",
@@ -512,6 +512,135 @@
         "name": "blackboard_execution_audit_integrity_http",
         "call_template_type": "http",
         "url": "${BLACKBOARD_URL}/api/executions/${intent_id}/audit/integrity",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    },
+    {
+      "name": "execution_audit_sweep",
+      "description": "Run the privileged database-wide execution audit integrity sweep. Authorization is enforced by the Blackboard kernel; invalid integrity state is returned as report data and no repair is performed.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "sweep"
+        ],
+        "properties": {
+          "sweep": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "valid",
+              "executions_scanned",
+              "invalid_executions",
+              "orphan_evidence"
+            ],
+            "properties": {
+              "valid": {
+                "type": "boolean"
+              },
+              "executions_scanned": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "invalid_executions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "participant_id",
+                    "intent_id",
+                    "valid",
+                    "checks",
+                    "violations"
+                  ],
+                  "properties": {
+                    "participant_id": {
+                      "type": "string"
+                    },
+                    "intent_id": {
+                      "type": "string"
+                    },
+                    "valid": {
+                      "type": "boolean"
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "violations": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "orphan_evidence": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "participant_id",
+                    "intent_id",
+                    "reference"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "participant_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "intent_id": {
+                      "type": "string"
+                    },
+                    "reference": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "execution",
+        "audit",
+        "integrity",
+        "sweep",
+        "privileged",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_execution_audit_sweep_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/execution-audit/sweep",
         "http_method": "GET",
         "content_type": "application/json",
         "body_field": null,

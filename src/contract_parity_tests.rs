@@ -178,4 +178,33 @@ fn execution_audit_sweep_contracts_match_canonical_rust_shape() {
         )
     );
     assert!(api["paths"].get("/api/execution-audit/sweep").is_some());
+
+    let utcp = utcp_json();
+    let sweep = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "execution_audit_sweep")
+        .expect("UTCP sweep projection must exist");
+    assert_eq!(
+        names(sweep, "/outputs/properties/sweep/properties"),
+        names(
+            &contract_schema::execution_audit_sweep_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            sweep,
+            "/outputs/properties/sweep/properties/orphan_evidence/items/properties"
+        ),
+        names(
+            &contract_schema::execution_audit_orphan_evidence_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        sweep["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/execution-audit/sweep"
+    );
 }
