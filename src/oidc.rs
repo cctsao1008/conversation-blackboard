@@ -25,7 +25,7 @@ pub struct OidcState {
 }
 
 #[derive(Clone)]
-struct OidcVerifier {
+pub(crate) struct OidcVerifier {
     issuer: String,
     audience: String,
     keys: Arc<HashMap<String, DecodingKey>>,
@@ -142,6 +142,12 @@ impl OidcState {
     }
 }
 
+impl OidcState {
+    pub(crate) fn verifier(&self) -> Arc<OidcVerifier> {
+        self.verifier.clone()
+    }
+}
+
 impl OidcVerifier {
     fn from_jwks(
         issuer: String,
@@ -167,7 +173,7 @@ impl OidcVerifier {
         })
     }
 
-    fn verify(&self, token: &str) -> Result<execution::Principal, ()> {
+    pub(crate) fn verify(&self, token: &str) -> Result<execution::Principal, ()> {
         let header = decode_header(token).map_err(|_| ())?;
         if header.alg != Algorithm::RS256 {
             return Err(());

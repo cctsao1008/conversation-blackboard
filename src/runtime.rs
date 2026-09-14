@@ -63,10 +63,11 @@ where
     };
     let github_state = github_webhook::GithubWebhookState::from_env(config.db_path.clone());
     let oidc_state = oidc::OidcState::from_env(config.db_path).await?;
+    let oidc_verifier = oidc_state.as_ref().map(oidc::OidcState::verifier);
     let mut app = http::app(state.clone())
         .merge(history::app(state.clone()))
         .merge(access_api::app(state.clone()))
-        .merge(mcp::app(state))
+        .merge(mcp::app_with_oidc(state, oidc_verifier))
         .merge(github_webhook::app(github_state));
     if let Some(oidc_state) = oidc_state {
         app = app.merge(oidc::app(oidc_state));

@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     body::{to_bytes, Body},
@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::{
     adapter_profile, authorization, contract_schema, db, execution, http::AppState, identity,
-    model::Identity, participant_auth,
+    model::Identity, oidc, participant_auth,
 };
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
@@ -29,7 +29,21 @@ const SUPPORTED_LEGACY_PROTOCOL_VERSIONS: &[&str] = &["2025-03-26", "2025-06-18"
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
     &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
 
+#[derive(Clone)]
+struct McpHttpState {
+    app: AppState,
+    _oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
+}
+
+#[cfg(test)]
 pub fn app(state: AppState) -> Router {
+    app_with_oidc(state, None)
+}
+
+pub(crate) fn app_with_oidc(
+    state: AppState,
+    oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
+) -> Router {
     Router::new()
         .route(
             "/mcp",
@@ -38,7 +52,10 @@ pub fn app(state: AppState) -> Router {
                 .delete(mcp_delete)
                 .options(mcp_options),
         )
-        .with_state(state)
+        .with_state(McpHttpState {
+            app: state,
+            _oidc_verifier: oidc_verifier,
+        })
 }
 
 /// Serve MCP over newline-delimited JSON-RPC on stdin/stdout.
@@ -170,7 +187,7 @@ async fn mcp_delete(request: Request<Body>) -> Response {
     method_not_allowed()
 }
 
-async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Response {
+async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> Response {
     let headers = request.headers().clone();
     if !origin_allowed(&headers) {
         return jsonrpc_http_error(
@@ -245,7 +262,7 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
         let result = match method {
             "server/discover" => discover_result(),
             "tools/list" => modern_result(method, tools_list_result()),
-            "tools/call" => match tool_call_result(&state, object).await {
+            "tools/call" => match tool_call_result(&state.app, object).await {
                 Ok(result) => modern_result(method, result),
                 Err(message) => return jsonrpc_error_response(id, -32602, message),
             },
@@ -271,7 +288,7 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
         },
         "ping" => json!({}),
         "tools/list" => tools_list_result(),
-        "tools/call" => match tool_call_result(&state, object).await {
+        "tools/call" => match tool_call_result(&state.app, object).await {
             Ok(result) => result,
             Err(message) => return jsonrpc_error_response(id, -32602, message),
         },
