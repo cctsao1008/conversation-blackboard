@@ -21,6 +21,19 @@ jobs:
           components: rustfmt, clippy
       - name: Apply read-only execution schema refactor
         run: python .github/scripts/issue95_patch.py
+      - name: Repair current-schema audit fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/execution_integrity_tests.rs')
+          s = p.read_text(encoding='utf-8')
+          old = '''    conn.execute(\n        "INSERT INTO ingress_provenance\n            (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)\n         VALUES ('delivery-85', 'intent-85', 'rest', 'request-85', 'participant-hmac', 'maker-main')",\n        [],\n    )\n    .unwrap();\n'''
+          new = '''    conn.execute(\n        "INSERT INTO ingress_provenance\n            (delivery_id, participant_id, intent_id, transport, external_ref,\n             principal_provider, principal_subject)\n         VALUES ('delivery-85', 'maker-main', 'intent-85', 'rest', 'request-85',\n                 'participant-hmac', 'maker-main')",\n        [],\n    )\n    .unwrap();\n'''
+          if old not in s:
+              raise SystemExit('missing seed_valid ingress fixture marker')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Format and verify
         run: |
           cargo fmt --all
