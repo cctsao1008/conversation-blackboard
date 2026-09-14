@@ -17,7 +17,7 @@ s = replace_once(s, anchor, insert, "OidcState verifier accessor")
 oidc.write_text(s, encoding="utf-8")
 
 # Give the HTTP MCP adapter an optional shared verifier while keeping the
-# existing app(AppState) entry point for tests and HMAC-only deployments.
+# existing app(AppState) entry point only for contract tests and HMAC-only test fixtures.
 mcp = Path("src/mcp.rs")
 s = mcp.read_text(encoding="utf-8")
 s = replace_once(s, "use std::sync::OnceLock;", "use std::sync::{Arc, OnceLock};", "mcp Arc import")
@@ -28,7 +28,7 @@ s = replace_once(
     "mcp oidc module import",
 )
 old_app = '''pub fn app(state: AppState) -> Router {\n    Router::new()\n        .route(\n            \"/mcp\",\n            post(mcp_post)\n                .get(mcp_get)\n                .delete(mcp_delete)\n                .options(mcp_options),\n        )\n        .with_state(state)\n}\n'''
-new_app = '''#[derive(Clone)]\nstruct McpHttpState {\n    app: AppState,\n    _oidc_verifier: Option<Arc<oidc::OidcVerifier>>,\n}\n\npub fn app(state: AppState) -> Router {\n    app_with_oidc(state, None)\n}\n\npub(crate) fn app_with_oidc(\n    state: AppState,\n    oidc_verifier: Option<Arc<oidc::OidcVerifier>>,\n) -> Router {\n    Router::new()\n        .route(\n            \"/mcp\",\n            post(mcp_post)\n                .get(mcp_get)\n                .delete(mcp_delete)\n                .options(mcp_options),\n        )\n        .with_state(McpHttpState {\n            app: state,\n            _oidc_verifier: oidc_verifier,\n        })\n}\n'''
+new_app = '''#[derive(Clone)]\nstruct McpHttpState {\n    app: AppState,\n    _oidc_verifier: Option<Arc<oidc::OidcVerifier>>,\n}\n\n#[cfg(test)]\npub fn app(state: AppState) -> Router {\n    app_with_oidc(state, None)\n}\n\npub(crate) fn app_with_oidc(\n    state: AppState,\n    oidc_verifier: Option<Arc<oidc::OidcVerifier>>,\n) -> Router {\n    Router::new()\n        .route(\n            \"/mcp\",\n            post(mcp_post)\n                .get(mcp_get)\n                .delete(mcp_delete)\n                .options(mcp_options),\n        )\n        .with_state(McpHttpState {\n            app: state,\n            _oidc_verifier: oidc_verifier,\n        })\n}\n'''
 s = replace_once(s, old_app, new_app, "mcp router state")
 s = replace_once(
     s,
