@@ -23,6 +23,7 @@ jobs:
         run: python .github/scripts/issue95_patch.py
       - name: Format and verify
         run: |
+          cargo fmt --all
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --all-targets
