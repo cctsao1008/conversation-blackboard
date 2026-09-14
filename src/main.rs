@@ -78,6 +78,11 @@ enum Command {
         #[command(subcommand)]
         command: execution_audit::ExecutionCommand,
     },
+    /// Serve Conversation Blackboard through the Model Context Protocol.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Verify a local or public blackboard endpoint.
     Verify {
         #[command(subcommand)]
@@ -103,6 +108,18 @@ struct RunArgs {
     db: Option<PathBuf>,
 }
 
+#[derive(Debug, Subcommand)]
+enum McpCommand {
+    /// Serve MCP over stdin/stdout for local MCP-capable clients.
+    Serve(McpServeArgs),
+}
+
+#[derive(Debug, Args)]
+struct McpServeArgs {
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     match cli.command {
@@ -113,6 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(Command::Participant { command }) => participant_admin::dispatch(command),
         Some(Command::Grant { command }) => grant_admin::dispatch(command),
         Some(Command::Execution { command }) => execution_audit::dispatch(command),
+        Some(Command::Mcp { command }) => dispatch_mcp(command),
         Some(Command::Verify { command }) => admin::dispatch_verify(command),
         Some(Command::Client(args)) => client_cli::dispatch(args),
         #[cfg(windows)]
@@ -130,9 +148,44 @@ fn run_interactive(args: RunArgs) -> Result<(), Box<dyn std::error::Error + Send
     }))
 }
 
+fn dispatch_mcp(command: McpCommand) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match command {
+        McpCommand::Serve(args) => {
+            let config = RuntimeConfig::from_env_with_overrides(None, None, args.db);
+            let state = http::AppState {
+                db_path: config.db_path,
+                registration_key: config.registration_key,
+            };
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(mcp::serve_stdio(state))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_stdio_serve_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "mcp",
+            "serve",
+            "--db",
+            "board.db",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Mcp {
+                command: McpCommand::Serve(McpServeArgs { db }),
+            }) => assert_eq!(db, Some(PathBuf::from("board.db"))),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 
     #[test]
     fn participant_auth_generate_cli_parses() {

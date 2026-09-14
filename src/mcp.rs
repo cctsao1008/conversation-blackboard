@@ -10,6 +10,7 @@ use axum::{
 };
 use regex::Regex;
 use serde_json::{json, Map, Value};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use url::Url;
 
 use crate::{
@@ -34,6 +35,98 @@ pub fn app(state: AppState) -> Router {
                 .options(mcp_options),
         )
         .with_state(state)
+}
+
+/// Serve MCP over newline-delimited JSON-RPC on stdin/stdout.
+///
+/// Stdout is reserved exclusively for protocol responses. The stdio transport
+/// does not create a separate identity model; tool calls retain the canonical
+/// Blackboard participant-HMAC authentication and authorization path.
+pub async fn serve_stdio(state: AppState) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    db::initialize(&state.db_path)?;
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
+    let mut stdout = tokio::io::stdout();
+
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<Value>(&line) {
+            Ok(value) => stdio_dispatch(&state, &value).await,
+            Err(_) => Some(json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {"code": -32700, "message": "parse_error"}
+            })),
+        };
+        if let Some(response) = response {
+            let mut encoded = serde_json::to_vec(&response)?;
+            encoded.push(b'\n');
+            stdout.write_all(&encoded).await?;
+            stdout.flush().await?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn stdio_dispatch(state: &AppState, value: &Value) -> Option<Value> {
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => {
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {"code": -32600, "message": "invalid_request"}
+            }))
+        }
+    };
+    let id = object.get("id").cloned().unwrap_or(Value::Null);
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": -32600, "message": "invalid_request"}
+        }));
+    }
+
+    let method = match object.get("method").and_then(Value::as_str) {
+        Some(method) => method,
+        None if object.contains_key("result") || object.contains_key("error") => return None,
+        None => {
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32600, "message": "invalid_request"}
+            }))
+        }
+    };
+
+    // MCP notifications, including notifications/initialized, are one-way.
+    if !object.contains_key("id") {
+        return None;
+    }
+
+    let result = match method {
+        "initialize" => match initialize_result(object) {
+            Ok(result) => Ok(result),
+            Err(message) => Err((-32602, message)),
+        },
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(tools_list_result()),
+        "tools/call" => match tool_call_result(state, object).await {
+            Ok(result) => Ok(result),
+            Err(message) => Err((-32602, message)),
+        },
+        _ => Err((-32601, "method_not_found")),
+    };
+
+    Some(match result {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err((code, message)) => {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+        }
+    })
 }
 
 async fn mcp_options(request: Request<Body>) -> Response {

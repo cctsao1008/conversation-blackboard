@@ -143,6 +143,60 @@ fn tool_error_code(value: &Value) -> &str {
 }
 
 #[tokio::test]
+async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
+    let fixture = fixture();
+    let state = AppState {
+        db_path: fixture.db_path.clone(),
+        registration_key: None,
+    };
+
+    let initialized = mcp::stdio_dispatch(
+        &state,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(
+        initialized["result"]["serverInfo"]["name"],
+        "conversation-blackboard"
+    );
+
+    let notification = mcp::stdio_dispatch(
+        &state,
+        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+    assert!(notification.is_none());
+
+    let listed = mcp::stdio_dispatch(
+        &state,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 6);
+
+    let unknown = mcp::stdio_dispatch(
+        &state,
+        &json!({"jsonrpc": "2.0", "id": 3, "method": "unknown/method"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unknown["error"]["code"], -32601);
+
+    let malformed = mcp::stdio_dispatch(&state, &json!({"id": 4, "method": "tools/list"}))
+        .await
+        .unwrap();
+    assert_eq!(malformed["error"]["code"], -32600);
+}
+
+#[tokio::test]
 async fn mcp_advertises_hmac_only_auth_contract() {
     let fixture = fixture();
     let response = request(
