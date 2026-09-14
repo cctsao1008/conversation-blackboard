@@ -59,12 +59,10 @@ fn openapi_message_and_receipt_match_canonical_rust_shapes() {
 #[test]
 fn utcp_is_discovery_projection_and_tracks_http_message_shape() {
     let utcp = utcp_json();
-    assert_eq!(utcp["contract_projection"]["kind"], "utcp-discovery");
-    assert_eq!(
-        utcp["contract_projection"]["authority"],
-        "rust-application-kernel"
-    );
+    assert_eq!(utcp["utcp_version"], "1.1.4");
+    assert!(utcp.get("contract_projection").is_none());
     let tools = utcp["tools"].as_array().unwrap();
+    assert!(!tools.is_empty());
     let read = tools
         .iter()
         .find(|tool| tool["name"] == "read_messages")

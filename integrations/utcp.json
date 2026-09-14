@@ -652,11 +652,5 @@
         }
       }
     }
-  ],
-  "contract_projection": {
-    "kind": "utcp-discovery",
-    "authority": "rust-application-kernel",
-    "http_projection": "integrations/openapi.yaml",
-    "note": "UTCP describes discovery/invocation metadata and is not domain authority. intent_id is semantic identity; delivery_id is transport provenance."
-  }
+  ]
 }
