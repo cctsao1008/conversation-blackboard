@@ -1,0 +1,38 @@
+name: issue98-utcp-sweep
+
+on:
+  push:
+    paths:
+      - '.github/scripts/issue98_utcp_sweep_patch.py'
+      - '.github/workflows/issue98-utcp-sweep.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply UTCP audit sweep projection patch
+        run: python .github/scripts/issue98_utcp_sweep_patch.py
+      - name: Format and verify
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets
+      - name: Commit projection and remove temporary helpers
+        run: |
+          rm .github/scripts/issue98_utcp_sweep_patch.py
+          rm .github/workflows/issue98-utcp-sweep.yml
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add -A
+          git commit -m "#98 Project audit sweep through UTCP discovery"
+          git push origin HEAD:main
