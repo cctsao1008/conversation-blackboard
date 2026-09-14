@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 
-use crate::{db, execution};
+use crate::{authorization, db, execution};
 use tempfile::tempdir;
 
 fn fixture() -> Connection {
@@ -15,6 +15,14 @@ fn fixture() -> Connection {
             kind TEXT NOT NULL,
             body TEXT NOT NULL,
             reply_to INTEGER
+        );
+        CREATE TABLE navigation_writes (
+            instance TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            PRIMARY KEY (instance, nonce)
         );",
     )
     .unwrap();
@@ -36,7 +44,13 @@ fn seed_valid(conn: &Connection) {
         "INSERT INTO execution_receipts
             (participant_id, intent_id, intent_hash, capability, message_id, status)
          VALUES ('maker-main', 'intent-85', ?1, 'post_message', 1, 'committed')",
-        [intent_hash],
+        params![&intent_hash],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+         VALUES ('maker-main', 'intent-85', ?1, 1)",
+        params![&intent_hash],
     )
     .unwrap();
     conn.execute(
@@ -292,7 +306,13 @@ fn same_intent_across_participants_keeps_ingress_separate() {
             "INSERT INTO execution_receipts
                 (participant_id, intent_id, intent_hash, capability, message_id, status)
              VALUES (?1, 'shared-intent', ?2, 'post_message', ?3, 'committed')",
-            params![participant, intent_hash, message_id],
+            params![participant, &intent_hash, message_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+             VALUES (?1, 'shared-intent', ?2, ?3)",
+            params![participant, &intent_hash, message_id],
         )
         .unwrap();
         conn.execute(
@@ -537,4 +557,211 @@ fn legacy_authorization_backfills_only_deterministic_capability() {
         .violations
         .iter()
         .any(|value| value == "authorization_scope_unbound"));
+}
+
+fn seed_delegated_one_shot(conn: &Connection) -> i64 {
+    seed_valid(conn);
+    authorization::ensure_grant_schema(conn).unwrap();
+    conn.execute(
+        "INSERT INTO delegated_grants
+            (principal_provider, principal_subject, participant_id, capability, resource,
+             intent_id, expires_at, one_shot, consumed_at, consumed_intent_id)
+         VALUES ('oidc:https://issuer.example', 'agent-96', 'maker-main', 'post_message',
+                 'blackboard-lounge', 'intent-85', unixepoch() + 3600, 1,
+                 unixepoch(), 'intent-85')",
+        [],
+    )
+    .unwrap();
+    let grant_id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE execution_authorization_provenance
+         SET principal_provider = 'oidc:https://issuer.example',
+             principal_subject = 'agent-96',
+             source = 'delegated_grants',
+             reason = 'delegated_grant_match',
+             grant_id = ?1
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [grant_id],
+    )
+    .unwrap();
+    grant_id
+}
+
+#[test]
+fn navigation_reservation_integrity_is_verified() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "DELETE FROM navigation_writes WHERE instance = 'maker-main' AND nonce = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let before = conn.total_changes();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "navigation_reservation_missing"));
+    assert_eq!(conn.total_changes(), before);
+    let remaining: i64 = conn
+        .query_row("SELECT COUNT(*) FROM navigation_writes", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0, "verifier repaired a missing reservation");
+
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE navigation_writes SET instance = 'other-main'
+         WHERE instance = 'maker-main' AND nonce = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "navigation_binding_mismatch"));
+
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE navigation_writes SET nonce = 'other-intent'
+         WHERE instance = 'maker-main' AND nonce = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "navigation_binding_mismatch"));
+
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE navigation_writes SET message_id = 42
+         WHERE instance = 'maker-main' AND nonce = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "navigation_binding_mismatch"));
+
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE navigation_writes SET request_hash = 'tampered'
+         WHERE instance = 'maker-main' AND nonce = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "navigation_hash_mismatch"));
+}
+
+#[test]
+fn delegated_one_shot_consumption_is_historical_integrity_evidence() {
+    let conn = fixture();
+    let grant_id = seed_delegated_one_shot(&conn);
+    let before = conn.total_changes();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(
+        report.valid,
+        "unexpected violations: {:?}",
+        report.violations
+    );
+    assert!(report
+        .checks
+        .iter()
+        .any(|value| value == "delegated_grant_binding_valid"));
+    assert!(report
+        .checks
+        .iter()
+        .any(|value| value == "delegated_one_shot_consumption_valid"));
+    assert_eq!(conn.total_changes(), before);
+
+    conn.execute(
+        "UPDATE delegated_grants SET consumed_at = NULL WHERE id = ?1",
+        [grant_id],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "delegated_one_shot_consumption_missing"));
+
+    conn.execute(
+        "UPDATE delegated_grants
+         SET consumed_at = unixepoch(), consumed_intent_id = 'wrong-intent'
+         WHERE id = ?1",
+        [grant_id],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "delegated_one_shot_consumption_mismatch"));
+
+    conn.execute(
+        "UPDATE delegated_grants
+         SET consumed_intent_id = 'intent-85', participant_id = 'other-main'
+         WHERE id = ?1",
+        [grant_id],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "delegated_grant_binding_mismatch"));
+
+    conn.execute(
+        "UPDATE delegated_grants
+         SET participant_id = 'maker-main', capability = 'read_messages'
+         WHERE id = ?1",
+        [grant_id],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "delegated_grant_binding_mismatch"));
+
+    conn.execute(
+        "UPDATE delegated_grants
+         SET capability = 'post_message', status = 'inactive', expires_at = 0,
+             consumed_at = unixepoch(), consumed_intent_id = 'intent-85'
+         WHERE id = ?1",
+        [grant_id],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(
+        report.valid,
+        "current grant status/expiry rewrote historical validity: {:?}",
+        report.violations
+    );
 }

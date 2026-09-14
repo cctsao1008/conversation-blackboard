@@ -496,6 +496,61 @@ pub fn verify_execution_audit_integrity(
         violations.push("message_effect_missing".to_owned());
     }
 
+    let navigation_table_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name = 'navigation_writes'",
+        [],
+        |row| row.get(0),
+    )?;
+    if navigation_table_exists == 0 {
+        violations.push("navigation_reservation_missing".to_owned());
+    } else {
+        let exact_navigation: Option<(String, String, String, i64)> = conn
+            .query_row(
+                "SELECT instance, nonce, request_hash, message_id
+                 FROM navigation_writes
+                 WHERE instance = ?1 AND nonce = ?2
+                 LIMIT 1",
+                params![participant_id, intent_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let navigation = match exact_navigation {
+            Some(row) => Some(row),
+            None => conn
+                .query_row(
+                    "SELECT instance, nonce, request_hash, message_id
+                     FROM navigation_writes
+                     WHERE nonce = ?1 OR message_id = ?2
+                     ORDER BY CASE WHEN nonce = ?1 THEN 0 ELSE 1 END, created_at
+                     LIMIT 1",
+                    params![intent_id, receipt.message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?,
+        };
+
+        match navigation {
+            None => violations.push("navigation_reservation_missing".to_owned()),
+            Some((instance, nonce, request_hash, message_id)) => {
+                checks.push("navigation_reservation_present".to_owned());
+                if instance == receipt.participant_id
+                    && nonce == receipt.intent_id
+                    && message_id == receipt.message_id
+                {
+                    checks.push("navigation_binding_valid".to_owned());
+                } else {
+                    violations.push("navigation_binding_mismatch".to_owned());
+                }
+                if request_hash == receipt.intent_hash {
+                    checks.push("navigation_hash_matches_receipt".to_owned());
+                } else {
+                    violations.push("navigation_hash_mismatch".to_owned());
+                }
+            }
+        }
+    }
+
     let authorization_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM execution_authorization_provenance
          WHERE participant_id = ?1 AND intent_id = ?2",
@@ -542,6 +597,83 @@ pub fn verify_execution_audit_integrity(
             }
         }
         _ => violations.push("authorization_provenance_duplicate".to_owned()),
+    }
+
+    if let Some(auth) = get_authorization_provenance(conn, participant_id, intent_id)? {
+        if auth.source == "delegated_grants" {
+            match auth.grant_id {
+                None => violations.push("delegated_grant_reference_missing".to_owned()),
+                Some(grant_id) => {
+                    let delegated_table_exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master
+                         WHERE type = 'table' AND name = 'delegated_grants'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if delegated_table_exists == 0 {
+                        violations.push("delegated_grant_missing".to_owned());
+                    } else {
+                        let grant = conn
+                            .query_row(
+                                "SELECT participant_id, capability, one_shot,
+                                        consumed_at, consumed_intent_id
+                                 FROM delegated_grants
+                                 WHERE id = ?1",
+                                [grant_id],
+                                |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, i64>(2)?,
+                                        row.get::<_, Option<i64>>(3)?,
+                                        row.get::<_, Option<String>>(4)?,
+                                    ))
+                                },
+                            )
+                            .optional()?;
+                        match grant {
+                            None => violations.push("delegated_grant_missing".to_owned()),
+                            Some((
+                                grant_participant,
+                                grant_capability,
+                                one_shot,
+                                consumed_at,
+                                consumed_intent,
+                            )) => {
+                                checks.push("delegated_grant_present".to_owned());
+                                if grant_participant == receipt.participant_id
+                                    && grant_capability == receipt.capability
+                                {
+                                    checks.push("delegated_grant_binding_valid".to_owned());
+                                } else {
+                                    violations.push("delegated_grant_binding_mismatch".to_owned());
+                                }
+
+                                if one_shot != 0 {
+                                    if consumed_at.is_none() {
+                                        violations.push(
+                                            "delegated_one_shot_consumption_missing".to_owned(),
+                                        );
+                                    } else if consumed_intent.as_deref()
+                                        != Some(receipt.intent_id.as_str())
+                                    {
+                                        violations.push(
+                                            "delegated_one_shot_consumption_mismatch".to_owned(),
+                                        );
+                                    } else {
+                                        checks.push(
+                                            "delegated_one_shot_consumption_valid".to_owned(),
+                                        );
+                                    }
+                                } else {
+                                    checks.push("delegated_grant_non_one_shot".to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let mut stmt = conn.prepare(

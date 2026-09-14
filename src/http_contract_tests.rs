@@ -507,7 +507,13 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
         "INSERT INTO execution_receipts
             (participant_id, intent_id, intent_hash, capability, message_id, status)
          VALUES (?1, 'intent-http-audit', ?2, 'post_message', 1, 'committed')",
-        rusqlite::params![&fixture.participant_id, intent_hash],
+        rusqlite::params![&fixture.participant_id, &intent_hash],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+         VALUES (?1, 'intent-http-audit', ?2, 1)",
+        rusqlite::params![&fixture.participant_id, &intent_hash],
     )
     .unwrap();
     conn.execute(
