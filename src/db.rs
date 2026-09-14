@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Result};
 
 use crate::{
     execution,
@@ -31,6 +31,13 @@ pub fn connect(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA busy_timeout = 5000;",
     )?;
+    Ok(conn)
+}
+
+pub fn connect_read_only(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+    conn.execute_batch("PRAGMA query_only = ON;")?;
     Ok(conn)
 }
 

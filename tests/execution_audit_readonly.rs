@@ -1,45 +1,4 @@
-from pathlib import Path
-
-
-def replace_once(text: str, old: str, new: str, label: str) -> str:
-    if old not in text:
-        raise SystemExit(f"missing marker: {label}")
-    return text.replace(old, new, 1)
-
-# schema.sql: a legacy ingress table may not yet have participant_id. Keep the
-# participant-scoped index migration-owned so db::initialize() can ALTER first.
-p = Path("schema.sql")
-s = p.read_text(encoding="utf-8")
-legacy_unsafe_index = '''CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution\nON ingress_provenance(participant_id, intent_id);\n\n'''
-s = replace_once(s, legacy_unsafe_index, "", "migration-owned ingress execution index")
-p.write_text(s, encoding="utf-8")
-
-# db.rs: add a connection path that cannot change journal mode or durable state.
-p = Path("src/db.rs")
-s = p.read_text(encoding="utf-8")
-s = replace_once(
-    s,
-    "use rusqlite::{params, Connection, OptionalExtension, Result};",
-    "use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Result};",
-    "db OpenFlags import",
-)
-connect_marker = '''pub fn connect(path: &Path) -> Result<Connection> {\n    let conn = Connection::open(path)?;\n    conn.execute_batch(\n        "PRAGMA journal_mode = WAL;\\nPRAGMA synchronous = NORMAL;\\nPRAGMA busy_timeout = 5000;",\n    )?;\n    Ok(conn)\n}\n\n'''
-connect_with_readonly = connect_marker + '''pub fn connect_read_only(path: &Path) -> Result<Connection> {\n    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;\n    conn.busy_timeout(std::time::Duration::from_millis(5000))?;\n    conn.execute_batch("PRAGMA query_only = ON;")?;\n    Ok(conn)\n}\n\n'''
-s = replace_once(s, connect_marker, connect_with_readonly, "read-only connection insertion")
-p.write_text(s, encoding="utf-8")
-
-# execution_audit.rs: audit/verify must never go through the writable connection helper.
-p = Path("src/execution_audit.rs")
-s = p.read_text(encoding="utf-8")
-needle = "            let conn = db::connect(&path)?;"
-if s.count(needle) != 2:
-    raise SystemExit(f"expected 2 execution audit connection sites, found {s.count(needle)}")
-s = s.replace(needle, "            let conn = db::connect_read_only(&path)?;")
-p.write_text(s, encoding="utf-8")
-
-# Process-level regression: rejection of a legacy execution schema must not mutate the DB.
-p = Path("tests/execution_audit_readonly.rs")
-p.write_text(r'''use std::{fs, process::Command};
+use std::{fs, process::Command};
 
 use rusqlite::{Connection, OpenFlags};
 use tempfile::tempdir;
@@ -146,4 +105,3 @@ fn execution_audit_rejects_legacy_schema_without_mutating_database() {
     );
     assert!(!stderr.contains("requires migration"));
 }
-''', encoding="utf-8")

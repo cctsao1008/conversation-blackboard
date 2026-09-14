@@ -43,7 +43,7 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
                 .ok_or("invalid participant_id")?;
             let intent_id =
                 execution::normalize_intent_id(&intent_id).map_err(|_| "invalid intent_id")?;
-            let conn = db::connect(&path)?;
+            let conn = db::connect_read_only(&path)?;
             require_current_execution_schema(&conn, &path)?;
             let Some(audit) =
                 execution::get_execution_audit_bundle(&conn, &participant_id, &intent_id)?
@@ -97,7 +97,7 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
                 .ok_or("invalid participant_id")?;
             let intent_id =
                 execution::normalize_intent_id(&intent_id).map_err(|_| "invalid intent_id")?;
-            let conn = db::connect(&path)?;
+            let conn = db::connect_read_only(&path)?;
             require_current_execution_schema(&conn, &path)?;
             let report =
                 execution::verify_execution_audit_integrity(&conn, &participant_id, &intent_id)?;

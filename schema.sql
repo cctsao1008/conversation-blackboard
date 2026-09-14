@@ -123,9 +123,6 @@ CREATE TABLE IF NOT EXISTS ingress_provenance (
 CREATE INDEX IF NOT EXISTS idx_ingress_provenance_intent
 ON ingress_provenance(intent_id);
 
-CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution
-ON ingress_provenance(participant_id, intent_id);
-
 CREATE TABLE IF NOT EXISTS execution_receipts (
     participant_id  TEXT NOT NULL,
     intent_id       TEXT NOT NULL,
