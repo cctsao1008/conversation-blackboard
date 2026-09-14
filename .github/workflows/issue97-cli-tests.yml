@@ -1,0 +1,38 @@
+name: issue97-cli-tests
+
+on:
+  push:
+    paths:
+      - '.github/scripts/issue97_cli_tests_patch.py'
+      - '.github/workflows/issue97-cli-tests.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply verify-all CLI regression patch
+        run: python .github/scripts/issue97_cli_tests_patch.py
+      - name: Format and verify
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets
+      - name: Commit CLI regressions and remove temporary helpers
+        run: |
+          rm .github/scripts/issue97_cli_tests_patch.py
+          rm .github/workflows/issue97-cli-tests.yml
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add -A
+          git commit -m "#97 Cover verify-all CLI behavior"
+          git push origin HEAD:main
