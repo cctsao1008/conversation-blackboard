@@ -6,6 +6,14 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
         raise SystemExit(f"missing marker: {label}")
     return text.replace(old, new, 1)
 
+# schema.sql: a legacy ingress table may not yet have participant_id. Keep the
+# participant-scoped index migration-owned so db::initialize() can ALTER first.
+p = Path("schema.sql")
+s = p.read_text(encoding="utf-8")
+legacy_unsafe_index = '''CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution\nON ingress_provenance(participant_id, intent_id);\n\n'''
+s = replace_once(s, legacy_unsafe_index, "", "migration-owned ingress execution index")
+p.write_text(s, encoding="utf-8")
+
 # db.rs: add a connection path that cannot change journal mode or durable state.
 p = Path("src/db.rs")
 s = p.read_text(encoding="utf-8")
@@ -89,11 +97,7 @@ fn execution_audit_rejects_legacy_schema_without_mutating_database() {
     let before = fs::read(&db).unwrap();
 
     let audit = Command::new(exe)
-        .args([
-            "execution",
-            "audit",
-            "--db",
-        ])
+        .args(["execution", "audit", "--db"])
         .arg(&db)
         .args([
             "--participant-id",
@@ -124,11 +128,7 @@ fn execution_audit_rejects_legacy_schema_without_mutating_database() {
     );
 
     let post_migration_audit = Command::new(exe)
-        .args([
-            "execution",
-            "audit",
-            "--db",
-        ])
+        .args(["execution", "audit", "--db"])
         .arg(&db)
         .args([
             "--participant-id",
@@ -140,7 +140,10 @@ fn execution_audit_rejects_legacy_schema_without_mutating_database() {
         .unwrap();
     assert!(!post_migration_audit.status.success());
     let stderr = String::from_utf8_lossy(&post_migration_audit.stderr);
-    assert!(stderr.contains("execution not found"), "unexpected error: {stderr}");
+    assert!(
+        stderr.contains("execution not found"),
+        "unexpected error: {stderr}"
+    );
     assert!(!stderr.contains("requires migration"));
 }
 ''', encoding="utf-8")
