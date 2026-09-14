@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/scripts/issue93_patch.py'
       - '.github/scripts/issue93_borrow_fix.py'
+      - '.github/scripts/issue93_fixture_contract_fix.py'
       - '.github/workflows/issue93-authorization-context.yml'
 
 permissions:
@@ -24,6 +25,7 @@ jobs:
         run: |
           python .github/scripts/issue93_patch.py
           python .github/scripts/issue93_borrow_fix.py
+          python .github/scripts/issue93_fixture_contract_fix.py
       - name: Format and verify
         run: |
           cargo fmt --all
@@ -34,6 +36,7 @@ jobs:
         run: |
           rm .github/scripts/issue93_patch.py
           rm .github/scripts/issue93_borrow_fix.py
+          rm .github/scripts/issue93_fixture_contract_fix.py
           rm .github/workflows/issue93-authorization-context.yml
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
