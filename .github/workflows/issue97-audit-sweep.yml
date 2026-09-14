@@ -20,7 +20,28 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply execution audit sweep patch
-        run: python .github/scripts/issue97_sweep_patch.py
+        run: |
+          python .github/scripts/issue97_sweep_patch.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/execution.rs')
+          s = p.read_text(encoding='utf-8')
+          old = '''        stmt.query_map([], |row| {
+              Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+          })?
+          .collect::<rusqlite::Result<Vec<_>>>()?
+      };'''
+          new = '''        let rows = stmt
+              .query_map([], |row| {
+                  Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+              })?
+              .collect::<rusqlite::Result<Vec<_>>>()?;
+          rows
+      };'''
+          if old not in s:
+              raise SystemExit('missing identities query marker')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Format and verify
         run: |
           cargo fmt --all
