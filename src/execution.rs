@@ -156,7 +156,7 @@ pub fn message_request_hash(
     )
 }
 
-pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
+pub fn migrate_execution_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS ingress_provenance (
             delivery_id         TEXT PRIMARY KEY,
@@ -282,12 +282,58 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub fn execution_schema_current(conn: &Connection) -> rusqlite::Result<bool> {
+    fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |_| Ok(1_i64),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+        let sql = format!("PRAGMA table_info({table})");
+        let mut stmt = conn.prepare(&sql)?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(columns.iter().any(|name| name == column))
+    }
+
+    if !table_exists(conn, "execution_receipts")?
+        || !has_column(conn, "ingress_provenance", "participant_id")?
+        || !table_exists(conn, "execution_authorization_provenance")?
+    {
+        return Ok(false);
+    }
+
+    for column in [
+        "principal_provider",
+        "principal_subject",
+        "capability",
+        "resource",
+        "source",
+        "reason",
+        "grant_id",
+    ] {
+        if !has_column(conn, "execution_authorization_provenance", column)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn get_execution_receipt(
     conn: &Connection,
     participant_id: &str,
     intent_id: &str,
 ) -> rusqlite::Result<Option<ExecutionReceipt>> {
-    ensure_execution_tables(conn)?;
     conn.query_row(
         "SELECT participant_id, intent_id, intent_hash, capability, message_id, status
          FROM execution_receipts
@@ -312,7 +358,6 @@ pub fn get_authorization_provenance(
     participant_id: &str,
     intent_id: &str,
 ) -> rusqlite::Result<Option<AuthorizationProvenance>> {
-    ensure_execution_tables(conn)?;
     conn.query_row(
         "SELECT participant_id, intent_id, principal_provider, principal_subject,
                 capability, resource, source, reason, grant_id
@@ -384,7 +429,6 @@ pub fn verify_execution_audit_integrity(
     participant_id: &str,
     intent_id: &str,
 ) -> rusqlite::Result<ExecutionAuditIntegrityReport> {
-    ensure_execution_tables(conn)?;
     let mut checks = Vec::new();
     let mut violations = Vec::new();
 
@@ -582,8 +626,6 @@ pub fn execute_message_intent(
     identity: &Identity,
     request: MessageExecutionRequest<'_>,
 ) -> rusqlite::Result<MessageExecutionResult> {
-    ensure_execution_tables(conn)?;
-
     let expected_hash = message_request_hash(
         request.channel,
         request.kind,
@@ -739,7 +781,7 @@ pub fn record_execution(
     ingress: &IngressProvenance,
     receipt: &ExecutionReceipt,
 ) -> rusqlite::Result<()> {
-    ensure_execution_tables(conn)?;
+    migrate_execution_schema(conn)?;
     let tx = conn.unchecked_transaction()?;
     record_execution_in_tx(&tx, ingress, receipt)?;
     tx.commit()
@@ -957,7 +999,7 @@ mod tests {
     #[test]
     fn execution_audit_is_idempotent_and_rejects_rebinding() {
         let conn = Connection::open_in_memory().unwrap();
-        ensure_execution_tables(&conn).unwrap();
+        migrate_execution_schema(&conn).unwrap();
 
         let ingress = IngressProvenance {
             delivery_id: "github:1:issue:2".into(),
@@ -1351,7 +1393,7 @@ mod tests {
         db::initialize(&path).unwrap();
         let conn = db::connect(&path).unwrap();
         provision_test_participant(&conn);
-        ensure_execution_tables(&conn).unwrap();
+        migrate_execution_schema(&conn).unwrap();
 
         conn.execute(
             "INSERT INTO ingress_provenance

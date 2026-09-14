@@ -685,7 +685,7 @@ mod tests {
     fn consumed_one_shot_distinguishes_replay_from_broken_consumption() {
         let (_dir, conn) = setup();
         ensure_grant_schema(&conn).unwrap();
-        execution::ensure_execution_tables(&conn).unwrap();
+        execution::migrate_execution_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO delegated_grants
                 (principal_provider, principal_subject, participant_id, capability, resource, intent_id, one_shot, consumed_at, consumed_intent_id)

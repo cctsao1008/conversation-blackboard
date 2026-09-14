@@ -2,7 +2,10 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
-use crate::model::{ChannelMetadata, ChannelSummary, Identity, Message};
+use crate::{
+    execution,
+    model::{ChannelMetadata, ChannelSummary, Identity, Message},
+};
 
 const SCHEMA: &str = include_str!("../schema.sql");
 
@@ -40,6 +43,7 @@ pub fn initialize(path: &Path) -> Result<()> {
     migrate_web_participant_status(&conn)?;
     migrate_message_conversation_ref(&conn)?;
     migrate_channel_metadata(&conn)?;
+    execution::migrate_execution_schema(&conn)?;
     Ok(())
 }
 

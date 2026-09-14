@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection};
 
-use crate::execution;
+use crate::{db, execution};
+use tempfile::tempdir;
 
 fn fixture() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -17,7 +18,7 @@ fn fixture() -> Connection {
         );",
     )
     .unwrap();
-    execution::ensure_execution_tables(&conn).unwrap();
+    execution::migrate_execution_schema(&conn).unwrap();
     conn
 }
 
@@ -50,11 +51,136 @@ fn seed_valid(conn: &Connection) {
     .unwrap();
     conn.execute(
         "INSERT INTO ingress_provenance
-            (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)
-         VALUES ('delivery-85', 'intent-85', 'rest', 'request-85', 'participant-hmac', 'maker-main')",
+            (delivery_id, participant_id, intent_id, transport, external_ref,
+             principal_provider, principal_subject)
+         VALUES ('delivery-85', 'maker-main', 'intent-85', 'rest', 'request-85',
+                 'participant-hmac', 'maker-main')",
         [],
     )
     .unwrap();
+}
+
+#[test]
+fn db_initialize_produces_current_execution_schema() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("board.db");
+    db::initialize(&path).unwrap();
+    let conn = db::connect(&path).unwrap();
+    assert!(execution::execution_schema_current(&conn).unwrap());
+
+    let ingress_columns = conn
+        .prepare("PRAGMA table_info(ingress_provenance)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(ingress_columns.iter().any(|name| name == "participant_id"));
+
+    let auth_columns = conn
+        .prepare("PRAGMA table_info(execution_authorization_provenance)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for required in [
+        "principal_provider",
+        "principal_subject",
+        "capability",
+        "resource",
+        "source",
+        "reason",
+        "grant_id",
+    ] {
+        assert!(auth_columns.iter().any(|name| name == required));
+    }
+}
+
+#[test]
+fn execution_reads_do_not_backfill_legacy_evidence() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE ingress_provenance SET participant_id = NULL WHERE delivery_id = 'delivery-85'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE execution_authorization_provenance SET capability = NULL
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let before = conn.total_changes();
+
+    let _ = execution::get_execution_receipt(&conn, "maker-main", "intent-85").unwrap();
+    let auth = execution::get_authorization_provenance(&conn, "maker-main", "intent-85")
+        .unwrap()
+        .unwrap();
+    assert!(auth.capability.is_none());
+    let audit = execution::get_execution_audit_bundle(&conn, "maker-main", "intent-85")
+        .unwrap()
+        .unwrap();
+    assert!(audit.ingress.is_empty());
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+
+    assert_eq!(conn.total_changes(), before);
+    let participant: Option<String> = conn
+        .query_row(
+            "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'delivery-85'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(participant.is_none());
+    let capability: Option<String> = conn
+        .query_row(
+            "SELECT capability FROM execution_authorization_provenance
+             WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(capability.is_none());
+}
+
+#[test]
+fn explicit_execution_migration_preserves_conservative_backfill_rules() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE ingress_provenance SET participant_id = NULL WHERE delivery_id = 'delivery-85'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE execution_authorization_provenance
+         SET principal_provider = NULL, principal_subject = NULL,
+             capability = NULL, resource = NULL
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [],
+    )
+    .unwrap();
+
+    execution::migrate_execution_schema(&conn).unwrap();
+
+    let participant: Option<String> = conn
+        .query_row(
+            "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'delivery-85'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(participant.as_deref(), Some("maker-main"));
+    let provenance = execution::get_authorization_provenance(&conn, "maker-main", "intent-85")
+        .unwrap()
+        .unwrap();
+    assert_eq!(provenance.capability.as_deref(), Some("post_message"));
+    assert!(provenance.principal.is_none());
+    assert!(provenance.resource.is_none());
 }
 
 #[test]
@@ -222,7 +348,7 @@ fn unambiguous_legacy_ingress_is_backfilled() {
         [],
     )
     .unwrap();
-    execution::ensure_execution_tables(&conn).unwrap();
+    execution::migrate_execution_schema(&conn).unwrap();
     let participant: Option<String> = conn
         .query_row(
             "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'delivery-85'",
@@ -270,7 +396,7 @@ fn ambiguous_legacy_ingress_is_not_guessed() {
     )
     .unwrap();
 
-    execution::ensure_execution_tables(&conn).unwrap();
+    execution::migrate_execution_schema(&conn).unwrap();
     let participant: Option<String> = conn
         .query_row(
             "SELECT participant_id FROM ingress_provenance WHERE delivery_id = 'legacy-ambiguous'",
@@ -392,7 +518,7 @@ fn legacy_authorization_backfills_only_deterministic_capability() {
     )
     .unwrap();
 
-    execution::ensure_execution_tables(&conn).unwrap();
+    execution::migrate_execution_schema(&conn).unwrap();
     let provenance = execution::get_authorization_provenance(&conn, "maker-main", "intent-85")
         .unwrap()
         .unwrap();

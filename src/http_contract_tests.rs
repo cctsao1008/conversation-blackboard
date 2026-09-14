@@ -489,7 +489,7 @@ async fn distinct_hmac_participants_keep_provenance_separate() {
 async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     let fixture = fixture("audit");
     let conn = db::connect(&fixture.db_path).unwrap();
-    execution::ensure_execution_tables(&conn).unwrap();
+    execution::migrate_execution_schema(&conn).unwrap();
     authorization::ensure_grant_schema(&conn).unwrap();
     let seed = db::append_message(
         &conn,

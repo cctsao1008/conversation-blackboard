@@ -44,6 +44,7 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
             let intent_id =
                 execution::normalize_intent_id(&intent_id).map_err(|_| "invalid intent_id")?;
             let conn = db::connect(&path)?;
+            require_current_execution_schema(&conn, &path)?;
             let Some(audit) =
                 execution::get_execution_audit_bundle(&conn, &participant_id, &intent_id)?
             else {
@@ -97,6 +98,7 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
             let intent_id =
                 execution::normalize_intent_id(&intent_id).map_err(|_| "invalid intent_id")?;
             let conn = db::connect(&path)?;
+            require_current_execution_schema(&conn, &path)?;
             let report =
                 execution::verify_execution_audit_integrity(&conn, &participant_id, &intent_id)?;
             println!("EXECUTION AUDIT INTEGRITY");
@@ -116,6 +118,17 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
             }
         }
     }
+}
+
+fn require_current_execution_schema(conn: &rusqlite::Connection, path: &Path) -> DynResult {
+    if execution::execution_schema_current(conn)? {
+        return Ok(());
+    }
+    Err(format!(
+        "execution schema requires migration: run `conversation-blackboard db init --db {}` before audit",
+        path.display()
+    )
+    .into())
 }
 
 fn require_database(path: &Path) -> DynResult {

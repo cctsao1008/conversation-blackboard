@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS navigation_writes (
 
 CREATE TABLE IF NOT EXISTS ingress_provenance (
     delivery_id         TEXT PRIMARY KEY,
+    participant_id      TEXT,
     intent_id           TEXT NOT NULL,
     transport           TEXT NOT NULL,
     external_ref        TEXT NOT NULL,
@@ -121,6 +122,9 @@ CREATE TABLE IF NOT EXISTS ingress_provenance (
 
 CREATE INDEX IF NOT EXISTS idx_ingress_provenance_intent
 ON ingress_provenance(intent_id);
+
+CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution
+ON ingress_provenance(participant_id, intent_id);
 
 CREATE TABLE IF NOT EXISTS execution_receipts (
     participant_id  TEXT NOT NULL,
@@ -135,3 +139,17 @@ CREATE TABLE IF NOT EXISTS execution_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_execution_receipts_message
 ON execution_receipts(message_id);
+
+CREATE TABLE IF NOT EXISTS execution_authorization_provenance (
+    participant_id      TEXT NOT NULL,
+    intent_id           TEXT NOT NULL,
+    principal_provider  TEXT,
+    principal_subject   TEXT,
+    capability          TEXT,
+    resource            TEXT,
+    source              TEXT NOT NULL,
+    reason              TEXT NOT NULL,
+    grant_id            INTEGER,
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (participant_id, intent_id)
+);
