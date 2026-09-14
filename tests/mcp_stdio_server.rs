@@ -117,11 +117,14 @@ fn mcp_stdio_server_runs_real_process_lifecycle_and_tools_call() {
 
     assert_eq!(responses[1]["id"], 2);
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     assert!(tools.iter().any(|tool| tool["name"] == "blackboard_read"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "blackboard_execution_audit_integrity"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "blackboard_execution_audit_sweep"));
 
     assert_eq!(responses[2]["id"], 3);
     assert_eq!(responses[2]["result"]["isError"], false);

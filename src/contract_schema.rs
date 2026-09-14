@@ -199,3 +199,48 @@ pub fn execution_audit_integrity_envelope_schema() -> Value {
         "additionalProperties": false
     })
 }
+
+pub fn execution_audit_orphan_evidence_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "participant_id": {"anyOf": [participant_id_schema(), {"type": "null"}]},
+            "intent_id": intent_id_schema(),
+            "reference": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+        },
+        "required": ["kind", "participant_id", "intent_id", "reference"],
+        "additionalProperties": false,
+        "description": "Read-only classification of durable execution evidence that cannot be attached to a committed receipt identity."
+    })
+}
+
+pub fn execution_audit_sweep_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "valid": {"type": "boolean"},
+            "executions_scanned": {"type": "integer", "minimum": 0},
+            "invalid_executions": {
+                "type": "array",
+                "items": execution_audit_integrity_schema()
+            },
+            "orphan_evidence": {
+                "type": "array",
+                "items": execution_audit_orphan_evidence_schema()
+            }
+        },
+        "required": ["valid", "executions_scanned", "invalid_executions", "orphan_evidence"],
+        "additionalProperties": false,
+        "description": "Canonical database-wide read-only execution audit integrity sweep."
+    })
+}
+
+pub fn execution_audit_sweep_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"sweep": execution_audit_sweep_schema()},
+        "required": ["sweep"],
+        "additionalProperties": false
+    })
+}

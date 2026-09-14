@@ -20,6 +20,7 @@ pub fn app(state: AppState) -> Router {
             "/api/executions/{intent_id}/audit/integrity",
             get(execution_audit_integrity),
         )
+        .route("/api/execution-audit/sweep", get(execution_audit_sweep))
         .with_state(state)
 }
 
@@ -164,6 +165,39 @@ async fn execution_audit_integrity(
     }
     let report = report.expect("authorized integrity verification must produce a report");
     Ok(json_response(StatusCode::OK, json!({"integrity": report})))
+}
+
+async fn execution_audit_sweep(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    let participant_id = resolved.instance.clone();
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let (allowed, report) = with_db(&state, move |conn| {
+        let allowed = authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_EXECUTION_AUDIT_SWEEP,
+            Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+        )?;
+        let report = if allowed {
+            Some(execution::sweep_execution_audit_integrity(conn)?)
+        } else {
+            None
+        };
+        Ok((allowed, report))
+    })
+    .await?;
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    let report = report.expect("authorized audit sweep must produce a report");
+    Ok(json_response(StatusCode::OK, json!({"sweep": report})))
 }
 
 fn principal_for_headers(headers: &HeaderMap, resolved: &Identity) -> execution::Principal {

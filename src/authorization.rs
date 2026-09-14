@@ -8,14 +8,17 @@ pub const POST_MESSAGE: &str = "post_message";
 pub const REPLY: &str = "reply";
 pub const READ_EXECUTION_RECEIPT: &str = "read_execution_receipt";
 pub const READ_EXECUTION_AUDIT: &str = "read_execution_audit";
+pub const READ_EXECUTION_AUDIT_SWEEP: &str = "read_execution_audit_sweep";
+pub const EXECUTION_AUDIT_SWEEP_RESOURCE: &str = "execution-audit-sweep";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 6] = [
+const KNOWN_CAPABILITIES: [&str; 7] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
     READ_EXECUTION_RECEIPT,
     READ_EXECUTION_AUDIT,
+    READ_EXECUTION_AUDIT_SWEEP,
     MANAGE_CHANNELS,
 ];
 
@@ -200,9 +203,13 @@ pub fn evaluate_authorization(
                 None,
             ));
         }
-    } else if let Some(reason) =
-        implicit_authority_reason(principal, participant_id, capability, &participant)
-    {
+    } else if let Some(reason) = implicit_authority_reason(
+        principal,
+        participant_id,
+        capability,
+        resource,
+        &participant,
+    ) {
         return Ok(AuthorizationDecision::allow(
             "implicit_authority",
             reason,
@@ -407,10 +414,18 @@ pub fn effective_grants(
         if explicit.iter().any(|grant| grant.capability == capability) {
             continue;
         }
-        if authorize(conn, principal, participant_id, capability, None)? {
+        let implicit_resource =
+            (capability == READ_EXECUTION_AUDIT_SWEEP).then_some(EXECUTION_AUDIT_SWEEP_RESOURCE);
+        if authorize(
+            conn,
+            principal,
+            participant_id,
+            capability,
+            implicit_resource,
+        )? {
             grants.push(EffectiveGrant {
                 capability: capability.to_owned(),
-                resource: None,
+                resource: implicit_resource.map(str::to_owned),
                 origin: "implicit".to_owned(),
             });
         }
@@ -449,6 +464,7 @@ fn implicit_authority_reason(
     principal: &Principal,
     participant_id: &str,
     capability: &str,
+    resource: Option<&str>,
     participant: &ParticipantPolicyRow,
 ) -> Option<&'static str> {
     let self_authenticated = matches!(
@@ -456,6 +472,12 @@ fn implicit_authority_reason(
         "participant-hmac" | "human-web"
     ) && principal.subject == participant_id;
     if self_authenticated {
+        if capability == READ_EXECUTION_AUDIT_SWEEP {
+            return (principal.provider == "human-web"
+                && participant.role == "admin"
+                && resource == Some(EXECUTION_AUDIT_SWEEP_RESOURCE))
+            .then_some("implicit_human_web_admin_audit_sweep");
+        }
         if capability == MANAGE_CHANNELS {
             return (principal.provider == "human-web" && participant.role == "admin")
                 .then_some("implicit_human_web_admin");
@@ -808,5 +830,108 @@ mod tests {
             Some("intent-denied"),
         )
         .unwrap());
+    }
+
+    #[test]
+    fn audit_sweep_implicit_authority_is_human_web_admin_only() {
+        let (_dir, conn) = setup();
+        let human = Principal {
+            provider: "human-web".into(),
+            subject: "maker-main".into(),
+        };
+        let hmac = Principal {
+            provider: "participant-hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let github = Principal {
+            provider: "github".into(),
+            subject: "543608".into(),
+        };
+
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+        )
+        .unwrap());
+        assert!(!authorize(
+            &conn,
+            &hmac,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+        )
+        .unwrap());
+        assert!(!authorize(
+            &conn,
+            &github,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+        )
+        .unwrap());
+
+        conn.execute(
+            "UPDATE web_participants SET role = 'admin' WHERE participant_id = 'maker-main'",
+            [],
+        )
+        .unwrap();
+        let decision = evaluate_authorization(
+            &conn,
+            &human,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            None,
+        )
+        .unwrap();
+        assert!(decision.allowed);
+        assert_eq!(decision.reason, "implicit_human_web_admin_audit_sweep");
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some("wrong-resource"),
+        )
+        .unwrap());
+
+        let grants = effective_grants(&conn, &human, "maker-main").unwrap();
+        assert!(grants.iter().any(|grant| {
+            grant.capability == READ_EXECUTION_AUDIT_SWEEP
+                && grant.resource.as_deref() == Some(EXECUTION_AUDIT_SWEEP_RESOURCE)
+                && grant.origin == "implicit"
+        }));
+    }
+
+    #[test]
+    fn explicit_grant_can_authorize_participant_hmac_audit_sweep() {
+        let (_dir, conn) = setup();
+        ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('participant-hmac', 'maker-main', 'maker-main',
+                     'read_execution_audit_sweep', 'execution-audit-sweep')",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "participant-hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let decision = evaluate_authorization(
+            &conn,
+            &principal,
+            "maker-main",
+            READ_EXECUTION_AUDIT_SWEEP,
+            Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            None,
+        )
+        .unwrap();
+        assert!(decision.allowed);
+        assert_eq!(decision.reason, "explicit_durable_grant_match");
     }
 }

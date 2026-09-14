@@ -275,7 +275,7 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, blackboard_execution_receipt for semantic execution read-back, blackboard_execution_audit for immutable historical audit, and blackboard_execution_audit_integrity for structural audit verification. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
+        "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, blackboard_execution_receipt for semantic execution read-back, blackboard_execution_audit for immutable historical audit, and blackboard_execution_audit_integrity for structural audit verification. Use blackboard_execution_audit_sweep only with privileged corpus-wide audit authority. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
     }))
 }
 
@@ -415,6 +415,22 @@ fn tools_list_result() -> Value {
                 },
                 "outputSchema": contract_schema::execution_audit_integrity_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
+                "name": "blackboard_execution_audit_sweep",
+                "title": "Verify Blackboard Execution Audit Corpus",
+                "description": "Run the privileged canonical database-wide execution audit integrity sweep without repairing history.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": contract_schema::execution_audit_sweep_envelope_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
     })
@@ -480,6 +496,9 @@ async fn tool_call_result(
         "blackboard_execution_audit" => Ok(blackboard_execution_audit(state, &arguments).await),
         "blackboard_execution_audit_integrity" => {
             Ok(blackboard_execution_audit_integrity(state, &arguments).await)
+        }
+        "blackboard_execution_audit_sweep" => {
+            Ok(blackboard_execution_audit_sweep(state, &arguments).await)
         }
         _ => Err("unknown_tool"),
     }
@@ -763,6 +782,58 @@ async fn blackboard_execution_audit_integrity(
         Err(()) => return tool_error("database_unavailable"),
     };
     tool_success(json!({"integrity": report}))
+}
+
+async fn blackboard_execution_audit_sweep(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+) -> Value {
+    if !only_keys(arguments, &["participant_id", "auth"]) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    if let Err(code) = resolve_capability_identity(
+        state,
+        arguments,
+        &participant_id,
+        authorization::READ_EXECUTION_AUDIT_SWEEP,
+        Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+    )
+    .await
+    {
+        return tool_error(code);
+    }
+    let principal = execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.clone(),
+    };
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let report = match with_db(state, move |conn| {
+        if !authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_EXECUTION_AUDIT_SWEEP,
+            Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(execution::sweep_execution_audit_integrity(conn)?))
+    })
+    .await
+    {
+        Ok(Some(report)) => report,
+        Ok(None) => return tool_error("forbidden"),
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    tool_success(json!({"sweep": report}))
 }
 
 async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {

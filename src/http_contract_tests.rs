@@ -621,3 +621,72 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     .await;
     assert_eq!(integrity_denied.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn execution_audit_sweep_http_requires_privileged_authority_and_returns_invalid_data() {
+    let fixture = fixture("sweep");
+    let audit_router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+
+    let ordinary = request(
+        &audit_router,
+        Method::GET,
+        "/api/execution-audit/sweep",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "UPDATE web_participants SET role = 'admin' WHERE participant_id = ?1",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let clean = request(
+        &audit_router,
+        Method::GET,
+        "/api/execution-audit/sweep",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (clean_status, clean_body) = response_json(clean).await;
+    assert_eq!(clean_status, StatusCode::OK);
+    assert_eq!(clean_body["sweep"]["valid"], true);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+         VALUES ('ghost-main', 'orphan-http-sweep', 'hash', 99)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let invalid = request(
+        &audit_router,
+        Method::GET,
+        "/api/execution-audit/sweep",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (invalid_status, invalid_body) = response_json(invalid).await;
+    assert_eq!(invalid_status, StatusCode::OK);
+    assert_eq!(invalid_body["sweep"]["valid"], false);
+    assert!(invalid_body["sweep"]["orphan_evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["kind"] == "orphan_navigation_reservation"));
+}

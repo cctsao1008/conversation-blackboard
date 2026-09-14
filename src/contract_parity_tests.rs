@@ -153,3 +153,29 @@ fn execution_audit_integrity_contracts_match_canonical_rust_shape() {
         .iter()
         .any(|tool| tool["name"] == "execution_audit_integrity"));
 }
+
+#[test]
+fn execution_audit_sweep_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/ExecutionAuditOrphanEvidence/properties"
+        ),
+        names(
+            &contract_schema::execution_audit_orphan_evidence_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/ExecutionAuditSweepReport/properties"
+        ),
+        names(
+            &contract_schema::execution_audit_sweep_schema(),
+            "/properties"
+        )
+    );
+    assert!(api["paths"].get("/api/execution-audit/sweep").is_some());
+}

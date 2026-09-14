@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
-use crate::{authorization, db, http::AppState, identity, mcp, participant_auth};
+use crate::{authorization, contract_schema, db, http::AppState, identity, mcp, participant_auth};
 
 struct Fixture {
     _dir: TempDir,
@@ -180,7 +180,7 @@ async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     )
     .await
     .unwrap();
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 7);
 
     let unknown = mcp::stdio_dispatch(
         &state,
@@ -212,7 +212,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -264,6 +264,106 @@ fn capability_arguments(
         value["intent_id"] = json!(resource);
     }
     value
+}
+
+fn sweep_arguments(secret: &str, participant_id: &str) -> Value {
+    let proof = participant_auth::compute_capability_proof(
+        secret,
+        participant_id,
+        authorization::READ_EXECUTION_AUDIT_SWEEP,
+        Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+    )
+    .unwrap();
+    json!({
+        "participant_id": participant_id,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    })
+}
+
+#[tokio::test]
+async fn mcp_audit_sweep_is_privileged_and_projects_canonical_report() {
+    let fixture = fixture();
+
+    let listed = mcp::stdio_dispatch(
+        &AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        &json!({"jsonrpc": "2.0", "id": 60, "method": "tools/list", "params": {}}),
+    )
+    .await
+    .unwrap();
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_execution_audit_sweep")
+        .expect("sweep tool must be advertised");
+    assert_eq!(
+        tool["outputSchema"],
+        contract_schema::execution_audit_sweep_envelope_schema()
+    );
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+
+    let denied = call_tool(
+        &fixture.router,
+        61,
+        "blackboard_execution_audit_sweep",
+        sweep_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&denied), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_execution_audit_sweep', 'execution-audit-sweep')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let clean = call_tool(
+        &fixture.router,
+        62,
+        "blackboard_execution_audit_sweep",
+        sweep_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert!(!clean["result"]["isError"].as_bool().unwrap());
+    assert_eq!(clean["result"]["structuredContent"]["sweep"]["valid"], true);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+         VALUES ('ghost-main', 'orphan-sweep', 'hash', 99)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let invalid = call_tool(
+        &fixture.router,
+        63,
+        "blackboard_execution_audit_sweep",
+        sweep_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert!(!invalid["result"]["isError"].as_bool().unwrap());
+    assert_eq!(
+        invalid["result"]["structuredContent"]["sweep"]["valid"],
+        false
+    );
+    assert!(
+        invalid["result"]["structuredContent"]["sweep"]["orphan_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["kind"] == "orphan_navigation_reservation")
+    );
 }
 
 #[tokio::test]

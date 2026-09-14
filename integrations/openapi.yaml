@@ -414,6 +414,26 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/execution-audit/sweep:
+    get:
+      operationId: blackboardExecutionAuditSweep
+      summary: Verify database-wide execution audit integrity.
+      description: Privileged projection of the canonical read-only execution audit sweep. Invalid integrity state is returned as report data with HTTP 200; the endpoint does not repair history.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      responses:
+        '200':
+          description: Canonical database-wide execution audit sweep report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionAuditSweepEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
@@ -716,6 +736,51 @@ components:
       properties:
         integrity:
           $ref: '#/components/schemas/ExecutionAuditIntegrityReport'
+
+    ExecutionAuditOrphanEvidence:
+      type: object
+      additionalProperties: false
+      required: [kind, participant_id, intent_id, reference]
+      description: Read-only classification of durable execution evidence that cannot be attached to a committed receipt identity.
+      properties:
+        kind:
+          type: string
+        participant_id:
+          anyOf:
+            - $ref: '#/components/schemas/ParticipantId'
+            - type: 'null'
+        intent_id:
+          $ref: '#/components/schemas/IntentId'
+        reference:
+          type: [string, 'null']
+
+    ExecutionAuditSweepReport:
+      type: object
+      additionalProperties: false
+      required: [valid, executions_scanned, invalid_executions, orphan_evidence]
+      description: Canonical database-wide read-only execution audit integrity sweep.
+      properties:
+        valid:
+          type: boolean
+        executions_scanned:
+          type: integer
+          minimum: 0
+        invalid_executions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExecutionAuditIntegrityReport'
+        orphan_evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExecutionAuditOrphanEvidence'
+
+    ExecutionAuditSweepEnvelope:
+      type: object
+      additionalProperties: false
+      required: [sweep]
+      properties:
+        sweep:
+          $ref: '#/components/schemas/ExecutionAuditSweepReport'
 
     Identity:
       type: object
