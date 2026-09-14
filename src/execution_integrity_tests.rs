@@ -40,8 +40,11 @@ fn seed_valid(conn: &Connection) {
     .unwrap();
     conn.execute(
         "INSERT INTO execution_authorization_provenance
-            (participant_id, intent_id, source, reason, grant_id)
-         VALUES ('maker-main', 'intent-85', 'implicit_authority', 'implicit_participant_hmac', NULL)",
+            (participant_id, intent_id, principal_provider, principal_subject,
+             capability, resource, source, reason, grant_id)
+         VALUES ('maker-main', 'intent-85', 'participant-hmac', 'maker-main',
+                 'post_message', 'blackboard-lounge',
+                 'implicit_authority', 'implicit_participant_hmac', NULL)",
         [],
     )
     .unwrap();
@@ -168,8 +171,11 @@ fn same_intent_across_participants_keeps_ingress_separate() {
         .unwrap();
         conn.execute(
             "INSERT INTO execution_authorization_provenance
-                (participant_id, intent_id, source, reason, grant_id)
-             VALUES (?1, 'shared-intent', 'implicit_authority', 'implicit_participant_hmac', NULL)",
+                (participant_id, intent_id, principal_provider, principal_subject,
+                 capability, resource, source, reason, grant_id)
+             VALUES (?1, 'shared-intent', 'participant-hmac', ?1,
+                     'post_message', 'blackboard-lounge',
+                     'implicit_authority', 'implicit_participant_hmac', NULL)",
             [participant],
         )
         .unwrap();
@@ -333,4 +339,76 @@ fn every_hash_covered_message_field_is_verified_against_receipt() {
             "missing intent_hash_mismatch for mutation: {mutation}"
         );
     }
+}
+
+#[test]
+fn authorization_capability_mismatch_is_detected() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE execution_authorization_provenance SET capability = 'reply'
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "authorization_capability_mismatch"));
+}
+
+#[test]
+fn authorization_principal_metadata_is_verified() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE execution_authorization_provenance SET principal_subject = ''
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [],
+    )
+    .unwrap();
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "authorization_metadata_invalid"));
+}
+
+#[test]
+fn legacy_authorization_backfills_only_deterministic_capability() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute(
+        "UPDATE execution_authorization_provenance
+         SET principal_provider = NULL, principal_subject = NULL,
+             capability = NULL, resource = NULL
+         WHERE participant_id = 'maker-main' AND intent_id = 'intent-85'",
+        [],
+    )
+    .unwrap();
+
+    execution::ensure_execution_tables(&conn).unwrap();
+    let provenance = execution::get_authorization_provenance(&conn, "maker-main", "intent-85")
+        .unwrap()
+        .unwrap();
+    assert_eq!(provenance.capability.as_deref(), Some("post_message"));
+    assert!(provenance.principal.is_none());
+    assert!(provenance.resource.is_none());
+
+    let report =
+        execution::verify_execution_audit_integrity(&conn, "maker-main", "intent-85").unwrap();
+    assert!(!report.valid);
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "authorization_principal_unbound"));
+    assert!(report
+        .violations
+        .iter()
+        .any(|value| value == "authorization_scope_unbound"));
 }

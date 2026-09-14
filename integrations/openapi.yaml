@@ -622,13 +622,21 @@ components:
     AuthorizationProvenance:
       type: object
       additionalProperties: false
-      required: [participant_id, intent_id, source, reason, grant_id]
-      description: Historical non-secret authorization decision persisted at execution commit time.
+      required: [participant_id, intent_id, principal, capability, resource, source, reason, grant_id]
+      description: Historical non-secret authorization decision and admitted request context persisted at execution commit time. Legacy principal/resource fields may remain null when they cannot be recovered without policy reconstruction.
       properties:
         participant_id:
           $ref: '#/components/schemas/ParticipantId'
         intent_id:
           $ref: '#/components/schemas/IntentId'
+        principal:
+          anyOf:
+            - $ref: '#/components/schemas/Principal'
+            - type: 'null'
+        capability:
+          type: [string, 'null']
+        resource:
+          type: [string, 'null']
         source:
           type: string
         reason:

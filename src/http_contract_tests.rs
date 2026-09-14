@@ -512,15 +512,19 @@ async fn execution_audit_http_is_policy_guarded_and_reads_committed_evidence() {
     .unwrap();
     conn.execute(
         "INSERT INTO execution_authorization_provenance
-            (participant_id, intent_id, source, reason, grant_id)
-         VALUES (?1, 'intent-http-audit', 'implicit_authority', 'implicit_human_web', NULL)",
+            (participant_id, intent_id, principal_provider, principal_subject,
+             capability, resource, source, reason, grant_id)
+         VALUES (?1, 'intent-http-audit', 'human-web', ?1,
+                 'post_message', 'blackboard-lounge',
+                 'implicit_authority', 'implicit_human_web', NULL)",
         [&fixture.participant_id],
     )
     .unwrap();
     conn.execute(
         "INSERT INTO ingress_provenance
-            (delivery_id, intent_id, transport, external_ref, principal_provider, principal_subject)
-         VALUES ('delivery-http-audit', 'intent-http-audit', 'rest', 'ref', 'human-web', ?1)",
+            (delivery_id, participant_id, intent_id, transport, external_ref,
+             principal_provider, principal_subject)
+         VALUES ('delivery-http-audit', ?1, 'intent-http-audit', 'rest', 'ref', 'human-web', ?1)",
         [&fixture.participant_id],
     )
     .unwrap();

@@ -118,11 +118,14 @@ pub fn authorization_provenance_schema() -> Value {
         "properties": {
             "participant_id": participant_id_schema(),
             "intent_id": intent_id_schema(),
+            "principal": {"anyOf": [principal_schema(), {"type": "null"}]},
+            "capability": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "resource": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "source": {"type": "string"},
             "reason": {"type": "string"},
             "grant_id": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]}
         },
-        "required": ["participant_id", "intent_id", "source", "reason", "grant_id"],
+        "required": ["participant_id", "intent_id", "principal", "capability", "resource", "source", "reason", "grant_id"],
         "additionalProperties": false,
         "description": "Historical non-secret authorization decision persisted at execution commit time."
     })

@@ -58,6 +58,9 @@ pub struct ExecutionReceipt {
 pub struct AuthorizationProvenance {
     pub participant_id: String,
     pub intent_id: String,
+    pub principal: Option<Principal>,
+    pub capability: Option<String>,
+    pub resource: Option<String>,
     pub source: String,
     pub reason: String,
     pub grant_id: Option<i64>,
@@ -182,12 +185,16 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
             ON execution_receipts(message_id);
 
         CREATE TABLE IF NOT EXISTS execution_authorization_provenance (
-            participant_id  TEXT NOT NULL,
-            intent_id       TEXT NOT NULL,
-            source          TEXT NOT NULL,
-            reason          TEXT NOT NULL,
-            grant_id        INTEGER,
-            created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+            participant_id      TEXT NOT NULL,
+            intent_id           TEXT NOT NULL,
+            principal_provider  TEXT,
+            principal_subject   TEXT,
+            capability          TEXT,
+            resource            TEXT,
+            source              TEXT NOT NULL,
+            reason              TEXT NOT NULL,
+            grant_id            INTEGER,
+            created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
             PRIMARY KEY (participant_id, intent_id)
         );",
     )?;
@@ -209,6 +216,51 @@ pub fn ensure_execution_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_ingress_provenance_execution
             ON ingress_provenance(participant_id, intent_id);",
+    )?;
+
+    let authorization_columns = {
+        let mut stmt = conn.prepare("PRAGMA table_info(execution_authorization_provenance)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        columns
+    };
+    for (column, sql_type) in [
+        ("principal_provider", "TEXT"),
+        ("principal_subject", "TEXT"),
+        ("capability", "TEXT"),
+        ("resource", "TEXT"),
+    ] {
+        if !authorization_columns
+            .iter()
+            .any(|existing| existing == column)
+        {
+            conn.execute(
+                &format!(
+                    "ALTER TABLE execution_authorization_provenance ADD COLUMN {column} {sql_type}"
+                ),
+                [],
+            )?;
+        }
+    }
+
+    // Capability is safely recoverable from the committed receipt. Principal and
+    // resource are intentionally not reconstructed from current authorization policy.
+    conn.execute(
+        "UPDATE execution_authorization_provenance
+         SET capability = (
+             SELECT er.capability
+             FROM execution_receipts er
+             WHERE er.participant_id = execution_authorization_provenance.participant_id
+               AND er.intent_id = execution_authorization_provenance.intent_id
+         )
+         WHERE capability IS NULL
+           AND EXISTS (
+             SELECT 1 FROM execution_receipts er
+             WHERE er.participant_id = execution_authorization_provenance.participant_id
+               AND er.intent_id = execution_authorization_provenance.intent_id
+           )",
+        [],
     )?;
 
     conn.execute(
@@ -262,17 +314,27 @@ pub fn get_authorization_provenance(
 ) -> rusqlite::Result<Option<AuthorizationProvenance>> {
     ensure_execution_tables(conn)?;
     conn.query_row(
-        "SELECT participant_id, intent_id, source, reason, grant_id
+        "SELECT participant_id, intent_id, principal_provider, principal_subject,
+                capability, resource, source, reason, grant_id
          FROM execution_authorization_provenance
          WHERE participant_id = ?1 AND intent_id = ?2",
         params![participant_id, intent_id],
         |row| {
+            let provider = row.get::<_, Option<String>>(2)?;
+            let subject = row.get::<_, Option<String>>(3)?;
+            let principal = match (provider, subject) {
+                (Some(provider), Some(subject)) => Some(Principal { provider, subject }),
+                _ => None,
+            };
             Ok(AuthorizationProvenance {
                 participant_id: row.get(0)?,
                 intent_id: row.get(1)?,
-                source: row.get(2)?,
-                reason: row.get(3)?,
-                grant_id: row.get(4)?,
+                principal,
+                capability: row.get(4)?,
+                resource: row.get(5)?,
+                source: row.get(6)?,
+                reason: row.get(7)?,
+                grant_id: row.get(8)?,
             })
         },
     )
@@ -348,6 +410,7 @@ pub fn verify_execution_audit_integrity(
         violations.push("invalid_receipt_status".to_owned());
     }
 
+    let mut expected_authorization_resource: Option<String> = None;
     let message = conn
         .query_row(
             "SELECT channel, instance, conversation_ref, kind, body, reply_to
@@ -366,6 +429,7 @@ pub fn verify_execution_audit_integrity(
         )
         .optional()?;
     if let Some((channel, instance, conversation_ref, kind, body, reply_to)) = message {
+        expected_authorization_resource = Some(channel.clone());
         checks.push("message_effect_present".to_owned());
         if instance == participant_id {
             checks.push("message_effect_binding_valid".to_owned());
@@ -401,6 +465,35 @@ pub fn verify_execution_audit_integrity(
             if let Some(auth) = get_authorization_provenance(conn, participant_id, intent_id)? {
                 if auth.participant_id != participant_id || auth.intent_id != intent_id {
                     violations.push("authorization_binding_mismatch".to_owned());
+                }
+                match auth.principal.as_ref() {
+                    Some(principal)
+                        if !principal.provider.trim().is_empty()
+                            && !principal.subject.trim().is_empty() =>
+                    {
+                        checks.push("authorization_principal_bound".to_owned());
+                    }
+                    Some(_) => violations.push("authorization_metadata_invalid".to_owned()),
+                    None => violations.push("authorization_principal_unbound".to_owned()),
+                }
+                match auth.capability.as_deref() {
+                    Some(capability) if capability == receipt.capability => {
+                        checks.push("authorization_capability_matches_receipt".to_owned());
+                    }
+                    Some(_) => violations.push("authorization_capability_mismatch".to_owned()),
+                    None => violations.push("authorization_scope_unbound".to_owned()),
+                }
+                match auth.resource.as_deref() {
+                    Some(resource) if resource.trim().is_empty() => {
+                        violations.push("authorization_metadata_invalid".to_owned());
+                    }
+                    Some(resource)
+                        if expected_authorization_resource.as_deref() == Some(resource) =>
+                    {
+                        checks.push("authorization_resource_matches_effect".to_owned());
+                    }
+                    Some(_) => violations.push("authorization_resource_mismatch".to_owned()),
+                    None => violations.push("authorization_scope_unbound".to_owned()),
                 }
             }
         }
@@ -620,7 +713,13 @@ pub fn execute_message_intent(
     };
     record_execution_in_tx(&tx, request.ingress, &receipt)?;
     if created {
-        record_authorization_provenance_in_tx(&tx, &receipt, &authorization_decision)?;
+        record_authorization_provenance_in_tx(
+            &tx,
+            &receipt,
+            &request.authority.principal,
+            &request.intent.resource,
+            &authorization_decision,
+        )?;
         if let Some(grant_id) = consume_grant_id {
             authorization::consume_delegated_grant_in_tx(&tx, grant_id, &request.intent.intent_id)?;
         }
@@ -740,6 +839,8 @@ fn record_execution_in_tx(
 fn record_authorization_provenance_in_tx(
     tx: &Transaction<'_>,
     receipt: &ExecutionReceipt,
+    principal: &Principal,
+    resource: &str,
     decision: &authorization::AuthorizationDecision,
 ) -> rusqlite::Result<()> {
     if !decision.allowed {
@@ -747,11 +848,16 @@ fn record_authorization_provenance_in_tx(
     }
     tx.execute(
         "INSERT INTO execution_authorization_provenance
-            (participant_id, intent_id, source, reason, grant_id)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+            (participant_id, intent_id, principal_provider, principal_subject,
+             capability, resource, source, reason, grant_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             receipt.participant_id,
             receipt.intent_id,
+            principal.provider,
+            principal.subject,
+            receipt.capability,
+            resource,
             decision.source,
             decision.reason,
             decision.grant_id
@@ -966,6 +1072,15 @@ mod tests {
             .unwrap();
         assert_eq!(provenance.source, "implicit_authority");
         assert_eq!(provenance.reason, "implicit_participant_hmac");
+        assert_eq!(
+            provenance.principal,
+            Some(Principal {
+                provider: "participant-hmac".into(),
+                subject: "maker-main".into(),
+            })
+        );
+        assert_eq!(provenance.capability.as_deref(), Some("post_message"));
+        assert_eq!(provenance.resource.as_deref(), Some("blackboard-lounge"));
         let provenance_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM execution_authorization_provenance
@@ -1068,6 +1183,9 @@ mod tests {
         assert_eq!(provenance.source, "delegated_grants");
         assert_eq!(provenance.reason, "delegated_grant_match");
         assert!(provenance.grant_id.is_some());
+        assert_eq!(provenance.principal, Some(authority.principal.clone()));
+        assert_eq!(provenance.capability.as_deref(), Some("post_message"));
+        assert_eq!(provenance.resource.as_deref(), Some("blackboard-lounge"));
         conn.execute(
             "UPDATE delegated_grants SET status = 'inactive' WHERE principal_subject = 'agent-1'",
             [],
