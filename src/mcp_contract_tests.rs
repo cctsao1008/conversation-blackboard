@@ -1052,3 +1052,93 @@ async fn modern_streamable_http_reports_unsupported_version_and_unknown_method()
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(value["error"]["code"], -32601);
 }
+
+#[tokio::test]
+async fn modern_client_info_is_optional_but_malformed_client_info_is_rejected() {
+    let fixture = fixture();
+    let without_client_info = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 94,
+            "method": "server/discover",
+            "params": {"_meta": without_client_info}
+        }),
+        "server/discover",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let malformed = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 95,
+            "method": "server/discover",
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": "not-an-object"
+            }}
+        }),
+        "server/discover",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    let (status, value) = response_json(malformed).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], -32020);
+}
+
+#[tokio::test]
+async fn legacy_result_wire_does_not_gain_modern_result_fields() {
+    let fixture = fixture();
+    let listed = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({"jsonrpc": "2.0", "id": 96, "method": "tools/list", "params": {}})),
+    )
+    .await;
+    let (status, value) = response_json(listed).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value["result"].get("resultType").is_none());
+    assert!(value["result"].get("ttlMs").is_none());
+    assert!(value["result"].get("cacheScope").is_none());
+    assert!(value["result"].get("_meta").is_none());
+}
+
+#[tokio::test]
+async fn modern_tool_results_stamp_result_type_and_server_identity() {
+    let fixture = fixture();
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 97,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_read",
+                "arguments": {"channel": "blackboard-lounge"},
+                "_meta": modern_meta("2026-07-28")
+            }
+        }),
+        "tools/call",
+        Some("blackboard_read"),
+        "2026-07-28",
+    )
+    .await;
+    let (status, value) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["result"]["resultType"], "complete");
+    assert_eq!(
+        value["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "conversation-blackboard"
+    );
+}

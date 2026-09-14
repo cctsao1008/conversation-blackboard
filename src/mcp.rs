@@ -244,9 +244,9 @@ async fn mcp_post(State(state): State<AppState>, request: Request<Body>) -> Resp
 
         let result = match method {
             "server/discover" => discover_result(),
-            "tools/list" => tools_list_result(),
+            "tools/list" => modern_result(method, tools_list_result()),
             "tools/call" => match tool_call_result(&state, object).await {
-                Ok(result) => result,
+                Ok(result) => modern_result(method, result),
                 Err(message) => return jsonrpc_error_response(id, -32602, message),
             },
             _ => return jsonrpc_http_error(StatusCode::NOT_FOUND, id, -32601, "method_not_found"),
@@ -325,6 +325,30 @@ fn discover_result() -> Value {
     })
 }
 
+fn modern_result(method: &str, mut result: Value) -> Value {
+    let Some(object) = result.as_object_mut() else {
+        return result;
+    };
+    object.insert("resultType".to_owned(), json!("complete"));
+    let meta = object
+        .entry("_meta".to_owned())
+        .or_insert_with(|| json!({}));
+    if let Some(meta) = meta.as_object_mut() {
+        meta.insert(
+            "io.modelcontextprotocol/serverInfo".to_owned(),
+            json!({
+                "name": "conversation-blackboard",
+                "version": env!("CARGO_PKG_VERSION")
+            }),
+        );
+    }
+    if method == "tools/list" {
+        object.insert("ttlMs".to_owned(), json!(300000));
+        object.insert("cacheScope".to_owned(), json!("public"));
+    }
+    result
+}
+
 fn request_protocol_version(object: &Map<String, Value>) -> Option<&str> {
     object
         .get("params")?
@@ -351,22 +375,21 @@ fn validate_modern_request_metadata(object: &Map<String, Value>) -> Result<(), &
     if protocol != MODERN_PROTOCOL_VERSION {
         return Err("unsupported_protocol_version");
     }
-    let client_info = meta
-        .get("io.modelcontextprotocol/clientInfo")
-        .and_then(Value::as_object)
-        .ok_or("invalid_request_metadata")?;
-    if client_info
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .is_none()
-        || client_info
-            .get("version")
+    if let Some(client_info) = meta.get("io.modelcontextprotocol/clientInfo") {
+        let client_info = client_info.as_object().ok_or("invalid_request_metadata")?;
+        if client_info
+            .get("name")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .is_none()
-    {
-        return Err("invalid_request_metadata");
+            || client_info
+                .get("version")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            return Err("invalid_request_metadata");
+        }
     }
     if !meta
         .get("io.modelcontextprotocol/clientCapabilities")
@@ -424,22 +447,21 @@ fn validate_modern_http_metadata(
         .get("_meta")
         .and_then(Value::as_object)
         .ok_or("header_mismatch")?;
-    let client_info = meta
-        .get("io.modelcontextprotocol/clientInfo")
-        .and_then(Value::as_object)
-        .ok_or("header_mismatch")?;
-    if client_info
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .is_none()
-        || client_info
-            .get("version")
+    if let Some(client_info) = meta.get("io.modelcontextprotocol/clientInfo") {
+        let client_info = client_info.as_object().ok_or("header_mismatch")?;
+        if client_info
+            .get("name")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .is_none()
-    {
-        return Err("header_mismatch");
+            || client_info
+                .get("version")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            return Err("header_mismatch");
+        }
     }
     if !meta
         .get("io.modelcontextprotocol/clientCapabilities")
@@ -501,7 +523,6 @@ fn auth_schema() -> Value {
 
 fn tools_list_result() -> Value {
     json!({
-        "resultType": "complete",
         "tools": [
             {
                 "name": "blackboard_read",
@@ -636,9 +657,7 @@ fn tools_list_result() -> Value {
                 "outputSchema": contract_schema::execution_audit_sweep_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
-        ],
-        "ttlMs": 300000,
-        "cacheScope": "public"
+        ]
     })
 }
 
@@ -1342,7 +1361,6 @@ fn tool_success(structured_content: Value) -> Value {
     let text = serde_json::to_string(&structured_content)
         .unwrap_or_else(|_| "{\"error\":\"internal_error\"}".to_owned());
     json!({
-        "resultType": "complete",
         "structuredContent": structured_content,
         "content": [{"type": "text", "text": text}],
         "isError": false
@@ -1351,7 +1369,6 @@ fn tool_success(structured_content: Value) -> Value {
 
 fn tool_error(code: &'static str) -> Value {
     json!({
-        "resultType": "complete",
         "content": [{"type": "text", "text": code}],
         "isError": true
     })
