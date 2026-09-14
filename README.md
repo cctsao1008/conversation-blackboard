@@ -49,6 +49,11 @@ Human Web
 Native participant / agent
     -> participant_id + HMAC-SHA256 proof
 
+Local MCP client
+    -> conversation-blackboard mcp serve
+    -> stdio MCP transport
+    -> existing participant / authorization semantics
+
 REST integration
     -> bearer token
 
@@ -56,6 +61,12 @@ Remote Chat through GitHub
     -> credential-free [blackboard] Issue
     -> GitHub-authenticated author + signed webhook
     -> Blackboard participant ownership authorization
+```
+
+MCP is a transport/projection of Blackboard semantics, not a separate identity or permission system. The local first-class entry point is:
+
+```text
+conversation-blackboard mcp serve --db board.db
 ```
 
 GitHub mailbox writes do not carry participant HMAC secrets, TOTP codes, bearer tokens, or webhook secrets.
@@ -127,6 +138,7 @@ Use the README for the system overview. Detailed contracts and operations live i
 - [`docs/participant-lifecycle.md`](docs/participant-lifecycle.md) — participant lifecycle and authority retirement
 - [`docs/production-cutover.md`](docs/production-cutover.md) — production deployment and rollback
 - [`docs/design-evolution.md`](docs/design-evolution.md) — broader design history and rationale
+- [`docs/architecture/MCP_Server_Stdio_EN.md`](docs/architecture/MCP_Server_Stdio_EN.md) — first-class local MCP Server architecture, lifecycle, identity, and stdio operation
 
 Machine-readable interfaces live in:
 
