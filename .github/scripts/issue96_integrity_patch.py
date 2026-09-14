@@ -6,6 +6,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
         raise SystemExit(f"missing marker: {label}")
     return text.replace(old, new, 1)
 
+
 # ---------------------------------------------------------------------------
 # Canonical verifier: cover navigation reservation + delegated one-shot state.
 # ---------------------------------------------------------------------------
@@ -77,73 +78,90 @@ s = replace_once(
     "navigation verification insertion",
 )
 
-ingress_marker = '''    let mut stmt = conn.prepare(\n        "SELECT participant_id, delivery_id, intent_id, transport, external_ref,\n'''
+# This marker is deliberately verifier-specific. The audit-bundle reader has a
+# similar ingress SELECT, but it scopes by participant + intent. The verifier's
+# ingress scan scopes by intent only so it can diagnose unresolved legacy rows.
+verifier_ingress_marker = '''        _ => violations.push("authorization_provenance_duplicate".to_owned()),\n    }\n\n    let mut stmt = conn.prepare(\n        "SELECT participant_id, delivery_id, intent_id, transport, external_ref,\n                principal_provider, principal_subject\n         FROM ingress_provenance\n         WHERE intent_id = ?1\n'''
 
-delegated_block = r'''    if let Some(auth) = get_authorization_provenance(conn, participant_id, intent_id)? {
+delegated_block = r'''        _ => violations.push("authorization_provenance_duplicate".to_owned()),
+    }
+
+    if let Some(auth) = get_authorization_provenance(conn, participant_id, intent_id)? {
         if auth.source == "delegated_grants" {
-            let Some(grant_id) = auth.grant_id else {
-                violations.push("delegated_grant_reference_missing".to_owned());
-                let valid = violations.is_empty();
-                if valid {
-                    checks.push("valid_committed_audit".to_owned());
-                }
-                return Ok(ExecutionAuditIntegrityReport {
-                    participant_id: participant_id.to_owned(),
-                    intent_id: intent_id.to_owned(),
-                    valid,
-                    checks,
-                    violations,
-                });
-            };
+            match auth.grant_id {
+                None => violations.push("delegated_grant_reference_missing".to_owned()),
+                Some(grant_id) => {
+                    let delegated_table_exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master
+                         WHERE type = 'table' AND name = 'delegated_grants'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if delegated_table_exists == 0 {
+                        violations.push("delegated_grant_missing".to_owned());
+                    } else {
+                        let grant: Option<(
+                            String,
+                            String,
+                            i64,
+                            Option<i64>,
+                            Option<String>,
+                        )> = conn
+                            .query_row(
+                                "SELECT participant_id, capability, one_shot,
+                                        consumed_at, consumed_intent_id
+                                 FROM delegated_grants
+                                 WHERE id = ?1",
+                                [grant_id],
+                                |row| {
+                                    Ok((
+                                        row.get(0)?,
+                                        row.get(1)?,
+                                        row.get(2)?,
+                                        row.get(3)?,
+                                        row.get(4)?,
+                                    ))
+                                },
+                            )
+                            .optional()?;
+                        match grant {
+                            None => violations.push("delegated_grant_missing".to_owned()),
+                            Some((
+                                grant_participant,
+                                grant_capability,
+                                one_shot,
+                                consumed_at,
+                                consumed_intent,
+                            )) => {
+                                checks.push("delegated_grant_present".to_owned());
+                                if grant_participant == receipt.participant_id
+                                    && grant_capability == receipt.capability
+                                {
+                                    checks.push("delegated_grant_binding_valid".to_owned());
+                                } else {
+                                    violations.push("delegated_grant_binding_mismatch".to_owned());
+                                }
 
-            let delegated_table_exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'delegated_grants'",
-                [],
-                |row| row.get(0),
-            )?;
-            if delegated_table_exists == 0 {
-                violations.push("delegated_grant_missing".to_owned());
-            } else {
-                let grant: Option<(String, String, i64, Option<i64>, Option<String>)> = conn
-                    .query_row(
-                        "SELECT participant_id, capability, one_shot, consumed_at, consumed_intent_id
-                         FROM delegated_grants
-                         WHERE id = ?1",
-                        [grant_id],
-                        |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
-                match grant {
-                    None => violations.push("delegated_grant_missing".to_owned()),
-                    Some((grant_participant, grant_capability, one_shot, consumed_at, consumed_intent)) => {
-                        checks.push("delegated_grant_present".to_owned());
-                        if grant_participant == receipt.participant_id
-                            && grant_capability == receipt.capability
-                        {
-                            checks.push("delegated_grant_binding_valid".to_owned());
-                        } else {
-                            violations.push("delegated_grant_binding_mismatch".to_owned());
-                        }
-
-                        if one_shot != 0 {
-                            if consumed_at.is_none() {
-                                violations.push("delegated_one_shot_consumption_missing".to_owned());
-                            } else if consumed_intent.as_deref() != Some(receipt.intent_id.as_str()) {
-                                violations.push("delegated_one_shot_consumption_mismatch".to_owned());
-                            } else {
-                                checks.push("delegated_one_shot_consumption_valid".to_owned());
+                                if one_shot != 0 {
+                                    if consumed_at.is_none() {
+                                        violations.push(
+                                            "delegated_one_shot_consumption_missing".to_owned(),
+                                        );
+                                    } else if consumed_intent.as_deref()
+                                        != Some(receipt.intent_id.as_str())
+                                    {
+                                        violations.push(
+                                            "delegated_one_shot_consumption_mismatch".to_owned(),
+                                        );
+                                    } else {
+                                        checks.push(
+                                            "delegated_one_shot_consumption_valid".to_owned(),
+                                        );
+                                    }
+                                } else {
+                                    checks.push("delegated_grant_non_one_shot".to_owned());
+                                }
                             }
-                        } else {
-                            checks.push("delegated_grant_non_one_shot".to_owned());
                         }
                     }
                 }
@@ -151,14 +169,20 @@ delegated_block = r'''    if let Some(auth) = get_authorization_provenance(conn,
         }
     }
 
+    let mut stmt = conn.prepare(
+        "SELECT participant_id, delivery_id, intent_id, transport, external_ref,
+                principal_provider, principal_subject
+         FROM ingress_provenance
+         WHERE intent_id = ?1
 '''
 s = replace_once(
     s,
-    ingress_marker,
-    delegated_block + ingress_marker,
-    "delegated verification insertion",
+    verifier_ingress_marker,
+    delegated_block,
+    "verifier-scoped delegated verification insertion",
 )
 p.write_text(s, encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # Canonical integrity tests: current fixtures include all atomic components.
@@ -391,6 +415,7 @@ if "fn delegated_one_shot_consumption_is_historical_integrity_evidence" in s:
     raise SystemExit("issue96 tests already present")
 s = s.rstrip() + extra_tests + "\n"
 p.write_text(s, encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # REST manual audit fixture must represent the full atomic execution boundary.
