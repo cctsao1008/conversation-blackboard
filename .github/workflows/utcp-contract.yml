@@ -4,19 +4,31 @@ on:
   push:
     paths:
       - "integrations/utcp.json"
+      - "integrations/openapi.yaml"
+      - "src/access_api.rs"
+      - "src/contract_schema.rs"
+      - "src/contract_parity_tests.rs"
       - "src/http.rs"
       - "src/mcp.rs"
       - "src/participant_auth.rs"
       - "src/participant_admin.rs"
+      - "docs/contract-projections.md"
+      - "docs/architecture/Execution_Audit_Sweep_Remote_Projection_EN.md"
       - "tools/utcp_smoke.py"
       - ".github/workflows/utcp-contract.yml"
   pull_request:
     paths:
       - "integrations/utcp.json"
+      - "integrations/openapi.yaml"
+      - "src/access_api.rs"
+      - "src/contract_schema.rs"
+      - "src/contract_parity_tests.rs"
       - "src/http.rs"
       - "src/mcp.rs"
       - "src/participant_auth.rs"
       - "src/participant_admin.rs"
+      - "docs/contract-projections.md"
+      - "docs/architecture/Execution_Audit_Sweep_Remote_Projection_EN.md"
       - "tools/utcp_smoke.py"
       - ".github/workflows/utcp-contract.yml"
 
