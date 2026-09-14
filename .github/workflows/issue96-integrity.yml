@@ -28,10 +28,33 @@ jobs:
           p = Path('src/execution.rs')
           s = p.read_text(encoding='utf-8')
           pattern = r"let grant: Option<\(\s*String,\s*String,\s*i64,\s*Option<i64>,\s*Option<String>,\s*\)> = conn"
-          s2, count = re.subn(pattern, "let grant = conn", s, count=1)
+          s, count = re.subn(pattern, "let grant = conn", s, count=1)
           if count != 1:
               raise SystemExit(f'expected one delegated grant type annotation, found {count}')
-          p.write_text(s2, encoding='utf-8')
+          old = '''                                |row| {
+                                    Ok((
+                                        row.get(0)?,
+                                        row.get(1)?,
+                                        row.get(2)?,
+                                        row.get(3)?,
+                                        row.get(4)?,
+                                    ))
+                                },
+'''
+          new = '''                                |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, i64>(2)?,
+                                        row.get::<_, Option<i64>>(3)?,
+                                        row.get::<_, Option<String>>(4)?,
+                                    ))
+                                },
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one delegated grant row mapper, found {s.count(old)}')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
           PY
       - name: Format and verify
         run: |
