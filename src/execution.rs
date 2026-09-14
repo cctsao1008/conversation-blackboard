@@ -92,6 +92,22 @@ pub struct ExecutionAuditIntegrityReport {
     pub violations: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionAuditOrphanEvidence {
+    pub kind: String,
+    pub participant_id: Option<String>,
+    pub intent_id: String,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionAuditSweepReport {
+    pub valid: bool,
+    pub executions_scanned: usize,
+    pub invalid_executions: Vec<ExecutionAuditIntegrityReport>,
+    pub orphan_evidence: Vec<ExecutionAuditOrphanEvidence>,
+}
+
 #[derive(Debug)]
 pub struct MessageExecutionRequest<'a> {
     pub authority: &'a AuthorityContext,
@@ -750,6 +766,161 @@ pub fn verify_execution_audit_integrity(
         valid,
         checks,
         violations,
+    })
+}
+
+pub fn sweep_execution_audit_integrity(
+    conn: &Connection,
+) -> rusqlite::Result<ExecutionAuditSweepReport> {
+    let identities = {
+        let mut stmt = conn.prepare(
+            "SELECT participant_id, intent_id
+             FROM execution_receipts
+             ORDER BY participant_id, intent_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let executions_scanned = identities.len();
+    let mut invalid_executions = Vec::new();
+    for (participant_id, intent_id) in identities {
+        let report = verify_execution_audit_integrity(conn, &participant_id, &intent_id)?;
+        if !report.valid {
+            invalid_executions.push(report);
+        }
+    }
+
+    let mut orphan_evidence = Vec::new();
+
+    {
+        let mut stmt = conn.prepare(
+            "SELECT a.participant_id, a.intent_id, a.grant_id
+             FROM execution_authorization_provenance AS a
+             WHERE NOT EXISTS (
+                 SELECT 1
+                 FROM execution_receipts AS r
+                 WHERE r.participant_id = a.participant_id
+                   AND r.intent_id = a.intent_id
+             )
+             ORDER BY a.participant_id, a.intent_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (participant_id, intent_id, grant_id) in rows {
+            orphan_evidence.push(ExecutionAuditOrphanEvidence {
+                kind: "orphan_authorization_provenance".to_owned(),
+                participant_id: Some(participant_id),
+                intent_id,
+                reference: grant_id.map(|id| format!("grant_id={id}")),
+            });
+        }
+    }
+
+    {
+        let mut stmt = conn.prepare(
+            "SELECT i.participant_id, i.intent_id, i.delivery_id, r.participant_id
+             FROM ingress_provenance AS i
+             LEFT JOIN execution_receipts AS r
+               ON r.participant_id = i.participant_id
+              AND r.intent_id = i.intent_id
+             ORDER BY i.intent_id, i.delivery_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (participant_id, intent_id, delivery_id, matched_participant) in rows {
+            match participant_id {
+                None => orphan_evidence.push(ExecutionAuditOrphanEvidence {
+                    kind: "unbound_legacy_ingress".to_owned(),
+                    participant_id: None,
+                    intent_id,
+                    reference: Some(delivery_id),
+                }),
+                Some(participant_id) if participant_id.trim().is_empty() => {
+                    orphan_evidence.push(ExecutionAuditOrphanEvidence {
+                        kind: "unbound_legacy_ingress".to_owned(),
+                        participant_id: None,
+                        intent_id,
+                        reference: Some(delivery_id),
+                    });
+                }
+                Some(participant_id) if matched_participant.is_none() => {
+                    orphan_evidence.push(ExecutionAuditOrphanEvidence {
+                        kind: "orphan_ingress_provenance".to_owned(),
+                        participant_id: Some(participant_id),
+                        intent_id,
+                        reference: Some(delivery_id),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    {
+        let mut stmt = conn.prepare(
+            "SELECT n.instance, n.nonce, n.message_id
+             FROM navigation_writes AS n
+             WHERE NOT EXISTS (
+                 SELECT 1
+                 FROM execution_receipts AS r
+                 WHERE r.participant_id = n.instance
+                   AND r.intent_id = n.nonce
+             )
+             ORDER BY n.instance, n.nonce",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (participant_id, intent_id, message_id) in rows {
+            orphan_evidence.push(ExecutionAuditOrphanEvidence {
+                kind: "orphan_navigation_reservation".to_owned(),
+                participant_id: Some(participant_id),
+                intent_id,
+                reference: Some(format!("message_id={message_id}")),
+            });
+        }
+    }
+
+    orphan_evidence.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.participant_id.cmp(&right.participant_id))
+            .then_with(|| left.intent_id.cmp(&right.intent_id))
+            .then_with(|| left.reference.cmp(&right.reference))
+    });
+
+    let valid = invalid_executions.is_empty() && orphan_evidence.is_empty();
+    Ok(ExecutionAuditSweepReport {
+        valid,
+        executions_scanned,
+        invalid_executions,
+        orphan_evidence,
     })
 }
 

@@ -29,6 +29,12 @@ pub enum ExecutionCommand {
         #[arg(long)]
         intent_id: String,
     },
+    /// Verify the entire committed execution corpus and discover orphan evidence.
+    #[command(name = "verify-all")]
+    VerifyAll {
+        #[arg(long)]
+        db: PathBuf,
+    },
 }
 
 pub fn dispatch(command: ExecutionCommand) -> DynResult {
@@ -115,6 +121,41 @@ pub fn dispatch(command: ExecutionCommand) -> DynResult {
                 Ok(())
             } else {
                 Err("execution audit integrity verification failed".into())
+            }
+        }
+        ExecutionCommand::VerifyAll { db: path } => {
+            require_database(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            require_current_execution_schema(&conn, &path)?;
+            let report = execution::sweep_execution_audit_integrity(&conn)?;
+
+            println!("EXECUTION AUDIT SWEEP");
+            println!("valid              : {}", report.valid);
+            println!("executions_scanned : {}", report.executions_scanned);
+            println!("invalid_executions : {}", report.invalid_executions.len());
+            println!("orphan_evidence    : {}", report.orphan_evidence.len());
+            for invalid in &report.invalid_executions {
+                println!(
+                    "invalid_execution  : {}\t{}\t{}",
+                    invalid.participant_id,
+                    invalid.intent_id,
+                    invalid.violations.join(",")
+                );
+            }
+            for orphan in &report.orphan_evidence {
+                println!(
+                    "orphan_evidence     : {}\t{}\t{}\t{}",
+                    orphan.kind,
+                    orphan.participant_id.as_deref().unwrap_or("-"),
+                    orphan.intent_id,
+                    orphan.reference.as_deref().unwrap_or("-")
+                );
+            }
+
+            if report.valid {
+                Ok(())
+            } else {
+                Err("execution audit sweep verification failed".into())
             }
         }
     }

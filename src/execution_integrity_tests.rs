@@ -357,6 +357,12 @@ fn same_intent_across_participants_keeps_ingress_separate() {
             .unwrap()
             .valid
     );
+
+    let sweep = execution::sweep_execution_audit_integrity(&conn).unwrap();
+    assert!(sweep.valid, "unexpected sweep findings: {:?}", sweep);
+    assert_eq!(sweep.executions_scanned, 2);
+    assert!(sweep.invalid_executions.is_empty());
+    assert!(sweep.orphan_evidence.is_empty());
 }
 
 #[test]
@@ -764,4 +770,108 @@ fn delegated_one_shot_consumption_is_historical_integrity_evidence() {
         "current grant status/expiry rewrote historical validity: {:?}",
         report.violations
     );
+}
+
+#[test]
+fn clean_execution_audit_sweep_is_valid_and_read_only() {
+    let conn = fixture();
+    seed_valid(&conn);
+    let before = conn.total_changes();
+
+    let report = execution::sweep_execution_audit_integrity(&conn).unwrap();
+
+    assert!(report.valid, "unexpected sweep findings: {:?}", report);
+    assert_eq!(report.executions_scanned, 1);
+    assert!(report.invalid_executions.is_empty());
+    assert!(report.orphan_evidence.is_empty());
+    assert_eq!(conn.total_changes(), before);
+}
+
+#[test]
+fn execution_audit_sweep_reuses_per_execution_integrity_diagnostics() {
+    let conn = fixture();
+    seed_valid(&conn);
+    conn.execute("UPDATE messages SET body = 'tampered' WHERE id = 1", [])
+        .unwrap();
+    let before = conn.total_changes();
+
+    let report = execution::sweep_execution_audit_integrity(&conn).unwrap();
+
+    assert!(!report.valid);
+    assert_eq!(report.executions_scanned, 1);
+    assert_eq!(report.invalid_executions.len(), 1);
+    let invalid = &report.invalid_executions[0];
+    assert_eq!(invalid.participant_id, "maker-main");
+    assert_eq!(invalid.intent_id, "intent-85");
+    assert!(invalid
+        .violations
+        .iter()
+        .any(|value| value == "intent_hash_mismatch"));
+    assert_eq!(conn.total_changes(), before);
+}
+
+#[test]
+fn execution_audit_sweep_detects_orphan_and_unbound_evidence() {
+    let conn = fixture();
+    seed_valid(&conn);
+
+    conn.execute(
+        "INSERT INTO execution_authorization_provenance
+            (participant_id, intent_id, source, reason)
+         VALUES ('ghost-main', 'orphan-auth', 'implicit_authority', 'test')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ingress_provenance
+            (delivery_id, participant_id, intent_id, transport, external_ref,
+             principal_provider, principal_subject)
+         VALUES ('delivery-orphan', 'ghost-main', 'orphan-ingress', 'rest', 'request-orphan',
+                 'participant-hmac', 'ghost-main')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ingress_provenance
+            (delivery_id, participant_id, intent_id, transport, external_ref,
+             principal_provider, principal_subject)
+         VALUES ('delivery-legacy', NULL, 'legacy-intent', 'rest', 'legacy',
+                 'participant-hmac', 'unknown')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO navigation_writes (instance, nonce, request_hash, message_id)
+         VALUES ('ghost-main', 'orphan-navigation', 'hash', 99)",
+        [],
+    )
+    .unwrap();
+    let before = conn.total_changes();
+
+    let report = execution::sweep_execution_audit_integrity(&conn).unwrap();
+
+    assert!(!report.valid);
+    for expected in [
+        "orphan_authorization_provenance",
+        "orphan_ingress_provenance",
+        "orphan_navigation_reservation",
+        "unbound_legacy_ingress",
+    ] {
+        assert!(
+            report
+                .orphan_evidence
+                .iter()
+                .any(|evidence| evidence.kind == expected),
+            "missing orphan diagnostic: {expected}; findings={:?}",
+            report.orphan_evidence
+        );
+    }
+    let legacy = report
+        .orphan_evidence
+        .iter()
+        .find(|evidence| evidence.kind == "unbound_legacy_ingress")
+        .unwrap();
+    assert!(legacy.participant_id.is_none());
+    assert_eq!(legacy.intent_id, "legacy-intent");
+    assert_eq!(conn.total_changes(), before);
 }
