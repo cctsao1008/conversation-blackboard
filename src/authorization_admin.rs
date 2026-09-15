@@ -765,17 +765,14 @@ pub fn create_delegated_grant_authorized(
     Ok(outcome)
 }
 
-pub fn deactivate_delegated_grant(
-    conn: &Connection,
-    actor: &AuthorizationAdministrationActor<'_>,
+fn deactivate_delegated_grant_in_tx(
+    tx: &Transaction<'_>,
+    actor: &NormalizedActor,
     grant_id: i64,
 ) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
-    require_schema_current(conn)?;
     if grant_id <= 0 {
         return Err("grant_id must be positive".into());
     }
-    let actor = normalize_actor(actor)?;
-    let tx = conn.unchecked_transaction()?;
     let scope: Option<DelegatedGrantState> = tx
         .query_row(
             "SELECT principal_provider, principal_subject, participant_id, capability,
@@ -798,7 +795,6 @@ pub fn deactivate_delegated_grant(
         )
         .optional()?;
     let Some(scope) = scope else {
-        tx.commit()?;
         return Ok(None);
     };
 
@@ -810,8 +806,8 @@ pub fn deactivate_delegated_grant(
     )?;
     if updated == 1 {
         record_event(
-            &tx,
-            &actor,
+            tx,
+            actor,
             &AdministrationEvent {
                 grant_store: "delegated",
                 grant_id,
@@ -831,10 +827,53 @@ pub fn deactivate_delegated_grant(
             },
         )?;
     }
-    tx.commit()?;
     Ok(Some(GrantDeactivateOutcome {
         rows_changed: updated,
     }))
+}
+
+pub fn deactivate_delegated_grant(
+    conn: &Connection,
+    actor: &AuthorizationAdministrationActor<'_>,
+    grant_id: i64,
+) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
+    require_schema_current(conn)?;
+    let actor = normalize_actor(actor)?;
+    let tx = conn.unchecked_transaction()?;
+    let outcome = deactivate_delegated_grant_in_tx(&tx, &actor, grant_id)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub fn deactivate_delegated_grant_authorized(
+    conn: &Connection,
+    surface: &str,
+    caller_principal: &Principal,
+    caller_participant_id: &str,
+    grant_id: i64,
+) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
+    require_schema_current(conn)?;
+    let actor_spec = AuthorizationAdministrationActor {
+        surface,
+        principal: Some(caller_principal),
+        participant_id: Some(caller_participant_id),
+    };
+    let actor = normalize_actor(&actor_spec)?;
+    let tx = conn.unchecked_transaction()?;
+    let decision = authorization::explain_authorization(
+        &tx,
+        caller_principal,
+        caller_participant_id,
+        authorization::MANAGE_AUTHORIZATION_POLICY,
+        Some(authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        None,
+    )?;
+    if !decision.allowed {
+        return Err("authorization denied".into());
+    }
+    let outcome = deactivate_delegated_grant_in_tx(&tx, &actor, grant_id)?;
+    tx.commit()?;
+    Ok(outcome)
 }
 
 fn normalize_actor(

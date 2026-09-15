@@ -1310,6 +1310,178 @@ async fn authorization_admin_rest_delegated_create_preserves_scope_validation_an
 }
 
 #[tokio::test]
+async fn authorization_admin_rest_delegated_deactivate_is_privileged_idempotent_and_preserves_scope(
+) {
+    let fixture = fixture("authorization-admin-delegated-deactivate");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let local = authorization_admin::AuthorizationAdministrationActor::local_cli();
+    let now: i64 = conn
+        .query_row("SELECT unixepoch()", [], |row| row.get(0))
+        .unwrap();
+    let seed = authorization_admin::DelegatedGrantCreateRequest {
+        principal_provider: "oidc:https://issuer.example",
+        principal_subject: "delegated-deactivate-worker",
+        participant_id: &fixture.participant_id,
+        capability: authorization::POST_MESSAGE,
+        resource: Some("control-systems"),
+        intent_id: Some("intent-delegated-deactivate-108"),
+        expires_at: Some(now + 3600),
+        one_shot: true,
+    };
+    let created = authorization_admin::create_delegated_grant(&conn, &local, &seed).unwrap();
+    drop(conn);
+    let uri = format!("/api/authorization-grants/delegated/{}", created.id);
+
+    let unauthenticated = request(&router, Method::DELETE, &uri, None, None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let canonical = web_auth::canonical_http_request_bytes(&fixture.participant_id, "DELETE", &uri);
+    let proof =
+        participant_auth::compute_message_proof(&fixture.signing_private, &canonical).unwrap();
+    let hmac = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(&uri)
+                .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+                .header(
+                    request_auth::AUTH_SCHEME_HEADER,
+                    participant_auth::AUTH_SCHEME,
+                )
+                .header(request_auth::AUTH_PROOF_HEADER, proof)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hmac.status(), StatusCode::FORBIDDEN);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    drop(conn);
+
+    let deactivated = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    let (status, body) = response_json(deactivated).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["grant"]["store"], "delegated");
+    assert_eq!(body["grant"]["id"], created.id);
+    assert_eq!(body["grant"]["state"], "inactive");
+    assert_eq!(body["grant"]["rows_changed"], 1);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let grant_status: String = conn
+        .query_row(
+            "SELECT status FROM delegated_grants WHERE id = ?1",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(grant_status, "inactive");
+    let actor: (String, String, String, String) = conn
+        .query_row(
+            "SELECT actor_surface, actor_provider, actor_subject, actor_participant_id
+             FROM authorization_admin_events
+             WHERE grant_store = 'delegated' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(actor.0, "rest-authorization-admin");
+    assert_eq!(actor.1, "human-web");
+    assert_eq!(actor.2, fixture.participant_id);
+    assert_eq!(actor.3, fixture.participant_id);
+    let scope: (Option<String>, Option<String>, Option<i64>, i64) = conn
+        .query_row(
+            "SELECT resource, intent_id, expires_at, one_shot
+             FROM authorization_admin_events
+             WHERE grant_store = 'delegated' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(scope.0.as_deref(), Some("control-systems"));
+    assert_eq!(scope.1.as_deref(), Some("intent-delegated-deactivate-108"));
+    assert_eq!(scope.2, Some(now + 3600));
+    assert_eq!(scope.3, 1);
+    let before_repeat: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events
+             WHERE grant_store = 'delegated' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+
+    let repeated = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    let (repeat_status, repeat_body) = response_json(repeated).await;
+    assert_eq!(repeat_status, StatusCode::OK);
+    assert_eq!(repeat_body["grant"]["rows_changed"], 0);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after_repeat: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events
+             WHERE grant_store = 'delegated' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_repeat, before_repeat);
+    drop(conn);
+
+    let missing = request(
+        &router,
+        Method::DELETE,
+        "/api/authorization-grants/delegated/9223372036854770000",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let invalid = request(
+        &router,
+        Method::DELETE,
+        "/api/authorization-grants/delegated/0",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE authorization_admin_events", [])
+        .unwrap();
+    drop(conn);
+    let stale = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    assert_eq!(stale.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let admin_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'authorization_admin_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        admin_table, 0,
+        "REST delegated deactivate repaired stale schema"
+    );
+}
+
+#[tokio::test]
 async fn authorization_policy_http_is_privileged_canonical_and_observationally_read_only() {
     let fixture = fixture("policy-snapshot");
     let router = fixture
