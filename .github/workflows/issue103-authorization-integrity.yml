@@ -35,7 +35,7 @@ jobs:
         run: |
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
-          git add src/authorization.rs src/grant_admin.rs src/main.rs docs/operations.md
+          git add schema.sql src/authorization.rs src/grant_admin.rs src/main.rs docs/operations.md
           git diff --cached --quiet && { echo 'migration produced no durable changes'; exit 1; }
           git commit -m '#103 Add read-only authorization policy integrity audit'
       - name: Remove temporary migration helpers
