@@ -11,7 +11,7 @@ use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
 use crate::{
-    authorization, db, execution,
+    authorization, authorization_admin, db, execution,
     http::{self, AppState},
     identity,
     model::Identity,
@@ -936,6 +936,155 @@ async fn authorization_admin_rest_create_rejects_stale_schema_without_repair() {
         )
         .unwrap();
     assert_eq!(target_count, 0);
+}
+
+#[tokio::test]
+async fn authorization_admin_rest_deactivate_is_privileged_idempotent_and_observationally_strict() {
+    let fixture = fixture("authorization-admin-deactivate");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let local = authorization_admin::AuthorizationAdministrationActor::local_cli();
+    let request_seed = authorization_admin::DurableGrantCreateRequest {
+        principal_provider: "oidc:https://issuer.example",
+        principal_subject: "deactivate-worker",
+        participant_id: &fixture.participant_id,
+        capability: authorization::READ_MESSAGES,
+        resource: None,
+    };
+    let created = authorization_admin::create_durable_grant(&conn, &local, &request_seed).unwrap();
+    drop(conn);
+    let uri = format!("/api/authorization-grants/durable/{}", created.id);
+
+    let unauthenticated = request(&router, Method::DELETE, &uri, None, None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let canonical = web_auth::canonical_http_request_bytes(&fixture.participant_id, "DELETE", &uri);
+    let proof =
+        participant_auth::compute_message_proof(&fixture.signing_private, &canonical).unwrap();
+    let hmac = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(&uri)
+                .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+                .header(
+                    request_auth::AUTH_SCHEME_HEADER,
+                    participant_auth::AUTH_SCHEME,
+                )
+                .header(request_auth::AUTH_PROOF_HEADER, proof)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hmac.status(), StatusCode::FORBIDDEN);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    drop(conn);
+
+    let deactivated = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    let (status, body) = response_json(deactivated).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["grant"]["store"], "durable");
+    assert_eq!(body["grant"]["id"], created.id);
+    assert_eq!(body["grant"]["state"], "inactive");
+    assert_eq!(body["grant"]["rows_changed"], 1);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let grant_status: String = conn
+        .query_row(
+            "SELECT status FROM principal_grants WHERE id = ?1",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(grant_status, "inactive");
+    let event: (String, String, String, String) = conn
+        .query_row(
+            "SELECT actor_surface, actor_provider, actor_subject, actor_participant_id
+             FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(event.0, "rest-authorization-admin");
+    assert_eq!(event.1, "human-web");
+    assert_eq!(event.2, fixture.participant_id);
+    assert_eq!(event.3, fixture.participant_id);
+    let before_repeat: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+
+    let repeated = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    let (repeat_status, repeat_body) = response_json(repeated).await;
+    assert_eq!(repeat_status, StatusCode::OK);
+    assert_eq!(repeat_body["grant"]["rows_changed"], 0);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after_repeat: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1 AND operation = 'deactivate'",
+            [created.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_repeat, before_repeat);
+    drop(conn);
+
+    let missing = request(
+        &router,
+        Method::DELETE,
+        "/api/authorization-grants/durable/9223372036854770000",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let invalid = request(
+        &router,
+        Method::DELETE,
+        "/api/authorization-grants/durable/0",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE authorization_admin_events", [])
+        .unwrap();
+    drop(conn);
+    let stale = request(&router, Method::DELETE, &uri, Some(&session.token), None).await;
+    assert_eq!(stale.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let admin_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'authorization_admin_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(admin_table, 0, "REST deactivate repaired stale schema");
 }
 
 #[tokio::test]

@@ -476,17 +476,14 @@ pub fn create_durable_grant_authorized(
     Ok(outcome)
 }
 
-pub fn deactivate_durable_grant(
-    conn: &Connection,
-    actor: &AuthorizationAdministrationActor<'_>,
+fn deactivate_durable_grant_in_tx(
+    tx: &Transaction<'_>,
+    actor: &NormalizedActor,
     grant_id: i64,
 ) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
-    require_schema_current(conn)?;
     if grant_id <= 0 {
         return Err("grant_id must be positive".into());
     }
-    let actor = normalize_actor(actor)?;
-    let tx = conn.unchecked_transaction()?;
     let scope: Option<(String, String, String, String, Option<String>)> = tx
         .query_row(
             "SELECT principal_provider, principal_subject, participant_id, capability, resource
@@ -504,7 +501,6 @@ pub fn deactivate_durable_grant(
         )
         .optional()?;
     let Some((provider, subject, participant_id, capability, resource)) = scope else {
-        tx.commit()?;
         return Ok(None);
     };
 
@@ -554,8 +550,8 @@ pub fn deactivate_durable_grant(
 
     for id in &active_ids {
         record_event(
-            &tx,
-            &actor,
+            tx,
+            actor,
             &AdministrationEvent {
                 grant_store: "durable",
                 grant_id: *id,
@@ -576,10 +572,53 @@ pub fn deactivate_durable_grant(
         )?;
     }
     debug_assert_eq!(updated, active_ids.len());
-    tx.commit()?;
     Ok(Some(GrantDeactivateOutcome {
         rows_changed: updated,
     }))
+}
+
+pub fn deactivate_durable_grant(
+    conn: &Connection,
+    actor: &AuthorizationAdministrationActor<'_>,
+    grant_id: i64,
+) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
+    require_schema_current(conn)?;
+    let actor = normalize_actor(actor)?;
+    let tx = conn.unchecked_transaction()?;
+    let outcome = deactivate_durable_grant_in_tx(&tx, &actor, grant_id)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub fn deactivate_durable_grant_authorized(
+    conn: &Connection,
+    surface: &str,
+    caller_principal: &Principal,
+    caller_participant_id: &str,
+    grant_id: i64,
+) -> AdministrationResult<Option<GrantDeactivateOutcome>> {
+    require_schema_current(conn)?;
+    let actor_spec = AuthorizationAdministrationActor {
+        surface,
+        principal: Some(caller_principal),
+        participant_id: Some(caller_participant_id),
+    };
+    let actor = normalize_actor(&actor_spec)?;
+    let tx = conn.unchecked_transaction()?;
+    let decision = authorization::explain_authorization(
+        &tx,
+        caller_principal,
+        caller_participant_id,
+        authorization::MANAGE_AUTHORIZATION_POLICY,
+        Some(authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        None,
+    )?;
+    if !decision.allowed {
+        return Err("authorization denied".into());
+    }
+    let outcome = deactivate_durable_grant_in_tx(&tx, &actor, grant_id)?;
+    tx.commit()?;
+    Ok(outcome)
 }
 
 pub fn create_delegated_grant(
@@ -975,6 +1014,93 @@ mod tests {
             )
             .unwrap();
         assert_eq!(denied_rows, 0);
+    }
+
+    #[test]
+    fn authorized_durable_deactivate_checks_authority_and_mutates_in_one_boundary() {
+        let (_dir, conn) = setup();
+        identity::provision_web_participant_identity(
+            &conn,
+            "admin-main",
+            "admin",
+            Some("Administrator"),
+        )
+        .unwrap()
+        .unwrap();
+        identity::set_web_participant_role(&conn, "admin-main", "admin").unwrap();
+        let local = AuthorizationAdministrationActor::local_cli();
+        let request = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "deactivate-agent",
+            participant_id: "maker-main",
+            capability: authorization::READ_MESSAGES,
+            resource: None,
+        };
+        let created = create_durable_grant(&conn, &local, &request).unwrap();
+        let before = event_count(&conn);
+
+        let ordinary = Principal {
+            provider: "human-web".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        assert!(deactivate_durable_grant_authorized(
+            &conn,
+            "rest-test",
+            &ordinary,
+            "maker-main",
+            created.id,
+        )
+        .is_err());
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM principal_grants WHERE id = ?1",
+                [created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(event_count(&conn), before);
+
+        let admin = Principal {
+            provider: "human-web".to_owned(),
+            subject: "admin-main".to_owned(),
+        };
+        let deactivated = deactivate_durable_grant_authorized(
+            &conn,
+            "rest-test",
+            &admin,
+            "admin-main",
+            created.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(deactivated.rows_changed, 1);
+        assert_eq!(event_count(&conn), before + 1);
+        let event: (String, String, String, String) = conn
+            .query_row(
+                "SELECT actor_surface, actor_provider, actor_subject, actor_participant_id
+                 FROM authorization_admin_events
+                 WHERE grant_store = 'durable' AND grant_id = ?1 AND operation = 'deactivate'",
+                [created.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(event.0, "rest-test");
+        assert_eq!(event.1, "human-web");
+        assert_eq!(event.2, "admin-main");
+        assert_eq!(event.3, "admin-main");
+
+        let repeated = deactivate_durable_grant_authorized(
+            &conn,
+            "rest-test",
+            &admin,
+            "admin-main",
+            created.id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(repeated.rows_changed, 0);
+        assert_eq!(event_count(&conn), before + 1);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -35,6 +35,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/authorization-grants/durable",
             post(create_durable_authorization_grant),
+        )
+        .route(
+            "/api/authorization-grants/durable/{grant_id}",
+            delete(deactivate_durable_authorization_grant),
         )
         .with_state(state)
 }
@@ -100,6 +104,48 @@ async fn create_durable_authorization_grant(
                 "store": "durable",
                 "id": outcome.id,
                 "state": state_name,
+            }
+        }),
+    ))
+}
+
+async fn deactivate_durable_authorization_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path(grant_id): Path<i64>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "DELETE", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    if principal.provider == "participant-hmac" {
+        return Err(AccessApiError::new(
+            StatusCode::FORBIDDEN,
+            "unsupported_authentication",
+        ));
+    }
+
+    let caller_participant_id = resolved.instance.clone();
+    let outcome = with_db_access(&state, move |conn| {
+        authorization_admin::deactivate_durable_grant_authorized(
+            conn,
+            "rest-authorization-admin",
+            &principal,
+            &caller_participant_id,
+            grant_id,
+        )
+        .map_err(map_administration_error)
+    })
+    .await?
+    .ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "grant_not_found"))?;
+
+    Ok(json_response(
+        StatusCode::OK,
+        json!({
+            "grant": {
+                "store": "durable",
+                "id": grant_id,
+                "state": "inactive",
+                "rows_changed": outcome.rows_changed,
             }
         }),
     ))
