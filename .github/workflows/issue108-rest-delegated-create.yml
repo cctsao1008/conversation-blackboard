@@ -21,6 +21,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply REST delegated grant creation projection
         run: python .github/scripts/issue108_rest_delegated_create_patch.py
+      - name: Split delegated contract row assertions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/http_contract_tests.rs')
+          text = path.read_text()
+          start_marker = '    let row: (String, String, String, String, Option<String>, Option<String>, Option<i64>, i64, String) = conn\n'
+          start = text.index(start_marker)
+          end = text.index('    let event:', start)
+          replacement = '''    let identity_scope: (String, String, String, String) = conn
+              .query_row(
+                  "SELECT principal_provider, principal_subject, participant_id, capability\n                   FROM delegated_grants WHERE id = ?1",
+                  [grant_id],
+                  |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+              )
+              .unwrap();
+          assert_eq!(identity_scope.0, "oidc:https://issuer.example");
+          assert_eq!(identity_scope.1, "delegated-worker");
+          assert_eq!(identity_scope.2, fixture.participant_id);
+          assert_eq!(identity_scope.3, "post_message");
+          let constraints: (Option<String>, Option<String>, Option<i64>, i64, String) = conn
+              .query_row(
+                  "SELECT resource, intent_id, expires_at, one_shot, status\n                   FROM delegated_grants WHERE id = ?1",
+                  [grant_id],
+                  |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+              )
+              .unwrap();
+          assert_eq!(constraints.0.as_deref(), Some("control-systems"));
+          assert_eq!(constraints.1.as_deref(), Some("intent-rest-delegated-108"));
+          assert_eq!(constraints.2, Some(now + 3600));
+          assert_eq!(constraints.3, 1);
+          assert_eq!(constraints.4, "active");
+          '''
+          path.write_text(text[:start] + replacement + text[end:])
+          PY
       - name: Format
         run: cargo fmt --all
       - name: Verify formatting
