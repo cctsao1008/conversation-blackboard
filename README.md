@@ -187,7 +187,7 @@ administration create, reactivate, or deactivate authority
 
 Snapshot reads do not migrate, repair, normalize, reactivate, deactivate, or consume authority. Inactive durable grants plus expired or consumed delegated grants remain visible as inventory history, and credential material is never part of the snapshot contract.
 
-Authorization administration is a separate local operator boundary. Durable/delegated create, durable reactivation, and durable/delegated deactivation pass through one canonical administration service and commit non-secret administration provenance atomically with effective policy changes. `grant history` reads that provenance observationally. Administration is not currently exposed as a REST or MCP mutation surface.
+Authorization administration is a separate privileged boundary. Durable/delegated create, durable reactivation, and durable/delegated deactivation pass through one canonical administration service and commit non-secret administration provenance atomically with effective policy changes. Local operator CLI and the Phase-1 REST administration projection reuse that service; REST mutation requires the dedicated `manage_authorization_policy` capability on `authorization-policy-administration`. Human Web admin self has narrow implicit administration authority, external Bearer principals require an explicit durable administration grant, and participant-HMAC mutation is unsupported in Phase 1 because the current HTTP proof does not bind JSON mutation bodies. `grant history` reads provenance observationally. MCP grant-administration tools remain out of scope.
 
 ## Production shape
 

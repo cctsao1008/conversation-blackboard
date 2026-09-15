@@ -788,7 +788,14 @@ async fn authorization_admin_rest_create_is_privileged_audited_and_hmac_rejected
         .unwrap();
     drop(conn);
 
-    let existing = request(&router, Method::POST, uri, Some(&session.token), Some(body)).await;
+    let existing = request(
+        &router,
+        Method::POST,
+        uri,
+        Some(&session.token),
+        Some(body.clone()),
+    )
+    .await;
     let (existing_status, existing_body) = response_json(existing).await;
     assert_eq!(existing_status, StatusCode::OK);
     assert_eq!(existing_body["grant"]["state"], "existing");
@@ -805,6 +812,38 @@ async fn authorization_admin_rest_create_is_privileged_audited_and_hmac_rejected
         after_count, event_count,
         "idempotent create emitted a false event"
     );
+    drop(conn);
+
+    let deactivate_uri = format!("/api/authorization-grants/durable/{grant_id}");
+    let deactivated = request(
+        &router,
+        Method::DELETE,
+        &deactivate_uri,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (deactivate_status, deactivate_body) = response_json(deactivated).await;
+    assert_eq!(deactivate_status, StatusCode::OK);
+    assert_eq!(deactivate_body["grant"]["rows_changed"], 1);
+
+    let reactivated = request(&router, Method::POST, uri, Some(&session.token), Some(body)).await;
+    let (reactivated_status, reactivated_body) = response_json(reactivated).await;
+    assert_eq!(reactivated_status, StatusCode::OK);
+    assert_eq!(reactivated_body["grant"]["id"], grant_id);
+    assert_eq!(reactivated_body["grant"]["state"], "reactivated");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let operations = conn
+        .prepare(
+            "SELECT operation FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1 ORDER BY id",
+        )
+        .unwrap()
+        .query_map([grant_id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(operations, vec!["create", "deactivate", "reactivate"]);
 }
 
 #[tokio::test]

@@ -434,6 +434,192 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/authorization-grants/durable:
+    post:
+      operationId: blackboardCreateDurableAuthorizationGrant
+      summary: Create, reuse, or reactivate one durable authorization grant.
+      description: |
+        Privileged Phase-1 projection of the canonical authorization administration service.
+        The dedicated manage_authorization_policy authority is required. Human Web admin self
+        has narrow implicit administration authority; external Bearer callers require an explicit
+        durable administration grant. Participant-HMAC mutation is unsupported in Phase 1.
+        The adapter does not own lifecycle SQL or schema migration.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DurableAuthorizationGrantCreateRequest'
+      responses:
+        '200':
+          description: Existing active scope reused or inactive exact scope reactivated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationGrantMutationEnvelope'
+        '201':
+          description: New durable grant created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationGrantMutationEnvelope'
+        '400':
+          description: Invalid grant request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Authorization administration schema is not current or storage is unavailable. The request does not repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/authorization-grants/durable/{grant_id}:
+    delete:
+      operationId: blackboardDeactivateDurableAuthorizationGrant
+      summary: Deactivate one durable authorization grant scope.
+      description: |
+        Privileged Phase-1 projection of canonical durable-grant deactivation. Administration
+        authorization, effective lifecycle mutation, and non-secret actor provenance commit in one
+        transaction. Participant-HMAC mutation is unsupported in Phase 1.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Grant scope is inactive. Repeated deactivation is idempotent and reports rows_changed=0.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationGrantMutationEnvelope'
+        '400':
+          description: Invalid grant identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Durable grant not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Authorization administration schema is not current or storage is unavailable. The request does not repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/authorization-grants/delegated:
+    post:
+      operationId: blackboardCreateDelegatedAuthorizationGrant
+      summary: Create one delegated authorization grant.
+      description: |
+        Privileged Phase-1 projection of canonical delegated grant creation. Resource, semantic
+        intent, expiry, and one-shot validation remain owned by the canonical administration
+        service. Participant-HMAC mutation is unsupported in Phase 1.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DelegatedAuthorizationGrantCreateRequest'
+      responses:
+        '201':
+          description: New delegated grant created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationGrantMutationEnvelope'
+        '400':
+          description: Invalid delegated grant request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Authorization administration schema is not current or storage is unavailable. The request does not repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/authorization-grants/delegated/{grant_id}:
+    delete:
+      operationId: blackboardDeactivateDelegatedAuthorizationGrant
+      summary: Deactivate one delegated authorization grant.
+      description: |
+        Privileged Phase-1 projection of canonical delegated-grant deactivation. Delegated scope
+        remains part of administration provenance, and repeated deactivation is idempotent.
+        Participant-HMAC mutation is unsupported in Phase 1.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Delegated grant is inactive. Repeated deactivation reports rows_changed=0.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationGrantMutationEnvelope'
+        '400':
+          description: Invalid grant identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Delegated grant not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Authorization administration schema is not current or storage is unavailable. The request does not repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/authorization-decision/explain:
     get:
       operationId: blackboardAuthorizationDecision
@@ -905,6 +1091,88 @@ components:
       properties:
         sweep:
           $ref: '#/components/schemas/ExecutionAuditSweepReport'
+
+    DurableAuthorizationGrantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [principal_provider, principal_subject, participant_id, capability]
+      properties:
+        principal_provider:
+          type: string
+          minLength: 1
+          maxLength: 256
+        principal_subject:
+          type: string
+          minLength: 1
+          maxLength: 256
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        capability:
+          type: string
+          minLength: 1
+          maxLength: 128
+        resource:
+          type: [string, 'null']
+          maxLength: 256
+
+    DelegatedAuthorizationGrantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [principal_provider, principal_subject, participant_id, capability, one_shot]
+      properties:
+        principal_provider:
+          type: string
+          minLength: 1
+          maxLength: 256
+        principal_subject:
+          type: string
+          minLength: 1
+          maxLength: 256
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        capability:
+          type: string
+          minLength: 1
+          maxLength: 128
+        resource:
+          type: [string, 'null']
+          maxLength: 256
+        intent_id:
+          anyOf:
+            - $ref: '#/components/schemas/IntentId'
+            - type: 'null'
+        expires_at:
+          type: [integer, 'null']
+          description: Optional future Unix timestamp enforced by the canonical administration service.
+        one_shot:
+          type: boolean
+
+    AuthorizationGrantMutationOutcome:
+      type: object
+      additionalProperties: false
+      required: [store, id, state]
+      properties:
+        store:
+          type: string
+          enum: [durable, delegated]
+        id:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [created, existing, reactivated, inactive]
+        rows_changed:
+          type: integer
+          minimum: 0
+          description: Present on deactivation outcomes; zero means the idempotent request changed no policy row.
+
+    AuthorizationGrantMutationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [grant]
+      properties:
+        grant:
+          $ref: '#/components/schemas/AuthorizationGrantMutationOutcome'
 
     DurableGrantSnapshot:
       type: object

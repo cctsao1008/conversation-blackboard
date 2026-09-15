@@ -147,19 +147,22 @@ Decision/explain visibility is a third independent observational surface. Only H
 
 ## Authorization administration
 
-Authorization mutation is owned by `authorization_admin`, not by CLI, REST, MCP, or the read-side policy evaluator. The supported mutation path is:
+Authorization mutation is owned by `authorization_admin`, not by CLI, REST, MCP, or the read-side policy evaluator. The supported mutation paths converge on one domain boundary:
 
 ```text
-local operator CLI
-        ↓
-authorization_admin canonical service
-        ↓
-validated durable/delegated lifecycle mutation
-        +
-append-only authorization_admin_events provenance
-        ↓
-one SQLite transaction
+local operator CLI             privileged REST administration
+        \                            /
+         \                          /
+          authorization_admin canonical service
+                         ↓
+          validated durable/delegated lifecycle mutation
+                         +
+          append-only authorization_admin_events provenance
+                         ↓
+                 one SQLite transaction
 ```
+
+Remote REST administration uses the dedicated `manage_authorization_policy` capability on the global `authorization-policy-administration` resource. Human Web admin self has narrow implicit authority. External Bearer principals require an explicit durable administration grant. Participant-HMAC mutation is deliberately unsupported in Phase 1 because its current HTTP proof binds the request target, not the JSON mutation body.
 
 The canonical service preserves existing lifecycle behavior: an exact active durable scope is idempotent, an exact inactive durable scope reactivates the same row, durable deactivation closes every active row in the same exact legacy scope, delegated create remains append-only, and delegated deactivation is idempotent. Execution-time one-shot consumption is not an administration mutation and remains owned by the semantic execution transaction.
 
@@ -169,7 +172,7 @@ Administration provenance contains only non-secret actor and policy metadata: ad
 
 Schema ownership is explicit. `db init` owns administration-schema creation/migration. Mutation services require a current writable schema and fail with migration-required semantics rather than repairing storage themselves. Read-side commands likewise remain observational: `grant list`, `grant durable list`, `grant explain`, `grant verify`, and `grant history` open/read current state without calling grant-schema migration.
 
-`authorization_admin::read_administration_events(conn, ...)` is the canonical local provenance reader. `conversation-blackboard grant history` is its operator projection. REST and MCP have no grant mutation endpoint/tool; source regressions protect that boundary so remote adapters cannot silently become a second administration implementation.
+`authorization_admin::read_administration_events(conn, ...)` is the canonical local provenance reader. `conversation-blackboard grant history` is its operator projection. Phase-1 REST exposes durable/delegated create and deactivation as thin authenticated projections over authorized `authorization_admin` entry points; durable create also preserves exact-scope existing/reactivation semantics. The REST adapter contains no grant lifecycle SQL and never performs schema repair. MCP grant-administration tools remain a non-goal. Source regressions prevent REST/MCP adapters from calling raw lifecycle entry points or mutating grant tables directly.
 
 ## Verification boundary
 

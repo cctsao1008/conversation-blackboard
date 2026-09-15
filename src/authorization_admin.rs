@@ -1362,6 +1362,57 @@ mod tests {
     }
 
     #[test]
+    fn authorized_remote_provenance_failure_rolls_back_policy_mutation() {
+        let (_dir, conn) = setup();
+        identity::provision_web_participant_identity(
+            &conn,
+            "admin-main",
+            "admin",
+            Some("Administrator"),
+        )
+        .unwrap()
+        .unwrap();
+        identity::set_web_participant_role(&conn, "admin-main", "admin").unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_remote_authorization_admin_event
+             BEFORE INSERT ON authorization_admin_events
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced remote administration provenance failure');
+             END;",
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "human-web".to_owned(),
+            subject: "admin-main".to_owned(),
+        };
+        let request = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "remote-rollback-agent",
+            participant_id: "maker-main",
+            capability: authorization::READ_MESSAGES,
+            resource: None,
+        };
+        assert!(create_durable_grant_authorized(
+            &conn,
+            "rest-test",
+            &principal,
+            "admin-main",
+            &request,
+        )
+        .is_err());
+        let grants: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM principal_grants
+                 WHERE principal_subject = 'remote-rollback-agent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(grants, 0);
+        assert_eq!(event_count(&conn), 0);
+    }
+
+    #[test]
     fn failed_provenance_insert_rolls_back_policy_mutation() {
         let (_dir, conn) = setup();
         conn.execute_batch(

@@ -426,6 +426,101 @@ fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
 }
 
 #[test]
+fn authorization_administration_openapi_matches_rest_only_phase1_contract() {
+    let api = yaml_json();
+    let operations = [
+        ("/api/authorization-grants/durable", "post"),
+        ("/api/authorization-grants/durable/{grant_id}", "delete"),
+        ("/api/authorization-grants/delegated", "post"),
+        ("/api/authorization-grants/delegated/{grant_id}", "delete"),
+    ];
+    for (path, method) in operations {
+        let operation = &api["paths"][path][method];
+        assert!(
+            operation.is_object(),
+            "missing OpenAPI operation {method} {path}"
+        );
+        let security = operation["security"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|entry| entry.as_object().unwrap().keys().cloned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            security,
+            ["bearerAuth", "webSessionAuth"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            "administration OpenAPI must advertise only Phase-1 Bearer/Web Session authentication"
+        );
+        assert!(operation["description"]
+            .as_str()
+            .unwrap()
+            .contains("Participant-HMAC mutation is unsupported in Phase 1"));
+    }
+
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/DurableAuthorizationGrantCreateRequest/properties"
+        ),
+        [
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/DelegatedAuthorizationGrantCreateRequest/properties"
+        ),
+        [
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "intent_id",
+            "expires_at",
+            "one_shot",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationGrantMutationOutcome/properties"
+        ),
+        ["store", "id", "state", "rows_changed"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+
+    let mcp = include_str!("mcp.rs");
+    for forbidden in [
+        "create_durable_grant_authorized(",
+        "deactivate_durable_grant_authorized(",
+        "create_delegated_grant_authorized(",
+        "deactivate_delegated_grant_authorized(",
+    ] {
+        assert!(
+            !mcp.contains(forbidden),
+            "#108 is REST-only; MCP administration is a non-goal: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn authorization_policy_snapshot_adapters_reuse_canonical_reader_without_grant_sql() {
     let adapters = [
         ("http", include_str!("access_api.rs")),

@@ -25,6 +25,8 @@ For MCP, authentication metadata may change the transport schema without changin
 
 Authorization decision explanation has one canonical read-only evaluator: `authorization::explain_authorization(conn, ...)`, returning the same decision semantics used by execution without schema migration or delegated-grant consumption. REST `GET /api/authorization-decision/explain`, MCP `blackboard_authorization_decision`, OpenAPI, and UTCP project that result. Caller authority is separate from the target Principal being evaluated. REST participant-HMAC binds the target context through the full query-bearing request target; MCP participant-HMAC uses a decision-specific canonical proof binding the complete normalized target context. OIDC/Bearer MCP callers remain authenticated at the HTTP transport boundary. Adapters never classify policy reasons or enumerate grant tables for explanation.
 
+Authorization administration is intentionally narrower than the read-side projection set. Phase-1 mutation is REST-only and is documented in OpenAPI for durable create/reactivation/deactivation and delegated create/deactivation. Those HTTP operations are thin projections over authorized `authorization_admin` entry points; OpenAPI advertises Bearer and Human Web session authentication, while participant-HMAC JSON mutation is unsupported in Phase 1. UTCP/MCP grant-administration tools are not introduced by this phase. Parity tests therefore verify the REST operations and schemas while also guarding against accidental MCP mutation projection.
+
 ## Generation and validation rule
 
 > Generate first. Validate second. Never maintain identical semantics manually in multiple contracts.
