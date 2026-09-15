@@ -29,7 +29,7 @@ jobs:
         run: |
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
-          git add src/authorization.rs src/contract_schema.rs src/access_api.rs src/mcp.rs
+          git add src/authorization.rs src/contract_schema.rs src/access_api.rs src/mcp.rs src/mcp_contract_tests.rs
           git commit -m "#104 Add privileged remote policy integrity projection"
       - name: Remove temporary migration helpers
         run: |
