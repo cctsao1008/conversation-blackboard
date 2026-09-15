@@ -1,0 +1,40 @@
+name: issue107-admin-history
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/issue107-admin-history.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply administration history and read-only hardening
+        run: |
+          python .github/scripts/issue107_admin_history.py
+          cargo fmt --all
+      - name: Verify administration history and read-only boundaries
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit administration history and read-only hardening
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/authorization_admin.rs src/grant_admin.rs
+          git commit -m '#107 Add authorization administration history'
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue107_admin_history.py .github/workflows/issue107-admin-history.yml
+          git commit -m '#107 Remove administration history migration helpers'
+      - name: Push
+        run: git push origin HEAD:main
