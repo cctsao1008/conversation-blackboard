@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - '.github/scripts/issue100_mcp_bearer_tests.py'
+      - '.github/scripts/issue100_mcp_bearer_test_fix.py'
       - '.github/workflows/issue100-mcp-bearer-tests.yml'
 
 permissions:
@@ -21,7 +22,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Add bearer authority regression tests
-        run: python .github/scripts/issue100_mcp_bearer_tests.py
+        run: |
+          python .github/scripts/issue100_mcp_bearer_tests.py
+          python .github/scripts/issue100_mcp_bearer_test_fix.py
       - name: Format and verify
         run: |
           cargo fmt
@@ -36,7 +39,7 @@ jobs:
           git commit -m "#100 Lock MCP bearer authority regressions"
       - name: Remove temporary migration helpers
         run: |
-          git rm .github/scripts/issue100_mcp_bearer_tests.py .github/workflows/issue100-mcp-bearer-tests.yml
+          git rm .github/scripts/issue100_mcp_bearer_tests.py .github/scripts/issue100_mcp_bearer_test_fix.py .github/workflows/issue100-mcp-bearer-tests.yml
           git commit -m "#100 Remove MCP bearer test migration helpers"
       - name: Push
         run: git push origin HEAD:main
