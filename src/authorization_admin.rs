@@ -73,6 +73,29 @@ pub struct GrantDeactivateOutcome {
     pub rows_changed: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationAdministrationEvent {
+    pub id: i64,
+    pub grant_store: String,
+    pub grant_id: i64,
+    pub operation: String,
+    pub actor_surface: String,
+    pub actor_provider: Option<String>,
+    pub actor_subject: Option<String>,
+    pub actor_participant_id: Option<String>,
+    pub target_principal_provider: String,
+    pub target_principal_subject: String,
+    pub participant_id: String,
+    pub capability: String,
+    pub resource: Option<String>,
+    pub intent_id: Option<String>,
+    pub expires_at: Option<i64>,
+    pub one_shot: bool,
+    pub before_status: Option<String>,
+    pub after_status: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug)]
 struct NormalizedActor {
     surface: String,
@@ -206,6 +229,61 @@ fn table_has_columns(conn: &Connection, table: &str, required: &[&str]) -> rusql
     Ok(required
         .iter()
         .all(|required| columns.iter().any(|column| column == required)))
+}
+
+pub fn read_administration_events(
+    conn: &Connection,
+    participant_id: Option<&str>,
+) -> rusqlite::Result<Vec<AuthorizationAdministrationEvent>> {
+    if !schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let participant_id = participant_id
+        .map(|value| identity::validate_participant_id(value).ok_or(rusqlite::Error::InvalidQuery))
+        .transpose()?;
+    let mut query = String::from(
+        "SELECT id, grant_store, grant_id, operation, actor_surface, actor_provider, actor_subject,
+                actor_participant_id, target_principal_provider, target_principal_subject,
+                participant_id, capability, resource, intent_id, expires_at, one_shot,
+                before_status, after_status, created_at
+         FROM authorization_admin_events",
+    );
+    if participant_id.is_some() {
+        query.push_str(" WHERE participant_id = ?1");
+    }
+    query.push_str(" ORDER BY id");
+
+    let mut stmt = conn.prepare(&query)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(AuthorizationAdministrationEvent {
+            id: row.get(0)?,
+            grant_store: row.get(1)?,
+            grant_id: row.get(2)?,
+            operation: row.get(3)?,
+            actor_surface: row.get(4)?,
+            actor_provider: row.get(5)?,
+            actor_subject: row.get(6)?,
+            actor_participant_id: row.get(7)?,
+            target_principal_provider: row.get(8)?,
+            target_principal_subject: row.get(9)?,
+            participant_id: row.get(10)?,
+            capability: row.get(11)?,
+            resource: row.get(12)?,
+            intent_id: row.get(13)?,
+            expires_at: row.get(14)?,
+            one_shot: row.get::<_, i64>(15)? != 0,
+            before_status: row.get(16)?,
+            after_status: row.get(17)?,
+            created_at: row.get(18)?,
+        })
+    };
+    if let Some(participant_id) = participant_id.as_deref() {
+        stmt.query_map([participant_id], map_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    } else {
+        stmt.query_map([], map_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    }
 }
 
 pub fn create_durable_grant(
@@ -900,6 +978,97 @@ mod tests {
             .unwrap();
         assert_eq!(grants, 0);
         assert_eq!(event_count(&conn), 0);
+    }
+
+    #[test]
+    fn administration_history_reads_effective_mutations_in_commit_order() {
+        let (_dir, conn) = setup();
+        let actor = AuthorizationAdministrationActor::local_cli();
+        let request = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "history-agent",
+            participant_id: "maker-main",
+            capability: authorization::POST_MESSAGE,
+            resource: Some("history-scope"),
+        };
+        let created = create_durable_grant(&conn, &actor, &request).unwrap();
+        create_durable_grant(&conn, &actor, &request).unwrap();
+        deactivate_durable_grant(&conn, &actor, created.id).unwrap();
+
+        let events = read_administration_events(&conn, Some("maker-main")).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].operation, "create");
+        assert_eq!(events[1].operation, "deactivate");
+        assert_eq!(events[0].grant_id, created.id);
+        assert_eq!(events[0].actor_surface, "local-cli");
+        assert_eq!(events[0].actor_provider, None);
+        assert_eq!(events[0].actor_subject, None);
+        assert!(events[0].id < events[1].id);
+    }
+
+    #[test]
+    fn administration_history_refuses_legacy_schema_without_mutation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                owner_provider TEXT,
+                owner_subject TEXT
+            );",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!schema_current(&conn).unwrap());
+        assert!(read_administration_events(&conn, None).is_err());
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let admin_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'authorization_admin_events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(admin_table, 0);
+    }
+
+    #[test]
+    fn remote_adapters_do_not_own_authorization_mutation() {
+        for (name, source) in [
+            ("REST", include_str!("access_api.rs")),
+            ("MCP", include_str!("mcp.rs")),
+        ] {
+            for forbidden in [
+                "authorization_admin::create_durable_grant",
+                "authorization_admin::deactivate_durable_grant",
+                "authorization_admin::create_delegated_grant",
+                "authorization_admin::deactivate_delegated_grant",
+                "INSERT INTO principal_grants",
+                "UPDATE principal_grants",
+                "INSERT INTO delegated_grants",
+                "UPDATE delegated_grants",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{name} adapter must not own remote authorization mutation: {forbidden}"
+                );
+            }
+        }
     }
 
     #[test]

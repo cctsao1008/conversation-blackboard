@@ -119,6 +119,13 @@ pub enum GrantCommand {
         #[arg(long)]
         participant_id: Option<String>,
     },
+    /// Read immutable local authorization-administration provenance.
+    History {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        participant_id: Option<String>,
+    },
     /// Explain a read-only authorization decision using the authoritative policy evaluator.
     Explain {
         #[arg(long)]
@@ -209,7 +216,14 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
             participant_id,
         } => {
             require_database(&path)?;
-            let conn = db::connect(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            if !authorization::authorization_policy_snapshot_schema_current(&conn)? {
+                return Err(format!(
+                    "authorization grant schema requires migration: run `conversation-blackboard db init --db {}` before list",
+                    path.display()
+                )
+                .into());
+            }
             let grants = list_grants(&conn, participant_id.as_deref())?;
             println!("DELEGATED GRANTS");
             println!("id\tprincipal\tparticipant_id\tcapability\tresource\tintent_id\texpires_at\tone_shot\tconsumed_at\tconsumed_intent_id\tstatus");
@@ -234,6 +248,56 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                         .unwrap_or_else(|| "-".to_owned()),
                     grant.consumed_intent_id.as_deref().unwrap_or("-"),
                     grant.status,
+                );
+            }
+            Ok(())
+        }
+        GrantCommand::History {
+            db: path,
+            participant_id,
+        } => {
+            require_database(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            if !authorization_admin::schema_current(&conn)? {
+                return Err(format!(
+                    "authorization administration schema requires migration: run `conversation-blackboard db init --db {}` before history",
+                    path.display()
+                )
+                .into());
+            }
+            let events =
+                authorization_admin::read_administration_events(&conn, participant_id.as_deref())?;
+            println!("AUTHORIZATION ADMINISTRATION HISTORY");
+            println!("id\tstore\tgrant_id\toperation\tactor\tparticipant_id\tprincipal\tcapability\tresource\tintent_id\texpires_at\tone_shot\tbefore\tafter\tcreated_at");
+            for event in events {
+                let actor = match (
+                    event.actor_provider.as_deref(),
+                    event.actor_subject.as_deref(),
+                ) {
+                    (Some(provider), Some(subject)) => format!("{provider}:{subject}"),
+                    _ => event.actor_surface.clone(),
+                };
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    event.id,
+                    event.grant_store,
+                    event.grant_id,
+                    event.operation,
+                    actor,
+                    event.participant_id,
+                    event.target_principal_provider,
+                    event.target_principal_subject,
+                    event.capability,
+                    event.resource.as_deref().unwrap_or("*"),
+                    event.intent_id.as_deref().unwrap_or("*"),
+                    event
+                        .expires_at
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "never".to_owned()),
+                    event.one_shot,
+                    event.before_status.as_deref().unwrap_or("-"),
+                    event.after_status,
+                    event.created_at,
                 );
             }
             Ok(())
@@ -405,7 +469,14 @@ fn dispatch_durable(command: DurableGrantCommand) -> DynResult {
             participant_id,
         } => {
             require_database(&path)?;
-            let conn = db::connect(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            if !authorization::authorization_policy_snapshot_schema_current(&conn)? {
+                return Err(format!(
+                    "authorization grant schema requires migration: run `conversation-blackboard db init --db {}` before durable list",
+                    path.display()
+                )
+                .into());
+            }
             let grants = list_durable_grants(&conn, participant_id.as_deref())?;
             println!("DURABLE PRINCIPAL GRANTS");
             println!("id\tprincipal\tparticipant_id\tcapability\tresource\tstatus\tcreated_at\tupdated_at");
@@ -458,7 +529,6 @@ fn list_durable_grants(
     conn: &Connection,
     participant_id: Option<&str>,
 ) -> rusqlite::Result<Vec<DurableGrantInspection>> {
-    authorization::ensure_grant_schema(conn)?;
     let mut query = String::from(
         "SELECT id, principal_provider, principal_subject, participant_id, capability,
                 resource, status, created_at, updated_at
@@ -514,7 +584,6 @@ fn list_grants(
     conn: &Connection,
     participant_id: Option<&str>,
 ) -> rusqlite::Result<Vec<GrantInspection>> {
-    authorization::ensure_grant_schema(conn)?;
     let mut query = String::from(
         "SELECT id, principal_provider, principal_subject, participant_id, capability,
                 resource, intent_id, expires_at, one_shot, consumed_at, consumed_intent_id, status
@@ -658,6 +727,92 @@ mod tests {
             )
             .unwrap();
         assert_eq!(grant_tables, 0);
+    }
+
+    #[test]
+    fn grant_history_accepts_current_schema() {
+        let (dir, conn) = setup();
+        let spec = DurableGrantCreateSpec {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "history-agent",
+            participant_id: "maker-main",
+            capability: authorization::POST_MESSAGE,
+            resource: None,
+        };
+        create_durable_grant(&conn, &spec).unwrap();
+        drop(conn);
+        dispatch(GrantCommand::History {
+            db: dir.path().join("board.db"),
+            participant_id: Some("maker-main".to_owned()),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn list_and_history_refuse_legacy_schema_without_mutation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy-read.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        for error in [
+            dispatch(GrantCommand::List {
+                db: path.clone(),
+                participant_id: None,
+            })
+            .expect_err("delegated list must refuse legacy schema")
+            .to_string(),
+            dispatch(GrantCommand::Durable {
+                command: DurableGrantCommand::List {
+                    db: path.clone(),
+                    participant_id: None,
+                },
+            })
+            .expect_err("durable list must refuse legacy schema")
+            .to_string(),
+            dispatch(GrantCommand::History {
+                db: path.clone(),
+                participant_id: None,
+            })
+            .expect_err("history must refuse legacy schema")
+            .to_string(),
+        ] {
+            assert!(error.contains("schema requires migration"));
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let policy_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('principal_grants', 'delegated_grants', 'authorization_admin_events')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(policy_tables, 0);
     }
 
     #[test]
