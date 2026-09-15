@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/issue105_policy_snapshot_mcp.py'
       - '.github/scripts/issue105_policy_snapshot_mcp_fix.py'
+      - '.github/scripts/issue105_policy_snapshot_mcp_fix2.py'
       - '.github/workflows/issue105-policy-snapshot-mcp.yml'
 
 permissions:
@@ -23,6 +24,7 @@ jobs:
         run: |
           python .github/scripts/issue105_policy_snapshot_mcp.py
           python .github/scripts/issue105_policy_snapshot_mcp_fix.py
+          python .github/scripts/issue105_policy_snapshot_mcp_fix2.py
       - name: Format and verify
         run: |
           cargo fmt
@@ -33,12 +35,13 @@ jobs:
         run: |
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
-          git add src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs
+          git add src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs tests/mcp_stdio_server.rs
           git commit -m "#105 Add canonical authorization policy snapshot MCP projection"
       - name: Remove temporary migration helpers
         run: |
           git rm .github/scripts/issue105_policy_snapshot_mcp.py
           git rm .github/scripts/issue105_policy_snapshot_mcp_fix.py
+          git rm .github/scripts/issue105_policy_snapshot_mcp_fix2.py
           git rm .github/workflows/issue105-policy-snapshot-mcp.yml
           git commit -m "#105 Remove policy snapshot MCP migration helpers"
       - name: Push
