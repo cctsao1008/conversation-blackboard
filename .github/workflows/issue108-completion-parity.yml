@@ -26,7 +26,8 @@ jobs:
       - name: Verify Rust formatting
         run: cargo fmt --all -- --check
       - name: Validate OpenAPI YAML
-        run: python - <<'PY'
+        run: |
+          python - <<'PY'
           import yaml
           with open('integrations/openapi.yaml', encoding='utf-8') as f:
               doc = yaml.safe_load(f)
