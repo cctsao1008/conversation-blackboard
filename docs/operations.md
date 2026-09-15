@@ -1,116 +1,157 @@
-# Operations
+# Rust-native operations
 
-Conversation Blackboard keeps deployment, identity, authentication, authorization, backup, restore, and verification operations explicit. Runtime adapters share one authoritative database and one semantic model.
+The `conversation-blackboard` executable owns runtime, database, identity, participant, client, and endpoint-verification operations.
 
-## Database initialization
+## Release and deployment
 
-Initialize or migrate a database explicitly:
+Use:
+
+```powershell
+.\scripts\verify-release.ps1
+```
+
+before production deployment. It runs the release-quality format, clippy, test, and locked-build gates and records a manifest tied to the current commit/binary hash.
+
+Deploy with the guarded Windows script:
+
+```powershell
+.\scripts\deploy-windows.ps1 -WhatIf
+.\scripts\deploy-windows.ps1
+```
+
+The installed Windows service remains the authority for production executable/database/host/port discovery. Deployment creates a SQLite-aware backup before service/binary mutation and verifies health/integrity afterward.
+
+## Database
+
+Initialize, verify, back up, and restore with the first-class CLI:
 
 ```powershell
 .\conversation-blackboard.exe db init --db <DB>
-```
-
-`db init` is the explicit schema migration boundary. Read-only inspection and verification commands do not silently migrate the database.
-
-## Database backup and restore
-
-Create a consistent SQLite backup while the service is running:
-
-```powershell
-.\conversation-blackboard.exe db backup `
-  --db <DB> `
-  --output <BACKUP_DB>
-```
-
-Restore only while the service is stopped:
-
-```powershell
-.\conversation-blackboard.exe db restore `
-  --db <DB> `
-  --input <BACKUP_DB>
-```
-
-Use `--force` only when intentionally replacing an existing target database.
-
-## Database integrity
-
-Check SQLite/file-level integrity:
-
-```powershell
 .\conversation-blackboard.exe db integrity --db <DB>
+.\conversation-blackboard.exe db backup --db <DB> --out <BACKUP>
+.\conversation-blackboard.exe db restore --backup <BACKUP> --db <DB> --force
 ```
 
-This answers whether the SQLite database is structurally readable. It does not prove semantic execution evidence or authorization-policy object integrity.
+Use SQLite-aware backup rather than copying a live WAL database.
 
-## Participant lifecycle
+## REST bearer identities
 
-Inspect participants without exposing HMAC/TOTP secret material:
+Native REST identities remain separate from Participant IDs:
 
 ```powershell
-.\conversation-blackboard.exe participant list --db <DB>
-.\conversation-blackboard.exe participant show --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe identity provision --db <DB> --source <SOURCE> --label <LABEL>
+.\conversation-blackboard.exe identity rotate --db <DB> --instance <INSTANCE>
+.\conversation-blackboard.exe identity revoke --db <DB> --instance <INSTANCE>
 ```
 
-Deactivate authority while preserving identity/history:
+A raw bearer token is printed only when provisioned/rotated; SQLite stores only its hash.
+
+## Participant identities
+
+Provision stable identity metadata once:
+
+```powershell
+.\conversation-blackboard.exe participant provision `
+  --db <DB> `
+  --participant-id maker-main `
+  --source maker `
+  --label "Maker"
+```
+
+Provisioning does not automatically create TOTP, HMAC, or external-owner authority.
+
+A `participant_id` is a durable logical attribution identity. It does not have to correspond one-to-one to one physical Chat.
+
+### Participant lifecycle
 
 ```powershell
 .\conversation-blackboard.exe participant deactivate --db <DB> --participant-id <ID>
-```
-
-Reactivate only when the operator intentionally restores the representation identity:
-
-```powershell
 .\conversation-blackboard.exe participant reactivate --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe participant show --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe participant list --db <DB>
 ```
 
-Participant deactivation does not erase messages, receipts, historical authorization provenance, or credential history.
+Inactive participants retain identity/history but cannot authenticate through TOTP/HMAC and cannot receive delegated GitHub writes.
 
-## Participant HMAC authentication
-
-Generate a fresh participant HMAC secret:
-
-```powershell
-.\conversation-blackboard.exe participant auth-generate `
-  --db <DB> `
-  --participant-id <ID>
-```
-
-Rotate or revoke explicitly:
-
-```powershell
-.\conversation-blackboard.exe participant auth-rotate --db <DB> --participant-id <ID>
-.\conversation-blackboard.exe participant auth-revoke --db <DB> --participant-id <ID>
-```
-
-Secrets are shown only at creation/rotation time. Inspection commands expose scheme/lifecycle state, never secret material.
-
-## Human Web authentication
-
-Enroll TOTP for one participant:
-
-```powershell
-.\conversation-blackboard.exe participant totp-enroll `
-  --db <DB> `
-  --participant-id <ID>
-```
-
-Human Web sessions are short-lived authentication sessions. Administrator authority additionally requires `role=admin`; authentication alone is not administration.
-
-## Delegated authorization grants
-
-Delegated grants are explicit, scoped, and separate from authentication credentials. They may constrain:
+### Human Web role
 
 ```text
-principal provider + subject
-participant_id
-capability
-resource
-intent_id
-expiry
-one-shot consumption
+user
+admin
 ```
 
-Create/list/deactivate through the `grant` CLI. Use `grant explain` for a read-only current-policy decision explanation.
+Assign roles with:
+
+```powershell
+.\conversation-blackboard.exe participant set-role --db <DB> --participant-id cheng-main --role admin
+```
+
+The role governs Human Web channel administration. Participant HMAC authentication or GitHub owner authorization alone does not authorize `/api/admin/*`.
+
+### Human Web TOTP
+
+Enroll/revoke independently:
+
+```powershell
+.\conversation-blackboard.exe participant totp-enroll --db <DB> --participant-id cheng-main
+.\conversation-blackboard.exe participant totp-revoke --db <DB> --participant-id cheng-main
+```
+
+TOTP is for Human Web login. Revoking it does not revoke participant HMAC authority or an external GitHub owner relation.
+
+### Participant HMAC authority
+
+`hmac-sha256-v1` is the native participant operation proof scheme.
+
+Generate, rotate, or revoke:
+
+```powershell
+.\conversation-blackboard.exe participant auth-generate --db <DB> --participant-id maker-main
+.\conversation-blackboard.exe participant auth-rotate   --db <DB> --participant-id maker-main
+.\conversation-blackboard.exe participant auth-revoke   --db <DB> --participant-id maker-main
+```
+
+Generation/rotation prints the newly issued secret exactly for direct client provisioning. Normal participant inspection never prints the stored secret.
+
+The secret format is:
+
+```text
+hmac-sha256-secret:<unpadded-base64url-32-byte-secret>
+```
+
+Keep participant HMAC secrets out of chat, GitHub Issues, documentation, screenshots, logs, URLs, and command-line literals.
+
+## Authorization grants
+
+Authentication credentials and authorization grants are separate operator objects. A grant stores principal and scope metadata only; it never stores bearer/JWT/HMAC/TOTP credential material.
+
+Use **durable principal grants** for stable scoped authority:
+
+```powershell
+.\conversation-blackboard.exe grant durable create `
+  --db <DB> `
+  --principal-provider <PROVIDER> `
+  --principal-subject <SUBJECT> `
+  --participant-id <ID> `
+  --capability <CAPABILITY> `
+  --resource <RESOURCE>
+
+.\conversation-blackboard.exe grant durable list --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe grant durable deactivate --db <DB> --grant-id <GRANT_ID>
+```
+
+Omit `--resource` only when wildcard resource authority is intentionally required. Durable create is idempotent for an already-active exact scope and reactivates the same authority object after deactivation.
+
+A durable explicit grant is authoritative for its principal/participant/capability scope. Once explicit grants exist for that tuple, an implicit compatibility rule must not widen access to a different resource. Use `grant explain` before and after changes when scope effects are not obvious.
+
+Use the existing **delegated grants** for narrower authority with optional expiry, semantic intent binding, and one-shot consumption:
+
+```powershell
+.\conversation-blackboard.exe grant create ...
+.\conversation-blackboard.exe grant list --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe grant explain ...
+.\conversation-blackboard.exe grant deactivate --db <DB> --grant-id <GRANT_ID>
+```
 
 Delegated one-shot consumption remains part of the same semantic execution transaction as the committed effect and receipt. Failed semantic execution does not burn one-shot authority.
 
@@ -244,3 +285,9 @@ See [`windows-service.md`](windows-service.md).
 - Stop the service before destructive restore/replacement.
 - Treat installed service configuration as production runtime authority.
 - Keep bearer tokens, TOTP setup secrets/codes, Human Web session tokens, participant HMAC secrets, and GitHub webhook secrets out of public artifacts.
+- Rotate/revoke participant auth if direct-client credential ownership becomes uncertain.
+- Clear/rebind GitHub ownership if account attribution changes.
+- Do not reintroduce Ed25519, GitHub Actions write relay, or the DPAPI local bridge as compatibility paths.
+- Keep channel administration Human-Web-only.
+
+> **Deactivate authority; preserve identity history.**
