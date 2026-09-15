@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue105_policy_snapshot_domain.py'
+      - '.github/scripts/issue105_policy_snapshot_domain_fix.py'
       - '.github/workflows/issue105-policy-snapshot-domain.yml'
 
 permissions:
@@ -19,7 +20,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply policy snapshot domain migration
-        run: python .github/scripts/issue105_policy_snapshot_domain.py
+        run: |
+          python .github/scripts/issue105_policy_snapshot_domain.py
+          python .github/scripts/issue105_policy_snapshot_domain_fix.py
       - name: Format and verify
         run: |
           cargo fmt
@@ -35,6 +38,7 @@ jobs:
       - name: Remove temporary migration helpers
         run: |
           git rm .github/scripts/issue105_policy_snapshot_domain.py
+          git rm .github/scripts/issue105_policy_snapshot_domain_fix.py
           git rm .github/workflows/issue105-policy-snapshot-domain.yml
           git commit -m "#105 Remove policy snapshot domain migration helpers"
       - name: Push
