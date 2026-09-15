@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue103_authorization_integrity.py'
+      - '.github/scripts/issue103_authorization_integrity_repair.py'
       - '.github/workflows/issue103-authorization-integrity.yml'
 
 permissions:
@@ -21,7 +22,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply authorization integrity audit migration
-        run: python .github/scripts/issue103_authorization_integrity.py
+        run: |
+          python .github/scripts/issue103_authorization_integrity.py
+          python .github/scripts/issue103_authorization_integrity_repair.py
       - name: Format and verify
         run: |
           cargo fmt
@@ -37,7 +40,7 @@ jobs:
           git commit -m '#103 Add read-only authorization policy integrity audit'
       - name: Remove temporary migration helpers
         run: |
-          git rm .github/scripts/issue103_authorization_integrity.py .github/workflows/issue103-authorization-integrity.yml
+          git rm .github/scripts/issue103_authorization_integrity.py .github/scripts/issue103_authorization_integrity_repair.py .github/workflows/issue103-authorization-integrity.yml
           git commit -m '#103 Remove authorization integrity migration helpers'
       - name: Push
         run: git push origin main
