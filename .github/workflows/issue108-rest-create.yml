@@ -1,0 +1,44 @@
+name: issue108-rest-create
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue108_rest_create_patch.py'
+      - '.github/workflows/issue108-rest-create.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply REST administration create projection
+        run: python .github/scripts/issue108_rest_create_patch.py
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Strict Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Full Rust tests
+        run: cargo test --all-targets --all-features
+      - name: Commit durable implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/access_api.rs src/authorization_admin.rs src/http_contract_tests.rs
+          git commit -m '#108 Expose privileged REST durable grant creation'
+      - name: Remove temporary helpers
+        run: |
+          git rm .github/scripts/issue108_rest_create_patch.py
+          git rm .github/workflows/issue108-rest-create.yml
+          git commit -m '#108 Remove REST administration migration helpers'
+      - name: Push main
+        run: git push origin HEAD:main
