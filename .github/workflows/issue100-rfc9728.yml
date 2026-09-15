@@ -1,0 +1,42 @@
+name: issue100-rfc9728
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/scripts/issue100_rfc9728.py'
+      - '.github/workflows/issue100-rfc9728.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply RFC9728 migration
+        run: python .github/scripts/issue100_rfc9728.py
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit RFC9728 resource metadata
+        run: |
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add src/runtime.rs src/oidc.rs src/mcp.rs src/mcp_contract_tests.rs
+          git commit -m "#100 Add RFC9728 MCP protected resource metadata"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue100_rfc9728.py .github/workflows/issue100-rfc9728.yml
+          git commit -m "#100 Remove RFC9728 migration helpers"
+      - name: Push
+        run: git push origin HEAD:main
