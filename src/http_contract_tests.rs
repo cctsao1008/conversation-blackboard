@@ -692,6 +692,169 @@ async fn execution_audit_sweep_http_requires_privileged_authority_and_returns_in
 }
 
 #[tokio::test]
+async fn authorization_policy_http_is_privileged_canonical_and_observationally_read_only() {
+    let fixture = fixture("policy-snapshot");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+
+    let unauthenticated = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    // Policy-integrity authority is deliberately separate from policy inventory.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('human-web', ?1, ?1, 'read_authorization_policy_integrity',
+                 'authorization-policy-integrity')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let wrong_capability = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(wrong_capability.status(), StatusCode::FORBIDDEN);
+
+    // Seed inventory state that must be projected without filtering or repair.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource, status)
+         VALUES ('oidc:https://issuer.example', 'active-agent', ?1,
+                 'post_message', 'alpha', 'active')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource, status)
+         VALUES ('oidc:https://issuer.example', 'inactive-agent', ?1,
+                 'read_messages', NULL, 'inactive')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO delegated_grants
+            (principal_provider, principal_subject, participant_id, capability, resource,
+             intent_id, expires_at, one_shot, status)
+         VALUES ('oidc:https://issuer.example', 'expired-agent', ?1, 'post_message',
+                 'beta', 'expired-http-intent', unixepoch() - 60, 0, 'active')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO delegated_grants
+            (principal_provider, principal_subject, participant_id, capability, resource,
+             intent_id, one_shot, consumed_at, consumed_intent_id, status)
+         VALUES ('oidc:https://issuer.example', 'consumed-agent', ?1, 'post_message',
+                 'gamma', 'consumed-http-intent', 1, unixepoch(),
+                 'consumed-http-intent', 'inactive')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE web_participants SET role = 'admin' WHERE participant_id = ?1",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let response = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, body) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let durable = body["policy"]["durable_grants"].as_array().unwrap();
+    assert!(durable.iter().any(|entry| {
+        entry["principal_subject"] == "active-agent" && entry["status"] == "active"
+    }));
+    assert!(durable.iter().any(|entry| {
+        entry["principal_subject"] == "inactive-agent" && entry["status"] == "inactive"
+    }));
+    assert!(durable
+        .iter()
+        .all(|entry| entry.get("created_at").is_some() && entry.get("updated_at").is_some()));
+
+    let delegated = body["policy"]["delegated_grants"].as_array().unwrap();
+    assert!(delegated.iter().any(|entry| {
+        entry["intent_id"] == "expired-http-intent" && entry["expires_at"].is_number()
+    }));
+    assert!(delegated.iter().any(|entry| {
+        entry["intent_id"] == "consumed-http-intent"
+            && entry["one_shot"] == true
+            && entry["consumed_at"].is_number()
+            && entry["consumed_intent_id"] == "consumed-http-intent"
+            && entry["status"] == "inactive"
+    }));
+    assert!(delegated
+        .iter()
+        .all(|entry| entry.get("created_at").is_none() && entry.get("updated_at").is_none()));
+    let serialized = body.to_string();
+    assert!(!serialized.contains(&fixture.signing_private));
+
+    // Legacy schema must fail before authorize() compatibility logic can mutate it.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+    let legacy = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after, 0,
+        "read-only policy GET recreated authorization schema"
+    );
+}
+
+#[tokio::test]
 async fn authorization_policy_integrity_http_is_privileged_read_only_and_reports_invalid_state() {
     let fixture = fixture("policy-integrity");
     let router = fixture
