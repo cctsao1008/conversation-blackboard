@@ -1,3 +1,4 @@
+# Retry after precise 10-tool regression alignment.
 name: issue106-decision-mcp
 
 on:
