@@ -1,0 +1,41 @@
+name: issue105-policy-snapshot-hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue105_policy_snapshot_hardening.py'
+      - '.github/workflows/issue105-policy-snapshot-hardening.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply policy snapshot hardening
+        run: python .github/scripts/issue105_policy_snapshot_hardening.py
+      - name: Verify canonical authority and contracts
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit policy snapshot authority hardening
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/authorization.rs src/contract_parity_tests.rs docs/authorization-policy.md docs/contract-projections.md
+          git commit -m "#105 Harden authorization policy snapshot boundaries"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue105_policy_snapshot_hardening.py
+          git rm .github/workflows/issue105-policy-snapshot-hardening.yml
+          git commit -m "#105 Remove policy snapshot hardening helpers"
+      - name: Push
+        run: git push origin main
