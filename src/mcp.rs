@@ -320,6 +320,13 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
         Err(()) => return bearer_unauthorized(id, state.protected_resource.as_ref()),
     };
 
+    if state.oidc_verifier.is_some()
+        && transport_principal.is_none()
+        && http_tool_call_requires_auth(&state.app, object).await
+    {
+        return bearer_unauthorized(id, state.protected_resource.as_ref());
+    }
+
     let body_protocol = request_protocol_version(object);
     let header_protocol = headers
         .get("mcp-protocol-version")
@@ -453,6 +460,58 @@ fn modern_result(method: &str, mut result: Value) -> Value {
         object.insert("cacheScope".to_owned(), json!("public"));
     }
     result
+}
+
+async fn http_tool_call_requires_auth(state: &AppState, object: &Map<String, Value>) -> bool {
+    if object.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return false;
+    }
+    let Some(params) = object.get("params").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(name) = params.get("name").and_then(Value::as_str) else {
+        return false;
+    };
+    let arguments = match params.get("arguments") {
+        None => None,
+        Some(Value::Object(arguments)) => Some(arguments),
+        Some(_) => return false,
+    };
+    if arguments.is_some_and(|arguments| arguments.contains_key("auth")) {
+        return false;
+    }
+    match name {
+        "blackboard_write"
+        | "blackboard_access_context"
+        | "blackboard_execution_receipt"
+        | "blackboard_execution_audit"
+        | "blackboard_execution_audit_integrity"
+        | "blackboard_execution_audit_sweep" => true,
+        "blackboard_read" => {
+            let Some(arguments) = arguments else {
+                return false;
+            };
+            if arguments.get("participant_id").is_some() {
+                return true;
+            }
+            let Some(channel) = arguments.get("channel").and_then(Value::as_str) else {
+                return false;
+            };
+            if !name_re().is_match(channel) {
+                return false;
+            }
+            let channel = channel.to_owned();
+            match with_db(state, move |conn| {
+                db::channel_is_public_active(conn, &channel)
+            })
+            .await
+            {
+                Ok(public) => !public,
+                Err(()) => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 fn request_protocol_version(object: &Map<String, Value>) -> Option<&str> {

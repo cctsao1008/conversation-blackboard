@@ -273,6 +273,147 @@ async fn assert_rejected_bearer(verifier: oidc::OidcVerifier, token: String, id:
 }
 
 #[tokio::test]
+async fn oidc_enabled_remote_mcp_returns_401_for_protected_tool_without_any_credential() {
+    let fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    let router = mcp::app_with_remote_auth(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+        Some("https://board.example/mcp"),
+    )
+    .unwrap();
+    let response = request(
+        &router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 108,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_write",
+                "arguments": {
+                    "participant_id": "single-main",
+                    "channel": "control-systems",
+                    "body": "must-not-land",
+                    "nonce": "issue100-no-credential"
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+        "Bearer resource_metadata=\"https://board.example/.well-known/oauth-protected-resource/mcp\""
+    );
+}
+
+#[tokio::test]
+async fn oidc_enabled_remote_mcp_keeps_public_read_anonymous_and_challenges_private_read() {
+    let fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    let router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+
+    // Materialize the lounge through the normal authenticated write path before
+    // asserting anonymous visibility. An absent channel is not an active public
+    // resource and must not be treated as public merely by name.
+    let seeded = call_tool(
+        &router,
+        1089,
+        "blackboard_write",
+        write_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "blackboard-lounge",
+            "message",
+            "issue100-public-seed",
+            None,
+            "issue100-public-seed",
+        ),
+    )
+    .await;
+    assert_eq!(seeded["result"]["isError"], false);
+
+    let public_response = request(
+        &router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 109,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_read",
+                "arguments": {"channel": "blackboard-lounge", "after": 0, "limit": 50}
+            }
+        })),
+    )
+    .await;
+    assert_eq!(public_response.status(), StatusCode::OK);
+
+    let private_response = request(
+        &router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 110,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_read",
+                "arguments": {"channel": "control-systems", "after": 0, "limit": 50}
+            }
+        })),
+    )
+    .await;
+    assert_eq!(private_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        private_response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap(),
+        "Bearer"
+    );
+}
+
+#[tokio::test]
+async fn oidc_enabled_remote_mcp_still_accepts_no_bearer_valid_hmac_fallback() {
+    let mut fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    fixture.router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let value = call_tool(
+        &fixture.router,
+        111,
+        "blackboard_write",
+        write_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "blackboard-lounge",
+            "message",
+            "hmac-fallback-still-works",
+            None,
+            "issue100-hmac-fallback",
+        ),
+    )
+    .await;
+    assert_eq!(value["result"]["isError"], false);
+    assert_eq!(value["result"]["structuredContent"]["status"], "created");
+}
+
+#[tokio::test]
 async fn expired_bearer_is_rejected_at_mcp_transport_gate() {
     let (verifier, token) = bearer_verifier_and_token_with_claims(
         "remote-agent-1",
