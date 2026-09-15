@@ -17,6 +17,13 @@ grant = replace_exact(
     1,
     "repair removed CLI participant validator anchor",
 )
+grant = replace_exact(
+    grant,
+    "use rusqlite::{params, Connection, OptionalExtension};",
+    "use rusqlite::Connection;",
+    1,
+    "remove mutation-only rusqlite imports from CLI adapter",
+)
 grant_path.write_text(grant, encoding="utf-8")
 
 admin_path = Path("src/authorization_admin.rs")
@@ -104,5 +111,19 @@ admin = replace_exact(
     insert,
     1,
     "insert administration schema-current boundary",
+)
+admin = replace_exact(
+    admin,
+    "        stmt.query_map(\n",
+    "        let rows = stmt.query_map(\n",
+    2,
+    "materialize rusqlite mapped rows before statement drop",
+)
+admin = replace_exact(
+    admin,
+    "        .collect::<rusqlite::Result<Vec<_>>>()?\n    };",
+    "        .collect::<rusqlite::Result<Vec<_>>>()?;\n        rows\n    };",
+    2,
+    "finish rusqlite row materialization inside block",
 )
 admin_path.write_text(admin, encoding="utf-8")
