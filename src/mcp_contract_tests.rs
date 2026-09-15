@@ -120,6 +120,15 @@ async fn request(router: &Router, method: Method, body: Option<Value>) -> Respon
 }
 
 fn bearer_verifier_and_token(subject: &str) -> (oidc::OidcVerifier, String) {
+    bearer_verifier_and_token_with_claims(subject, "https://issuer.example", "blackboard", 300)
+}
+
+fn bearer_verifier_and_token_with_claims(
+    subject: &str,
+    token_issuer: &str,
+    token_audience: &str,
+    expiry_offset_seconds: i64,
+) -> (oidc::OidcVerifier, String) {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use rsa::{pkcs8::EncodePrivateKey, traits::PublicKeyParts, RsaPrivateKey};
 
@@ -141,16 +150,16 @@ fn bearer_verifier_and_token(subject: &str) -> (oidc::OidcVerifier, String) {
     let encoding = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
     let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
     header.kid = Some("mcp-test-key".to_owned());
-    let exp = std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs()
-        + 300;
+        .as_secs() as i64;
+    let exp = (now + expiry_offset_seconds).max(0) as u64;
     let token = jsonwebtoken::encode(
         &header,
         &json!({
-            "iss": "https://issuer.example",
-            "aud": "blackboard",
+            "iss": token_issuer,
+            "aud": token_audience,
             "sub": subject,
             "exp": exp
         }),
@@ -226,6 +235,74 @@ async fn call_tool(router: &Router, id: i64, name: &str, arguments: Value) -> Va
 
 fn tool_error_code(value: &Value) -> &str {
     value["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+async fn assert_rejected_bearer(verifier: oidc::OidcVerifier, token: String, id: i64) {
+    let fixture = fixture();
+    let router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let response = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_write",
+                "arguments": {
+                    "participant_id": "single-main",
+                    "channel": "control-systems",
+                    "body": "must-not-land",
+                    "nonce": format!("issue100-invalid-claims-{id}")
+                }
+            }
+        }),
+        &format!("Bearer {token}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+        "Bearer"
+    );
+}
+
+#[tokio::test]
+async fn expired_bearer_is_rejected_at_mcp_transport_gate() {
+    let (verifier, token) = bearer_verifier_and_token_with_claims(
+        "remote-agent-1",
+        "https://issuer.example",
+        "blackboard",
+        -3600,
+    );
+    assert_rejected_bearer(verifier, token, 105).await;
+}
+
+#[tokio::test]
+async fn wrong_issuer_bearer_is_rejected_at_mcp_transport_gate() {
+    let (verifier, token) = bearer_verifier_and_token_with_claims(
+        "remote-agent-1",
+        "https://other-issuer.example",
+        "blackboard",
+        300,
+    );
+    assert_rejected_bearer(verifier, token, 106).await;
+}
+
+#[tokio::test]
+async fn wrong_audience_bearer_is_rejected_at_mcp_transport_gate() {
+    let (verifier, token) = bearer_verifier_and_token_with_claims(
+        "remote-agent-1",
+        "https://issuer.example",
+        "other-resource",
+        300,
+    );
+    assert_rejected_bearer(verifier, token, 107).await;
 }
 
 #[tokio::test]
