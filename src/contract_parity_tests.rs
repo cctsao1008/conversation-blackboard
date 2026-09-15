@@ -208,6 +208,79 @@ fn execution_audit_sweep_contracts_match_canonical_rust_shape() {
 }
 
 #[test]
+fn authorization_decision_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    let path = &api["paths"]["/api/authorization-decision/explain"]["get"];
+    assert!(path.is_object());
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationDecisionExplanation/properties"
+        ),
+        names(
+            &contract_schema::authorization_decision_explanation_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationDecisionEnvelope/properties"
+        ),
+        names(
+            &contract_schema::authorization_decision_envelope_schema(),
+            "/properties"
+        )
+    );
+    let required_query = path["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|parameter| parameter["in"] == "query" && parameter["required"] == true)
+        .map(|parameter| parameter["name"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        required_query,
+        [
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+
+    let utcp = utcp_json();
+    let decision = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "authorization_decision")
+        .expect("UTCP authorization decision projection must exist");
+    assert_eq!(
+        names(decision, "/outputs/properties/decision/properties"),
+        names(
+            &contract_schema::authorization_decision_explanation_schema(),
+            "/properties"
+        )
+    );
+    let required_inputs = decision["inputs"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(required_inputs, required_query);
+    assert_eq!(
+        decision["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/authorization-decision/explain"
+    );
+    assert_eq!(decision["tool_call_template"]["http_method"], "GET");
+}
+
+#[test]
 fn authorization_policy_integrity_contracts_match_canonical_rust_shape() {
     let api = yaml_json();
     assert!(api["paths"]

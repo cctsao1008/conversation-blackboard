@@ -434,6 +434,78 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/authorization-decision/explain:
+    get:
+      operationId: blackboardAuthorizationDecision
+      summary: Explain one Blackboard authorization decision.
+      description: Privileged read-only projection of the canonical authorization decision evaluator. The authenticated caller is authorized separately from the target Principal being explained. A denied target decision is successful explanation data with HTTP 200. Query parameters are part of the authenticated request target for participant-HMAC HTTP callers. The read never consumes delegated authority and legacy authorization schemas fail without migration.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: principal_provider
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: principal_subject
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: participant_id
+          in: query
+          required: true
+          description: Target Blackboard participant whose authorization context is evaluated; this is not the authenticated caller identity.
+          schema:
+            $ref: '#/components/schemas/ParticipantId'
+        - name: capability
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: resource
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: intent_id
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/IntentId'
+      responses:
+        '200':
+          description: Canonical non-secret authorization decision explanation. Both allowed and denied target decisions are returned here after caller authorization succeeds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationDecisionEnvelope'
+        '400':
+          description: Invalid target principal or authorization context.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Authorization schema is not current. The read does not migrate or repair it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/authorization-policy:
     get:
       operationId: blackboardAuthorizationPolicy
@@ -926,6 +998,34 @@ components:
       properties:
         policy:
           $ref: '#/components/schemas/AuthorizationPolicySnapshot'
+
+    AuthorizationDecisionExplanation:
+      type: object
+      additionalProperties: false
+      required: [allowed, source, reason, grant_id, consume_on_commit]
+      description: Canonical non-secret read-only explanation of one authorization decision.
+      properties:
+        allowed:
+          type: boolean
+        source:
+          type: string
+        reason:
+          type: string
+        grant_id:
+          anyOf:
+            - type: integer
+              minimum: 1
+            - type: 'null'
+        consume_on_commit:
+          type: boolean
+
+    AuthorizationDecisionEnvelope:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          $ref: '#/components/schemas/AuthorizationDecisionExplanation'
 
     AuthorizationIntegrityViolation:
       type: object

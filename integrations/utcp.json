@@ -653,6 +653,118 @@
       }
     },
     {
+      "name": "authorization_decision",
+      "description": "Explain one target Blackboard authorization decision through the privileged canonical read-only evaluator. Caller authority is separate from the target Principal; denied target decisions are successful explanation data and no delegated authority is consumed.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "principal_provider",
+          "principal_subject",
+          "participant_id",
+          "capability"
+        ],
+        "properties": {
+          "principal_provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "principal_subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "participant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "capability": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "resource": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "intent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "allowed",
+              "source",
+              "reason",
+              "grant_id",
+              "consume_on_commit"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "source": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "grant_id": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "consume_on_commit": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "authorization",
+        "decision",
+        "privileged",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_authorization_decision_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/authorization-decision/explain",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    },
+    {
       "name": "authorization_policy",
       "description": "Read the privileged canonical inventory of explicit durable and delegated Blackboard authorization objects. Blackboard authorization remains authoritative and the read never creates, repairs, normalizes, or consumes authority.",
       "inputs": {
