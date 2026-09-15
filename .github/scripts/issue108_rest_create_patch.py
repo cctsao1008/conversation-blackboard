@@ -44,7 +44,6 @@ async fn create_durable_authorization_grant(
     }
 
     let caller_participant_id = resolved.instance.clone();
-    let state_name;
     let outcome = with_db_access(&state, move |conn| {
         let request = authorization_admin::DurableGrantCreateRequest {
             principal_provider: &body.principal_provider,
@@ -64,7 +63,7 @@ async fn create_durable_authorization_grant(
     })
     .await?;
 
-    state_name = match outcome.state {
+    let state_name = match outcome.state {
         authorization_admin::DurableGrantCreateState::Created => "created",
         authorization_admin::DurableGrantCreateState::Existing => "existing",
         authorization_admin::DurableGrantCreateState::Reactivated => "reactivated",
