@@ -19,6 +19,11 @@ replacements = [
         '''        let rows = stmt\n            .query_map([], |row| {\n                Ok((\n                    row.get::<_, i64>(0)?,\n                    row.get::<_, String>(1)?,\n                    row.get::<_, String>(2)?,\n                    row.get::<_, String>(3)?,\n                    row.get::<_, String>(4)?,\n                    row.get::<_, Option<String>>(5)?,\n                    row.get::<_, Option<String>>(6)?,\n                    row.get::<_, Option<i64>>(7)?,\n                    row.get::<_, i64>(8)?,\n                    row.get::<_, Option<i64>>(9)?,\n                    row.get::<_, Option<String>>(10)?,\n                    row.get::<_, String>(11)?,\n                ))\n            })?\n            .collect::<rusqlite::Result<Vec<_>>>()?;\n        rows\n    };''',
         "delegated collection lifetime",
     ),
+    (
+        '''    let mut durable_scopes: HashMap<\n        (String, String, String, String, Option<String>),\n        Vec<i64>,\n    > = HashMap::new();''',
+        '''    type DurableScopeKey = (String, String, String, String, Option<String>);\n    let mut durable_scopes: HashMap<DurableScopeKey, Vec<i64>> = HashMap::new();''',
+        "durable scope key type",
+    ),
 ]
 
 for old, new, label in replacements:
