@@ -25,3 +25,11 @@ for old, new, label in replacements:
         raise SystemExit(f"expected one {label} assertion, found {count}")
     s = s.replace(old, new, 1)
 p.write_text(s, encoding="utf-8")
+
+p = Path("tests/mcp_stdio_server.rs")
+s = p.read_text(encoding="utf-8")
+old = "assert_eq!(tools.len(), 9);"
+if s.count(old) != 1:
+    raise SystemExit(f"expected one process-level tools/list count, found {s.count(old)}")
+s = s.replace(old, "assert_eq!(tools.len(), 10);", 1)
+p.write_text(s, encoding="utf-8")
