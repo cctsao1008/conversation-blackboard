@@ -1239,6 +1239,131 @@ async fn modern_server_discover_is_stateless_and_advertises_current_version() {
     assert!(versions.iter().any(|version| version == "2025-11-25"));
 }
 
+fn tool_required_fields<'a>(value: &'a Value, name: &str) -> &'a Vec<Value> {
+    value["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == name)
+        .unwrap()["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn modern_http_oidc_projection_makes_hmac_auth_optional_without_removing_fallback_schema() {
+    let mut fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    fixture.router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 89,
+            "method": "tools/list",
+            "params": {"_meta": modern_meta("2026-07-28")}
+        }),
+        "tools/list",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    for name in [
+        "blackboard_write",
+        "blackboard_access_context",
+        "blackboard_execution_receipt",
+        "blackboard_execution_audit",
+        "blackboard_execution_audit_integrity",
+        "blackboard_execution_audit_sweep",
+    ] {
+        let required = tool_required_fields(&value, name);
+        assert!(!required.iter().any(|field| field == "auth"), "{name}");
+        let tool = value["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert!(tool["inputSchema"]["properties"]["auth"].is_object());
+        assert!(tool["inputSchema"]["properties"]["auth"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Bearer"));
+    }
+}
+
+#[tokio::test]
+async fn legacy_http_and_stdio_keep_hmac_auth_required_when_oidc_is_available() {
+    let mut fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    fixture.router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+
+    let legacy = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 88,
+            "method": "tools/list",
+            "params": {}
+        })),
+    )
+    .await;
+    let (_, legacy_value) = response_json(legacy).await;
+    assert!(tool_required_fields(&legacy_value, "blackboard_write")
+        .iter()
+        .any(|field| field == "auth"));
+
+    let stdio = mcp::stdio_dispatch(
+        &AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        &json!({"jsonrpc": "2.0", "id": 87, "method": "tools/list", "params": {}}),
+    )
+    .await
+    .unwrap();
+    assert!(tool_required_fields(&stdio, "blackboard_write")
+        .iter()
+        .any(|field| field == "auth"));
+}
+
+#[tokio::test]
+async fn modern_http_without_oidc_keeps_hmac_auth_required() {
+    let fixture = fixture();
+    let response = modern_post(
+        &fixture.router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 86,
+            "method": "tools/list",
+            "params": {"_meta": modern_meta("2026-07-28")}
+        }),
+        "tools/list",
+        None,
+        "2026-07-28",
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    assert!(tool_required_fields(&value, "blackboard_write")
+        .iter()
+        .any(|field| field == "auth"));
+}
+
 #[tokio::test]
 async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_result() {
     let fixture = fixture();

@@ -343,7 +343,10 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
 
         let result = match method {
             "server/discover" => discover_result(),
-            "tools/list" => modern_result(method, tools_list_result()),
+            "tools/list" => modern_result(
+                method,
+                tools_list_result_for_modern_http(state.oidc_verifier.is_some()),
+            ),
             "tools/call" => {
                 match tool_call_result(&state.app, object, transport_principal.as_ref()).await {
                     Ok(result) => modern_result(method, result),
@@ -622,6 +625,50 @@ fn auth_schema() -> Value {
         "required": ["scheme", "proof"],
         "additionalProperties": false
     })
+}
+
+fn tools_list_result_for_modern_http(bearer_capable: bool) -> Value {
+    let mut result = tools_list_result();
+    if !bearer_capable {
+        return result;
+    }
+    let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) else {
+        return result;
+    };
+    for tool in tools {
+        let Some(tool_object) = tool.as_object_mut() else {
+            continue;
+        };
+        if let Some(description) = tool_object.get("description").and_then(Value::as_str) {
+            tool_object.insert(
+                "description".to_owned(),
+                json!(format!(
+                    "{description} Remote HTTP callers may alternatively authenticate with Authorization: Bearer; participant-HMAC auth is required only when no verified Bearer principal is present."
+                )),
+            );
+        }
+        let Some(schema) = tool_object
+            .get_mut("inputSchema")
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+            required.retain(|field| field.as_str() != Some("auth"));
+        }
+        if let Some(auth) = schema
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+            .and_then(|properties| properties.get_mut("auth"))
+            .and_then(Value::as_object_mut)
+        {
+            auth.insert(
+                "description".to_owned(),
+                json!("Participant-HMAC fallback credential. Omit when this remote HTTP request is authenticated with a verified Authorization: Bearer token."),
+            );
+        }
+    }
+    result
 }
 
 fn tools_list_result() -> Value {
