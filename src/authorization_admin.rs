@@ -139,6 +139,15 @@ struct DelegatedGrantState {
     status: String,
 }
 
+#[derive(Debug)]
+struct NormalizedDurableGrantCreate {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+}
+
 pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
     authorization::ensure_grant_schema(conn)?;
     conn.execute_batch(
@@ -286,13 +295,9 @@ pub fn read_administration_events(
     }
 }
 
-pub fn create_durable_grant(
-    conn: &Connection,
-    actor: &AuthorizationAdministrationActor<'_>,
+fn normalize_durable_grant_create_request(
     request: &DurableGrantCreateRequest<'_>,
-) -> AdministrationResult<DurableGrantCreateOutcome> {
-    require_schema_current(conn)?;
-    let actor = normalize_actor(actor)?;
+) -> AdministrationResult<NormalizedDurableGrantCreate> {
     let principal_provider = normalize(
         request.principal_provider,
         MAX_PROVIDER_BYTES,
@@ -310,9 +315,21 @@ pub fn create_durable_grant(
         return Err(format!("unsupported capability: {capability}").into());
     }
     let resource = normalize_optional(request.resource, MAX_RESOURCE_BYTES, "resource")?;
+    Ok(NormalizedDurableGrantCreate {
+        principal_provider,
+        principal_subject,
+        participant_id,
+        capability,
+        resource,
+    })
+}
 
-    let tx = conn.unchecked_transaction()?;
-    require_active_participant(&tx, &participant_id)?;
+fn create_durable_grant_in_tx(
+    tx: &Transaction<'_>,
+    actor: &NormalizedActor,
+    request: &NormalizedDurableGrantCreate,
+) -> AdministrationResult<DurableGrantCreateOutcome> {
+    require_active_participant(tx, &request.participant_id)?;
     let rows = {
         let mut stmt = tx.prepare(
             "SELECT id, status
@@ -327,11 +344,11 @@ pub fn create_durable_grant(
         let rows = stmt
             .query_map(
                 params![
-                    &principal_provider,
-                    &principal_subject,
-                    &participant_id,
-                    &capability,
-                    resource.as_deref(),
+                    &request.principal_provider,
+                    &request.principal_subject,
+                    &request.participant_id,
+                    &request.capability,
+                    request.resource.as_deref(),
                 ],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )?
@@ -340,20 +357,18 @@ pub fn create_durable_grant(
     };
 
     if let Some((id, _)) = rows.iter().find(|(_, status)| status == "active") {
-        let outcome = DurableGrantCreateOutcome {
+        return Ok(DurableGrantCreateOutcome {
             id: *id,
             state: DurableGrantCreateState::Existing,
-        };
-        tx.commit()?;
-        return Ok(outcome);
+        });
     }
 
     let scope = GrantScope {
-        principal_provider: &principal_provider,
-        principal_subject: &principal_subject,
-        participant_id: &participant_id,
-        capability: &capability,
-        resource: resource.as_deref(),
+        principal_provider: &request.principal_provider,
+        principal_subject: &request.principal_subject,
+        participant_id: &request.participant_id,
+        capability: &request.capability,
+        resource: request.resource.as_deref(),
         intent_id: None,
         expires_at: None,
         one_shot: false,
@@ -367,8 +382,8 @@ pub fn create_durable_grant(
             [id],
         )?;
         record_event(
-            &tx,
-            &actor,
+            tx,
+            actor,
             &AdministrationEvent {
                 grant_store: "durable",
                 grant_id: *id,
@@ -378,12 +393,10 @@ pub fn create_durable_grant(
                 after_status: "active",
             },
         )?;
-        let outcome = DurableGrantCreateOutcome {
+        return Ok(DurableGrantCreateOutcome {
             id: *id,
             state: DurableGrantCreateState::Reactivated,
-        };
-        tx.commit()?;
-        return Ok(outcome);
+        });
     }
 
     tx.execute(
@@ -391,17 +404,17 @@ pub fn create_durable_grant(
             (principal_provider, principal_subject, participant_id, capability, resource)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
-            principal_provider,
-            principal_subject,
-            participant_id,
-            capability,
-            resource,
+            &request.principal_provider,
+            &request.principal_subject,
+            &request.participant_id,
+            &request.capability,
+            request.resource.as_deref(),
         ],
     )?;
     let id = tx.last_insert_rowid();
     record_event(
-        &tx,
-        &actor,
+        tx,
+        actor,
         &AdministrationEvent {
             grant_store: "durable",
             grant_id: id,
@@ -411,11 +424,57 @@ pub fn create_durable_grant(
             after_status: "active",
         },
     )?;
-    tx.commit()?;
     Ok(DurableGrantCreateOutcome {
         id,
         state: DurableGrantCreateState::Created,
     })
+}
+
+pub fn create_durable_grant(
+    conn: &Connection,
+    actor: &AuthorizationAdministrationActor<'_>,
+    request: &DurableGrantCreateRequest<'_>,
+) -> AdministrationResult<DurableGrantCreateOutcome> {
+    require_schema_current(conn)?;
+    let actor = normalize_actor(actor)?;
+    let request = normalize_durable_grant_create_request(request)?;
+    let tx = conn.unchecked_transaction()?;
+    let outcome = create_durable_grant_in_tx(&tx, &actor, &request)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+#[cfg(test)]
+pub fn create_durable_grant_authorized(
+    conn: &Connection,
+    surface: &str,
+    caller_principal: &Principal,
+    caller_participant_id: &str,
+    request: &DurableGrantCreateRequest<'_>,
+) -> AdministrationResult<DurableGrantCreateOutcome> {
+    require_schema_current(conn)?;
+    let actor_spec = AuthorizationAdministrationActor {
+        surface,
+        principal: Some(caller_principal),
+        participant_id: Some(caller_participant_id),
+    };
+    let actor = normalize_actor(&actor_spec)?;
+    let request = normalize_durable_grant_create_request(request)?;
+    let tx = conn.unchecked_transaction()?;
+    let decision = authorization::explain_authorization(
+        &tx,
+        caller_principal,
+        caller_participant_id,
+        authorization::MANAGE_AUTHORIZATION_POLICY,
+        Some(authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        None,
+    )?;
+    if !decision.allowed {
+        return Err("authorization denied".into());
+    }
+    let outcome = create_durable_grant_in_tx(&tx, &actor, &request)?;
+    tx.commit()?;
+    Ok(outcome)
 }
 
 pub fn deactivate_durable_grant(
@@ -843,6 +902,127 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(operations, vec!["create", "deactivate", "reactivate"]);
+    }
+
+    #[test]
+    fn authorized_durable_create_checks_authority_and_mutates_in_one_boundary() {
+        let (_dir, conn) = setup();
+        identity::provision_web_participant_identity(
+            &conn,
+            "admin-main",
+            "admin",
+            Some("Administrator"),
+        )
+        .unwrap()
+        .unwrap();
+        identity::set_web_participant_role(&conn, "admin-main", "admin").unwrap();
+        let admin = Principal {
+            provider: "human-web".to_owned(),
+            subject: "admin-main".to_owned(),
+        };
+        let request = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "agent-1",
+            participant_id: "maker-main",
+            capability: authorization::POST_MESSAGE,
+            resource: Some("control-systems"),
+        };
+
+        let created =
+            create_durable_grant_authorized(&conn, "rest-test", &admin, "admin-main", &request)
+                .unwrap();
+        assert_eq!(created.state, DurableGrantCreateState::Created);
+        let event: (String, String, String, String) = conn
+            .query_row(
+                "SELECT actor_surface, actor_provider, actor_subject, actor_participant_id
+                 FROM authorization_admin_events
+                 WHERE grant_store = 'durable' AND grant_id = ?1",
+                [created.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(event.0, "rest-test");
+        assert_eq!(event.1, "human-web");
+        assert_eq!(event.2, "admin-main");
+        assert_eq!(event.3, "admin-main");
+
+        let ordinary = Principal {
+            provider: "human-web".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let denied = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "denied-agent",
+            participant_id: "maker-main",
+            capability: authorization::READ_MESSAGES,
+            resource: None,
+        };
+        let before_events = event_count(&conn);
+        assert!(create_durable_grant_authorized(
+            &conn,
+            "rest-test",
+            &ordinary,
+            "maker-main",
+            &denied,
+        )
+        .is_err());
+        assert_eq!(event_count(&conn), before_events);
+        let denied_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM principal_grants
+                 WHERE principal_subject = 'denied-agent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(denied_rows, 0);
+    }
+
+    #[test]
+    fn explicit_remote_administration_grant_allows_external_principal() {
+        let (_dir, conn) = setup();
+        identity::provision_web_participant_identity(
+            &conn,
+            "admin-main",
+            "admin",
+            Some("Administrator"),
+        )
+        .unwrap()
+        .unwrap();
+        let local = AuthorizationAdministrationActor::local_cli();
+        let bootstrap = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "admin-agent",
+            participant_id: "admin-main",
+            capability: authorization::MANAGE_AUTHORIZATION_POLICY,
+            resource: Some(authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        };
+        create_durable_grant(&conn, &local, &bootstrap).unwrap();
+
+        let external = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "admin-agent".to_owned(),
+        };
+        let request = DurableGrantCreateRequest {
+            principal_provider: "oidc:https://issuer.example",
+            principal_subject: "worker-agent",
+            participant_id: "maker-main",
+            capability: authorization::READ_MESSAGES,
+            resource: None,
+        };
+        let created =
+            create_durable_grant_authorized(&conn, "rest-test", &external, "admin-main", &request)
+                .unwrap();
+        assert_eq!(created.state, DurableGrantCreateState::Created);
+        let actor_provider: String = conn
+            .query_row(
+                "SELECT actor_provider FROM authorization_admin_events
+                 WHERE grant_store = 'durable' AND grant_id = ?1",
+                [created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actor_provider, "oidc:https://issuer.example");
     }
 
     #[test]

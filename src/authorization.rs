@@ -18,9 +18,11 @@ pub const READ_AUTHORIZATION_POLICY: &str = "read_authorization_policy";
 pub const AUTHORIZATION_POLICY_RESOURCE: &str = "authorization-policy";
 pub const READ_AUTHORIZATION_DECISION: &str = "read_authorization_decision";
 pub const AUTHORIZATION_DECISION_RESOURCE: &str = "authorization-decision";
+pub const MANAGE_AUTHORIZATION_POLICY: &str = "manage_authorization_policy";
+pub const AUTHORIZATION_POLICY_ADMIN_RESOURCE: &str = "authorization-policy-administration";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 10] = [
+const KNOWN_CAPABILITIES: [&str; 11] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
@@ -30,6 +32,7 @@ const KNOWN_CAPABILITIES: [&str; 10] = [
     READ_AUTHORIZATION_POLICY_INTEGRITY,
     READ_AUTHORIZATION_POLICY,
     READ_AUTHORIZATION_DECISION,
+    MANAGE_AUTHORIZATION_POLICY,
     MANAGE_CHANNELS,
 ];
 
@@ -1182,6 +1185,7 @@ pub fn effective_grants(
             READ_AUTHORIZATION_POLICY_INTEGRITY => Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
             READ_AUTHORIZATION_POLICY => Some(AUTHORIZATION_POLICY_RESOURCE),
             READ_AUTHORIZATION_DECISION => Some(AUTHORIZATION_DECISION_RESOURCE),
+            MANAGE_AUTHORIZATION_POLICY => Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
             _ => None,
         };
         if authorize(
@@ -1257,6 +1261,12 @@ fn implicit_authority_reason(
                 && participant.role == "admin"
                 && resource == Some(AUTHORIZATION_DECISION_RESOURCE))
             .then_some("implicit_human_web_admin_authorization_decision");
+        }
+        if capability == MANAGE_AUTHORIZATION_POLICY {
+            return (principal.provider == "human-web"
+                && participant.role == "admin"
+                && resource == Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE))
+            .then_some("implicit_human_web_admin_authorization_administration");
         }
         if capability == READ_EXECUTION_AUDIT_SWEEP {
             return (principal.provider == "human-web"
@@ -1441,6 +1451,97 @@ mod tests {
             )
             .unwrap();
         assert!(consumed_at.is_none());
+    }
+
+    #[test]
+    fn authorization_administration_authority_is_human_web_admin_only_and_isolated() {
+        let (_dir, conn) = setup();
+        let human = Principal {
+            provider: "human-web".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let hmac = Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let github = Principal {
+            provider: "github".to_owned(),
+            subject: "543608".to_owned(),
+        };
+        let oidc = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "admin-agent".to_owned(),
+        };
+
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            MANAGE_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        )
+        .unwrap());
+        identity::set_web_participant_role(&conn, "maker-main", "admin").unwrap();
+        assert!(authorize(
+            &conn,
+            &human,
+            "maker-main",
+            MANAGE_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        )
+        .unwrap());
+        for principal in [&hmac, &github, &oidc] {
+            assert!(!authorize(
+                &conn,
+                principal,
+                "maker-main",
+                MANAGE_AUTHORIZATION_POLICY,
+                Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+            )
+            .unwrap());
+        }
+
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+            params![
+                &oidc.provider,
+                &oidc.subject,
+                MANAGE_AUTHORIZATION_POLICY,
+                AUTHORIZATION_POLICY_ADMIN_RESOURCE
+            ],
+        )
+        .unwrap();
+        assert!(authorize(
+            &conn,
+            &oidc,
+            "maker-main",
+            MANAGE_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        )
+        .unwrap());
+        for (capability, resource) in [
+            (
+                READ_AUTHORIZATION_POLICY,
+                Some(AUTHORIZATION_POLICY_RESOURCE),
+            ),
+            (
+                READ_AUTHORIZATION_POLICY_INTEGRITY,
+                Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            ),
+            (
+                READ_AUTHORIZATION_DECISION,
+                Some(AUTHORIZATION_DECISION_RESOURCE),
+            ),
+            (
+                READ_EXECUTION_AUDIT_SWEEP,
+                Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            ),
+            (MANAGE_CHANNELS, None),
+        ] {
+            assert!(!authorize(&conn, &oidc, "maker-main", capability, resource).unwrap());
+        }
     }
 
     #[test]
