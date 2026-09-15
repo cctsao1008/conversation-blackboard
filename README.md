@@ -88,6 +88,52 @@ MCP is a transport/projection of Blackboard semantics, not a separate identity o
 conversation-blackboard mcp serve --db board.db
 ```
 
+### Remote MCP OAuth/OIDC
+
+Remote HTTP MCP may authenticate a caller through the same configured external OIDC verifier used by Blackboard's OIDC resource-server surface:
+
+```text
+Authorization: Bearer <access-token>
+        ↓
+OIDC verification
+        ↓
+Principal { provider = "oidc:<issuer>", subject = <sub> }
+        ↓
+Blackboard grant evaluation
+        ↓
+existing MCP tool / semantic execution path
+```
+
+The bearer token proves the external principal; it does not grant participant authority by itself. `participant_id` remains the explicit Blackboard attribution target, and existing durable or delegated Blackboard grants determine which participant, capability, resource, and intent the principal may use.
+
+Credential precedence is explicit:
+
+```text
+Bearer header present
+    -> token must verify
+    -> invalid Bearer is rejected
+    -> no participant-HMAC downgrade
+
+No Bearer header
+    -> existing participant-HMAC compatibility path
+```
+
+Local stdio MCP continues to use the participant-HMAC tool contract. Legacy HTTP and HMAC-only deployments keep the existing HMAC contract; Bearer-capable modern HTTP tool discovery makes the HMAC `auth` field optional while retaining it as a fallback credential.
+
+For standards-based OAuth resource discovery, configure the canonical externally visible MCP resource URI with `BLACKBOARD_MCP_RESOURCE_URL`. It must be an HTTPS URL and is only valid when OIDC verification is configured. For example:
+
+```text
+BLACKBOARD_MCP_RESOURCE_URL=https://board.example/mcp
+```
+
+publishes RFC 9728 Protected Resource Metadata at:
+
+```text
+https://board.example/.well-known/oauth-protected-resource/mcp
+```
+
+and Bearer `401 Unauthorized` responses can reference that metadata through `WWW-Authenticate`. The raw bearer credential is never part of Blackboard's durable semantic or audit evidence; only the normalized principal and the resulting authorization/provenance are durable.
+
 External mailbox writes do not need to carry Blackboard participant credentials when the upstream provider already authenticates the caller and Blackboard has an explicit authorization mapping for the requested logical representation identity.
 
 ## Identity and authority
