@@ -53,6 +53,12 @@ jobs:
           .\target\release\conversation-blackboard.exe participant auth-rotate --help
           .\target\release\conversation-blackboard.exe participant auth-revoke --help
           .\target\release\conversation-blackboard.exe grant --help
+          .\target\release\conversation-blackboard.exe grant create --help
+          .\target\release\conversation-blackboard.exe grant list --help
+          .\target\release\conversation-blackboard.exe grant explain --help
+          .\target\release\conversation-blackboard.exe grant history --help
+          .\target\release\conversation-blackboard.exe grant deactivate --help
+          .\target\release\conversation-blackboard.exe grant verify --help
           .\target\release\conversation-blackboard.exe grant durable --help
           .\target\release\conversation-blackboard.exe grant durable create --help
           .\target\release\conversation-blackboard.exe grant durable list --help
@@ -90,6 +96,26 @@ jobs:
             $participant = (& $exe participant provision --db $db --participant-id ci-participant-main --source ci-participant --label "CI participant") | Out-String
             if ($participant -notmatch 'participant_id\s*:\s*ci-participant-main') {
               throw "participant provisioning output mismatch"
+            }
+
+            $grantCreate = (& $exe grant durable create --db $db --principal-provider oidc:https://ci.example --principal-subject ci-admin-agent --participant-id ci-participant-main --capability read_messages) | Out-String
+            if ($grantCreate -notmatch 'state\s*:\s*created') {
+              throw "durable grant create did not report created state"
+            }
+            $grantIdLine = (($grantCreate -split "\r?\n") | Where-Object { $_ -match '^grant_id\s*:' } | Select-Object -First 1)
+            if (-not $grantIdLine) { throw "durable grant create did not return grant_id" }
+            $grantId = [int64](($grantIdLine -replace '^grant_id\s*:\s*', '').Trim())
+            $grantHistory = (& $exe grant history --db $db --participant-id ci-participant-main) | Out-String
+            if ($grantHistory -notmatch 'AUTHORIZATION ADMINISTRATION HISTORY' -or $grantHistory -notmatch 'local-cli' -or $grantHistory -notmatch '\bcreate\b') {
+              throw "grant history did not expose local create provenance"
+            }
+            $grantDeactivate = (& $exe grant durable deactivate --db $db --grant-id $grantId) | Out-String
+            if ($grantDeactivate -notmatch 'rows_changed\s*:\s*1') {
+              throw "durable grant deactivate did not change exactly one row"
+            }
+            $grantHistoryAfter = (& $exe grant history --db $db --participant-id ci-participant-main) | Out-String
+            if ($grantHistoryAfter -notmatch '\bdeactivate\b') {
+              throw "grant history did not expose deactivation provenance"
             }
 
             $adminRole = (& $exe participant set-role --db $db --participant-id ci-participant-main --role admin) | Out-String
