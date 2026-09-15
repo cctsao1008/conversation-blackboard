@@ -181,17 +181,19 @@ fn create_durable_grant_in_tx(
                AND resource IS ?5
              ORDER BY id",
         )?;
-        stmt.query_map(
-            params![
-                &request.principal_provider,
-                &request.principal_subject,
-                &request.participant_id,
-                &request.capability,
-                request.resource.as_deref(),
-            ],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?
+        let rows = stmt
+            .query_map(
+                params![
+                    &request.principal_provider,
+                    &request.principal_subject,
+                    &request.participant_id,
+                    &request.capability,
+                    request.resource.as_deref(),
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
     };
 
     if let Some((id, _)) = rows.iter().find(|(_, status)| status == "active") {
