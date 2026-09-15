@@ -52,6 +52,11 @@ jobs:
           .\target\release\conversation-blackboard.exe participant auth-generate --help
           .\target\release\conversation-blackboard.exe participant auth-rotate --help
           .\target\release\conversation-blackboard.exe participant auth-revoke --help
+          .\target\release\conversation-blackboard.exe grant --help
+          .\target\release\conversation-blackboard.exe grant durable --help
+          .\target\release\conversation-blackboard.exe grant durable create --help
+          .\target\release\conversation-blackboard.exe grant durable list --help
+          .\target\release\conversation-blackboard.exe grant durable deactivate --help
           .\target\release\conversation-blackboard.exe verify --help
           .\target\release\conversation-blackboard.exe client --help
           .\target\release\conversation-blackboard.exe service --help
