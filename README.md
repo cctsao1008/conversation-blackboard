@@ -172,6 +172,21 @@ protocol       != authority
 shared data    != shared identity
 ```
 
+### Authorization policy observation
+
+Blackboard keeps four authorization-policy concerns separate:
+
+```text
+snapshot       what explicit authority objects exist
+integrity      whether stored authority objects are coherent
+decision       why one requested action is allowed or denied
+administration create, reactivate, or deactivate authority
+```
+
+`GET /api/authorization-policy` and MCP `blackboard_authorization_policy` project the same canonical read-only snapshot. Visibility uses the dedicated `read_authorization_policy` capability on the global `authorization-policy` resource. Only Human Web admin self-authentication has implicit snapshot visibility; participant HMAC, GitHub owner, and OIDC/Bearer principals require an explicit matching Blackboard grant.
+
+Snapshot reads do not migrate, repair, normalize, reactivate, deactivate, or consume authority. Inactive durable grants plus expired or consumed delegated grants remain visible as inventory history, and credential material is never part of the snapshot contract.
+
 ## Production shape
 
 Architecturally, production consists of one authoritative Blackboard runtime backed by one authoritative durable store and exposed through authenticated ingress adapters:
@@ -199,6 +214,8 @@ Those are current deployment and provider choices, not core semantic requirement
 Use the README for the system overview. Detailed contracts and operations live in `docs/`:
 
 - [`docs/authentication-evolution.md`](docs/authentication-evolution.md) — current access methods and authentication evolution
+- [`docs/authorization-policy.md`](docs/authorization-policy.md) — canonical authorization kernel, policy observation boundaries, delegated authority, and explainability
+- [`docs/contract-projections.md`](docs/contract-projections.md) — canonical Rust shapes and REST/MCP/OpenAPI/UTCP projection discipline
 - [`docs/github-integration.md`](docs/github-integration.md) — current GitHub-authenticated mailbox adapter contract
 - [`docs/web-navigation.md`](docs/web-navigation.md) — browser, guest, and navigation trust surfaces
 - [`docs/operations.md`](docs/operations.md) — current database, identity, auth, release, and deployment operations
