@@ -412,6 +412,77 @@ mod tests {
     }
 
     #[test]
+    fn durable_principal_grant_cli_parses() {
+        let create = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "durable",
+            "create",
+            "--db",
+            "board.db",
+            "--principal-provider",
+            "oidc:https://issuer.example",
+            "--principal-subject",
+            "agent-1",
+            "--participant-id",
+            "maker-main",
+            "--capability",
+            "post_message",
+            "--resource",
+            "control-systems",
+        ])
+        .unwrap();
+        assert!(matches!(
+            create.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::Durable {
+                    command: grant_admin::DurableGrantCommand::Create { .. }
+                }
+            })
+        ));
+
+        let list = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "durable",
+            "list",
+            "--db",
+            "board.db",
+            "--participant-id",
+            "maker-main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            list.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::Durable {
+                    command: grant_admin::DurableGrantCommand::List { .. }
+                }
+            })
+        ));
+
+        let deactivate = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "durable",
+            "deactivate",
+            "--db",
+            "board.db",
+            "--grant-id",
+            "7",
+        ])
+        .unwrap();
+        assert!(matches!(
+            deactivate.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::Durable {
+                    command: grant_admin::DurableGrantCommand::Deactivate { grant_id: 7, .. }
+                }
+            })
+        ));
+    }
+
+    #[test]
     fn execution_audit_cli_parses() {
         let cli = Cli::try_parse_from([
             "conversation-blackboard",

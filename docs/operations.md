@@ -121,6 +121,40 @@ hmac-sha256-secret:<unpadded-base64url-32-byte-secret>
 
 Keep participant HMAC secrets out of chat, GitHub Issues, documentation, screenshots, logs, URLs, and command-line literals.
 
+## Authorization grants
+
+Authentication credentials and authorization grants are separate operator objects. A grant stores principal and scope metadata only; it never stores bearer/JWT/HMAC/TOTP credential material.
+
+Use **durable principal grants** for stable scoped authority:
+
+```powershell
+.\conversation-blackboard.exe grant durable create `
+  --db <DB> `
+  --principal-provider <PROVIDER> `
+  --principal-subject <SUBJECT> `
+  --participant-id <ID> `
+  --capability <CAPABILITY> `
+  --resource <RESOURCE>
+
+.\conversation-blackboard.exe grant durable list --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe grant durable deactivate --db <DB> --grant-id <GRANT_ID>
+```
+
+Omit `--resource` only when wildcard resource authority is intentionally required. Durable create is idempotent for an already-active exact scope and reactivates the same authority object after deactivation.
+
+A durable explicit grant is authoritative for its principal/participant/capability scope. Once explicit grants exist for that tuple, an implicit compatibility rule must not widen access to a different resource. Use `grant explain` before and after changes when scope effects are not obvious.
+
+Use the existing **delegated grants** for narrower authority with optional expiry, semantic intent binding, and one-shot consumption:
+
+```powershell
+.\conversation-blackboard.exe grant create ...
+.\conversation-blackboard.exe grant list --db <DB> --participant-id <ID>
+.\conversation-blackboard.exe grant explain ...
+.\conversation-blackboard.exe grant deactivate --db <DB> --grant-id <GRANT_ID>
+```
+
+Delegated one-shot consumption remains part of the same semantic execution transaction as the committed effect and receipt. Failed semantic execution does not burn one-shot authority.
+
 ## GitHub participant ownership
 
 GitHub-originated Chat writes use an external owner relation rather than participant HMAC.

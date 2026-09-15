@@ -22,6 +22,10 @@ const KNOWN_CAPABILITIES: [&str; 7] = [
     MANAGE_CHANNELS,
 ];
 
+pub fn is_known_capability(capability: &str) -> bool {
+    KNOWN_CAPABILITIES.contains(&capability)
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct EffectiveGrant {
     pub capability: String,
