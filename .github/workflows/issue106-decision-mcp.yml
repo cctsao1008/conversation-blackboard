@@ -20,6 +20,7 @@ jobs:
       - name: Apply authorization decision MCP projection
         run: |
           python .github/scripts/issue106_decision_mcp.py
+          python .github/scripts/issue106_decision_mcp_expectations.py
           cargo fmt --all
       - name: Verify MCP decision projection
         run: |
@@ -34,7 +35,7 @@ jobs:
           git commit -m '#106 Project authorization decisions through MCP'
       - name: Remove temporary migration helpers
         run: |
-          git rm .github/scripts/issue106_decision_mcp.py .github/workflows/issue106-decision-mcp.yml
+          git rm .github/scripts/issue106_decision_mcp.py .github/scripts/issue106_decision_mcp_expectations.py .github/workflows/issue106-decision-mcp.yml
           git commit -m '#106 Remove MCP decision migration helpers'
       - name: Push
         run: git push origin HEAD:main
