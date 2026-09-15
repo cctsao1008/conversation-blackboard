@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/scripts/issue104_remote_policy_integrity.py'
+      - '.github/scripts/issue104_mcp_contract_fix.py'
       - '.github/workflows/issue104-remote-policy-integrity.yml'
 
 permissions:
@@ -18,7 +19,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply remote policy integrity migration
-        run: python .github/scripts/issue104_remote_policy_integrity.py
+        run: |
+          python .github/scripts/issue104_remote_policy_integrity.py
+          python .github/scripts/issue104_mcp_contract_fix.py
       - name: Format and verify
         run: |
           cargo fmt
@@ -33,7 +36,7 @@ jobs:
           git commit -m "#104 Add privileged remote policy integrity projection"
       - name: Remove temporary migration helpers
         run: |
-          git rm .github/scripts/issue104_remote_policy_integrity.py .github/workflows/issue104-remote-policy-integrity.yml
+          git rm .github/scripts/issue104_remote_policy_integrity.py .github/scripts/issue104_mcp_contract_fix.py .github/workflows/issue104-remote-policy-integrity.yml
           git commit -m "#104 Remove remote policy integrity migration helpers"
       - name: Push
         run: git push
