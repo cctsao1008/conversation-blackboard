@@ -1,0 +1,66 @@
+name: issue108-admin-authority-retry2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/issue108-admin-authority-retry2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply administration authority boundary
+        run: python .github/scripts/issue108_admin_authority_patch.py
+      - name: Repair Human Web admin fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/authorization_admin.rs')
+          text = path.read_text()
+          start = text.index('fn authorized_durable_create_checks_authority_and_mutates_in_one_boundary()')
+          end = text.index('fn explicit_remote_administration_grant_allows_external_principal()', start)
+          block = text[start:end]
+          anchor = 'let admin = Principal {'
+          if block.count(anchor) != 1:
+              raise SystemExit(f'expected one admin Principal anchor, found {block.count(anchor)}')
+          block = block.replace(
+              anchor,
+              'identity::set_web_participant_role(&conn, "admin-main", "admin").unwrap();\n        let admin = Principal {',
+              1,
+          )
+          path.write_text(text[:start] + block + text[end:])
+          PY
+      - name: Format
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Strict Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Full Rust tests
+        run: cargo test --all-targets --all-features
+      - name: Commit durable implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/authorization.rs src/authorization_admin.rs
+          git commit -m '#108 Establish authorization administration authority boundary'
+      - name: Remove temporary #108 helpers
+        run: |
+          git rm -f .github/scripts/issue108_admin_authority_patch.py
+          git rm -f .github/scripts/issue108_borrow_fix.py
+          git rm -f .github/workflows/issue108-admin-authority.yml
+          git rm -f .github/workflows/issue108-admin-authority-retry.yml
+          git rm -f .github/workflows/issue108-admin-authority-retry2.yml
+          git commit -m '#108 Remove administration authority migration helpers'
+      - name: Push main
+        run: git push origin HEAD:main
