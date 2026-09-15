@@ -1,0 +1,42 @@
+name: issue104-contract-completion
+
+on:
+  push:
+    paths:
+      - '.github/scripts/issue104_contract_completion.py'
+      - '.github/workflows/issue104-contract-completion.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply policy integrity contract completion
+        run: python .github/scripts/issue104_contract_completion.py
+      - name: Validate integration metadata
+        run: |
+          python -m json.tool integrations/utcp.json > /dev/null
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit durable policy integrity completion
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/access_api.rs src/mcp.rs src/http_contract_tests.rs src/mcp_contract_tests.rs src/contract_parity_tests.rs integrations/openapi.yaml integrations/utcp.json
+          git commit -m "#104 Complete policy integrity remote contracts"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue104_contract_completion.py .github/workflows/issue104-contract-completion.yml
+          git commit -m "#104 Remove policy integrity completion helpers"
+      - name: Push
+        run: git push
