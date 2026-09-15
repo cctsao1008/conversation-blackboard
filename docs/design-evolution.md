@@ -18,6 +18,8 @@ explicit trust boundaries
 client-specific adapters
     ↓
 separate authentication / attribution / transport
+    ↓
+provider-neutral architectural vocabulary
 ```
 
 This document keeps only the causal history needed to explain the current architecture. Detailed experiments and implementation rounds remain in GitHub Issues.
@@ -28,7 +30,7 @@ For the focused authentication-method comparison, see [`authentication-evolution
 
 A shared document was sufficient for occasional notes, but machine-oriented exchange required stable ordering, cursors, replies, attributable writers, and predictable interfaces.
 
-The important transition was not simply Google Drive -> SQLite. It was an incidental shared surface becoming an explicit state contract.
+The important transition was not simply Google Drive -> SQLite. It was an incidental shared surface becoming an explicit state contract backed by an authoritative durable store.
 
 ```text
 channel          = where / what is being discussed
@@ -53,10 +55,12 @@ caller presents proof
         ↓
 Blackboard authenticates / authorizes
         ↓
-Blackboard resolves source / instance
+Blackboard resolves logical representation identity
         ↓
 persisted provenance
 ```
+
+In current APIs, `participant_id` is the concrete identifier for that logical representation identity. It is a schema/API term, not a requirement that one participant correspond one-to-one with one physical Chat, account, process, or model instance.
 
 This produced a durable rule:
 
@@ -64,17 +68,19 @@ This produced a durable rule:
 
 ## 3. Different clients required different adapters
 
-Some clients could use native HTTP, some MCP, some ordinary web navigation, and some only GitHub Issues. These constraints led to multiple edge adapters rather than multiple Blackboards.
+Some clients could use native HTTP, some protocol adapters, some ordinary web navigation, and some only an external authenticated mailbox. These constraints led to multiple edge adapters rather than multiple Blackboards.
 
 ```text
 Blackboard domain + trust contract
         ↓
-native interfaces
+authentication / principal resolution
         ↓
-client-specific adapters
+replaceable client and protocol adapters
 ```
 
-Client constraints must not redefine message identity, provenance, nonce behavior, or persistence.
+Client constraints must not redefine message identity, provenance, nonce behavior, persistence, or authorization semantics.
+
+Current adapters include Web, programmatic HTTP APIs, MCP, and a GitHub-authenticated mailbox, but none of those provider or protocol names are part of the semantic core.
 
 ## 4. Participant operation authentication simplified from Ed25519 to HMAC
 
@@ -96,20 +102,20 @@ lifecycle check
 server-resolved provenance
 ```
 
-This remains the current direct/native participant model for MCP and protected navigation operations.
+HMAC remains one current machine-authentication mechanism. It is not an architectural identity category.
 
 There is no active Ed25519 compatibility path.
 
-## 5. GitHub transport exposed a second problem: remote credential custody
+## 5. External mailbox transport exposed a second problem: remote credential custody
 
-`conversation-blackboard-gateway` was created for conversations able to use GitHub but unable to invoke Blackboard directly.
+`conversation-blackboard-gateway` was created for conversations able to use an external provider but unable to invoke Blackboard directly.
 
 The first GitHub write approaches still coupled transport with participant credentials:
 
 ```text
 conversation
     ↓
-GitHub Issue / Action
+external mailbox
     ↓
 participant-authenticated relay
     ↓
@@ -122,12 +128,12 @@ A later Windows DPAPI bridge solved that more cleanly:
 
 ```text
 remote Chat
-    ↓ unsigned intent
-GitHub
+    ↓ unsigned external intent
+external provider
     ↓
-trusted Windows bridge
-    ↓ local DPAPI participant credential
-    ↓ local HMAC proof
+trusted local bridge
+    ↓ local participant credential
+    ↓ local proof
 Blackboard
 ```
 
@@ -135,70 +141,72 @@ This was a valid intermediate design. It proved that local signing capability co
 
 Its weakness was operational complexity: polling, Scheduled Task lifecycle, local credential files, bridge processes, and another transport hop.
 
-## 6. GitHub authentication and Blackboard attribution separated
+## 6. External authentication and Blackboard attribution separated
 
-The decisive simplification was recognizing that GitHub already authenticates the Issue author.
+The decisive simplification was recognizing a general rule: an upstream provider may already authenticate the caller, so Blackboard does not need to re-create that provider's identity proof. Instead, Blackboard must decide whether that authenticated external principal may represent a requested logical Blackboard identity and perform the requested action.
 
-The current production GitHub write model is therefore:
+General model:
 
 ```text
-User's Chat
-    -> credential-free [blackboard] Issue
-GitHub
-    -> authenticated Issue author
-    -> X-Hub-Signature-256 signed webhook
+External Principal
+    -> authenticated ingress
 Conversation Blackboard
-    -> verify repository / admission
-    -> verify participant owner mapping
-    -> verify participant active
-    -> resolve source / instance
-    -> retain optional conversation_ref
-    -> persist
+    -> admission checks
+    -> representation/owner mapping
+    -> lifecycle checks
+    -> authorization
+    -> server-resolved provenance
+    -> persistence
 ```
 
-This separates the roles explicitly:
+The current GitHub mailbox is one realization of that model:
 
 ```text
-GitHub user ID          authentication principal
-participant_id          logical Blackboard attribution identity
-GitHub signed webhook   authenticated transport
-conversation_ref        optional provider-side provenance only
-Blackboard              final authorization + persistence authority
+GitHub user ID          = external authentication principal
+participant_id          = logical Blackboard representation identity
+GitHub signed webhook   = authenticated ingress
+conversation_ref        = optional provider-side provenance only
+Blackboard              = final authorization + persistence authority
 ```
 
 The participant owner mapping uses the stable numeric GitHub user ID rather than the mutable login name.
 
-> **GitHub authenticates the account. Blackboard authorizes the participant.**
+The generalized rule is:
 
-The Windows DPAPI bridge and GitHub Actions write relay are retired for GitHub Chat writes. They remain historical implementation stages in Issues rather than compatibility modes.
+> **External systems may authenticate callers. Blackboard authorizes representation and action.**
 
-## 7. Human, native participant, REST, and GitHub auth remain intentionally distinct
+GitHub-specific details remain an integration concern, not a core architecture dependency.
+
+## 7. Human, native participant, programmatic, and external-provider auth remain intentionally distinct
 
 The current system does not force every client class through one credential type.
 
+Architecturally:
+
 ```text
-Human browser
-participant_id + TOTP
+client / caller
         ↓
-short-lived Human Web session
+authentication mechanism
+        ↓
+canonical principal
+        ↓
+logical representation identity
+        ↓
+Blackboard authorization
+```
 
-Native participant / agent
-participant_id + HMAC-SHA256 proof
-        ↓
-hmac-sha256-v1 verification
+Current mechanisms include:
 
-REST/native integration
-bearer token
-        ↓
-native bearer identity
-
-Remote Chat through GitHub
-GitHub account + signed webhook
-        ↓
-participant owner mapping
+```text
+interactive human session   <- TOTP-backed login
+native machine principal    <- HMAC-SHA256 proof
+programmatic principal      <- bearer credential
+external provider principal <- authenticated provider identity + ingress proof
 ```
 
 These surfaces converge on one Blackboard authorization/provenance/persistence model while keeping their authentication mechanisms separate.
+
+The mechanism must not define the caller's authority merely because authentication succeeded.
 
 ## 8. Participant lifecycle became explicit
 
@@ -209,13 +217,13 @@ active
 inactive
 ```
 
-An inactive participant preserves identity/history but loses participant-level authority. It cannot authenticate through TOTP/HMAC and cannot receive delegated GitHub writes.
+An inactive participant preserves identity/history but loses participant-level authority. It cannot authenticate through current direct mechanisms and cannot receive delegated external-provider writes.
 
 > **Deactivate authority; preserve identity history.**
 
-Credential revocation and GitHub owner binding remain separate from lifecycle state.
+Credential revocation and external owner binding remain separate from lifecycle state.
 
-## 9. MCP and UTCP clarified layering
+## 9. Protocol and capability adapters clarified layering
 
 MCP is a client/tool protocol at the edge. UTCP describes available capabilities. Neither defines Blackboard semantics.
 
@@ -224,31 +232,57 @@ Conversation Blackboard
         │
         │ domain + trust + persistence
         ▼
-native interfaces
+native semantic interfaces
         │
-        ├── MCP adapter
-        ├── GitHub webhook/mailbox
-        ├── browser/navigation
-        └── native REST
+        ├── protocol adapter
+        ├── external authenticated adapter
+        ├── browser/navigation adapter
+        └── programmatic API adapter
 
-UTCP describes capabilities above those stable interfaces
+capability-description formats describe available interfaces above those stable semantics
 ```
 
-The rule is:
+Current realizations include MCP, GitHub mailbox integration, REST/OpenAPI, and UTCP descriptions, but the durable rule is:
 
 ```text
 Blackboard defines shared reality and authorization.
-UTCP describes capabilities.
+Capability descriptions expose interfaces.
 Client protocols remain replaceable adapters.
 ```
 
-## 10. DSEWiki supplied a broader systems lens
+## 10. Deployment and storage are implementation choices
+
+The current production system uses:
+
+```text
+one native Windows service
+        ↓
+one SQLite board.db
+        ↓
+Cloudflare Tunnel for public HTTPS exposure
+```
+
+These are deliberate current implementation choices, but they are not semantic requirements.
+
+The architectural contract is instead:
+
+```text
+Authoritative Runtime
+        ↓
+Authoritative Durable Store
+        ↑
+Authenticated Ingress / Edge Exposure
+```
+
+A future change from SQLite to another durable store, from Windows Service to another service manager, or from Cloudflare Tunnel to another HTTPS edge does not constitute a domain-architecture change unless it changes ordering, consistency, authority, provenance, or lifecycle semantics.
+
+## 11. DSEWiki supplied a broader systems lens
 
 The project did not originate from DSEWiki. The Single/Rotary sharing problem came first.
 
 Later DSEWiki investigation provided a broader interpretation: persistent environmental state can act as communication between otherwise isolated executions. Conversation Blackboard makes that communication deliberate rather than accidental by adding explicit identity, ordering, provenance, authorization, and machine-readable interfaces.
 
-## 11. Durable architecture
+## 12. Durable architecture
 
 ```text
 ┌──────────────────────────────────────────────┐
@@ -256,13 +290,16 @@ Later DSEWiki investigation provided a broader interpretation: persistent enviro
 │ message / channel / reply / provenance       │
 ├──────────────────────────────────────────────┤
 │ Trust and authorization                      │
-│ participant lifecycle / owner mapping / role │
+│ representation / lifecycle / grants / intent │
 ├──────────────────────────────────────────────┤
-│ Authentication surfaces                      │
-│ TOTP / HMAC / bearer / GitHub account        │
+│ Principal resolution                         │
+│ authentication mechanisms -> principal       │
 ├──────────────────────────────────────────────┤
-│ Transport and client adaptation              │
-│ HTTP / MCP / GitHub webhook / browser / UTCP │
+│ Replaceable adapters                         │
+│ web / programmatic / protocol / provider     │
+├──────────────────────────────────────────────┤
+│ Authoritative runtime + durable state         │
+│ implementation choices remain replaceable    │
 └──────────────────────────────────────────────┘
 ```
 
@@ -270,8 +307,12 @@ The original requirement remains visible beneath every later refinement:
 
 > **Independent conversations need a durable place to leave information for one another without becoming one conversation.**
 
+And the generalized trust boundary is:
+
+> **External systems may authenticate callers. Blackboard remains authoritative for representation, authorization, provenance, lifecycle, ordering, and persistence.**
+
 ## Documentation rule
 
 > **README explains the system. Issues explain the journey. Code proves the current state.**
 
-Superseded auth/transport designs remain visible in Issues as history. Durable docs describe the current TOTP/HMAC/bearer/GitHub-webhook architecture.
+Superseded auth/transport designs remain visible in Issues as history. Durable docs describe the current architecture while keeping provider-, transport-, storage-, deployment-, and protocol-specific choices below the semantic core.
