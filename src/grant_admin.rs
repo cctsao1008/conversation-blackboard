@@ -4,9 +4,19 @@ use std::{
 };
 
 use clap::Subcommand;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::Connection;
 
-use crate::{authorization, db, execution::Principal, identity};
+use crate::{
+    authorization,
+    authorization_admin::{
+        self, AuthorizationAdministrationActor, DelegatedGrantCreateRequest as GrantCreateSpec,
+        DurableGrantCreateOutcome, DurableGrantCreateRequest as DurableGrantCreateSpec,
+        DurableGrantCreateState,
+    },
+    db,
+    execution::Principal,
+    identity,
+};
 
 type DynResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -31,18 +41,6 @@ struct GrantInspection {
     status: String,
 }
 
-#[derive(Debug, Clone)]
-struct GrantCreateSpec<'a> {
-    principal_provider: &'a str,
-    principal_subject: &'a str,
-    participant_id: &'a str,
-    capability: &'a str,
-    resource: Option<&'a str>,
-    intent_id: Option<&'a str>,
-    expires_at: Option<i64>,
-    one_shot: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DurableGrantInspection {
     id: i64,
@@ -54,28 +52,6 @@ struct DurableGrantInspection {
     status: String,
     created_at: i64,
     updated_at: i64,
-}
-
-#[derive(Debug, Clone)]
-struct DurableGrantCreateSpec<'a> {
-    principal_provider: &'a str,
-    principal_subject: &'a str,
-    participant_id: &'a str,
-    capability: &'a str,
-    resource: Option<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DurableGrantCreateState {
-    Created,
-    Existing,
-    Reactivated,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DurableGrantCreateOutcome {
-    id: i64,
-    state: DurableGrantCreateState,
 }
 
 #[derive(Debug, Subcommand)]
@@ -471,84 +447,11 @@ fn create_durable_grant(
     conn: &Connection,
     spec: &DurableGrantCreateSpec<'_>,
 ) -> DynResult<DurableGrantCreateOutcome> {
-    authorization::ensure_grant_schema(conn)?;
-    let principal_provider = normalize(
-        spec.principal_provider,
-        MAX_PROVIDER_BYTES,
-        "principal_provider",
-    )?;
-    let principal_subject = normalize(
-        spec.principal_subject,
-        MAX_SUBJECT_BYTES,
-        "principal_subject",
-    )?;
-    let participant_id =
-        identity::validate_participant_id(spec.participant_id).ok_or("invalid participant_id")?;
-    require_active_participant(conn, &participant_id)?;
-    let capability = normalize(spec.capability, MAX_CAPABILITY_BYTES, "capability")?;
-    if !authorization::is_known_capability(&capability) {
-        return Err(format!("unsupported capability: {capability}").into());
-    }
-    let resource = normalize_optional(spec.resource, MAX_RESOURCE_BYTES, "resource")?;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, status
-         FROM principal_grants
-         WHERE principal_provider = ?1
-           AND principal_subject = ?2
-           AND participant_id = ?3
-           AND capability = ?4
-           AND resource IS ?5
-         ORDER BY id",
-    )?;
-    let rows = stmt
-        .query_map(
-            params![
-                &principal_provider,
-                &principal_subject,
-                &participant_id,
-                &capability,
-                resource.as_deref(),
-            ],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-
-    if let Some((id, _)) = rows.iter().find(|(_, status)| status == "active") {
-        return Ok(DurableGrantCreateOutcome {
-            id: *id,
-            state: DurableGrantCreateState::Existing,
-        });
-    }
-    if let Some((id, _)) = rows.first() {
-        conn.execute(
-            "UPDATE principal_grants
-             SET status = 'active', updated_at = unixepoch()
-             WHERE id = ?1",
-            [id],
-        )?;
-        return Ok(DurableGrantCreateOutcome {
-            id: *id,
-            state: DurableGrantCreateState::Reactivated,
-        });
-    }
-
-    conn.execute(
-        "INSERT INTO principal_grants
-            (principal_provider, principal_subject, participant_id, capability, resource)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            principal_provider,
-            principal_subject,
-            participant_id,
-            capability,
-            resource,
-        ],
-    )?;
-    Ok(DurableGrantCreateOutcome {
-        id: conn.last_insert_rowid(),
-        state: DurableGrantCreateState::Created,
-    })
+    authorization_admin::create_durable_grant(
+        conn,
+        &AuthorizationAdministrationActor::local_cli(),
+        spec,
+    )
 }
 
 fn list_durable_grants(
@@ -589,90 +492,22 @@ fn list_durable_grants(
     }
 }
 
-fn deactivate_durable_grant(conn: &Connection, grant_id: i64) -> rusqlite::Result<Option<usize>> {
-    authorization::ensure_grant_schema(conn)?;
-    let scope: Option<(String, String, String, String, Option<String>)> = conn
-        .query_row(
-            "SELECT principal_provider, principal_subject, participant_id, capability, resource
-             FROM principal_grants WHERE id = ?1",
-            [grant_id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((provider, subject, participant_id, capability, resource)) = scope else {
-        return Ok(None);
-    };
-    let updated = conn.execute(
-        "UPDATE principal_grants
-         SET status = 'inactive', updated_at = unixepoch()
-         WHERE principal_provider = ?1
-           AND principal_subject = ?2
-           AND participant_id = ?3
-           AND capability = ?4
-           AND resource IS ?5
-           AND status != 'inactive'",
-        params![provider, subject, participant_id, capability, resource],
-    )?;
-    Ok(Some(updated))
+fn deactivate_durable_grant(conn: &Connection, grant_id: i64) -> DynResult<Option<usize>> {
+    Ok(authorization_admin::deactivate_durable_grant(
+        conn,
+        &AuthorizationAdministrationActor::local_cli(),
+        grant_id,
+    )?
+    .map(|outcome| outcome.rows_changed))
 }
 
 fn create_grant(conn: &Connection, spec: &GrantCreateSpec<'_>) -> DynResult<i64> {
-    authorization::ensure_grant_schema(conn)?;
-
-    let principal_provider = normalize(
-        spec.principal_provider,
-        MAX_PROVIDER_BYTES,
-        "principal_provider",
-    )?;
-    let principal_subject = normalize(
-        spec.principal_subject,
-        MAX_SUBJECT_BYTES,
-        "principal_subject",
-    )?;
-    let participant_id =
-        identity::validate_participant_id(spec.participant_id).ok_or("invalid participant_id")?;
-    let capability = normalize(spec.capability, MAX_CAPABILITY_BYTES, "capability")?;
-    let resource = normalize_optional(spec.resource, MAX_RESOURCE_BYTES, "resource")?;
-    let intent_id = match spec.intent_id {
-        Some(value) => {
-            Some(crate::execution::normalize_intent_id(value).map_err(|_| "invalid intent_id")?)
-        }
-        None => None,
-    };
-
-    require_active_participant(conn, &participant_id)?;
-
-    if let Some(expires_at) = spec.expires_at {
-        let now: i64 = conn.query_row("SELECT unixepoch()", [], |row| row.get(0))?;
-        if expires_at <= now {
-            return Err("expires_at must be a future Unix timestamp".into());
-        }
-    }
-
-    conn.execute(
-        "INSERT INTO delegated_grants
-            (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            principal_provider,
-            principal_subject,
-            participant_id,
-            capability,
-            resource,
-            intent_id,
-            spec.expires_at,
-            i64::from(spec.one_shot)
-        ],
-    )?;
-    Ok(conn.last_insert_rowid())
+    Ok(authorization_admin::create_delegated_grant(
+        conn,
+        &AuthorizationAdministrationActor::local_cli(),
+        spec,
+    )?
+    .id)
 }
 
 fn list_grants(
@@ -716,41 +551,13 @@ fn list_grants(
     }
 }
 
-fn deactivate_grant(conn: &Connection, grant_id: i64) -> rusqlite::Result<bool> {
-    authorization::ensure_grant_schema(conn)?;
-    let exists = conn
-        .query_row(
-            "SELECT 1 FROM delegated_grants WHERE id = ?1",
-            [grant_id],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if !exists {
-        return Ok(false);
-    }
-    conn.execute(
-        "UPDATE delegated_grants
-         SET status = 'inactive', updated_at = unixepoch()
-         WHERE id = ?1 AND status != 'inactive'",
-        [grant_id],
-    )?;
-    Ok(true)
-}
-
-fn require_active_participant(conn: &Connection, participant_id: &str) -> DynResult {
-    let participant_status: Option<String> = conn
-        .query_row(
-            "SELECT status FROM web_participants WHERE participant_id = ?1",
-            [participant_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    match participant_status.as_deref() {
-        Some("active") => Ok(()),
-        Some(_) => Err(format!("participant is not active: {participant_id}").into()),
-        None => Err(format!("unknown participant: {participant_id}").into()),
-    }
+fn deactivate_grant(conn: &Connection, grant_id: i64) -> DynResult<bool> {
+    Ok(authorization_admin::deactivate_delegated_grant(
+        conn,
+        &AuthorizationAdministrationActor::local_cli(),
+        grant_id,
+    )?
+    .is_some())
 }
 
 fn normalize(value: &str, max_bytes: usize, field: &'static str) -> DynResult<String> {

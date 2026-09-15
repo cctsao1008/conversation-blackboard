@@ -116,6 +116,35 @@ ON delegated_grants(
     status
 );
 
+CREATE TABLE IF NOT EXISTS authorization_admin_events (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    grant_store                TEXT NOT NULL CHECK (grant_store IN ('durable', 'delegated')),
+    grant_id                   INTEGER NOT NULL,
+    operation                  TEXT NOT NULL CHECK (operation IN ('create', 'reactivate', 'deactivate')),
+    actor_surface              TEXT NOT NULL,
+    actor_provider             TEXT,
+    actor_subject              TEXT,
+    actor_participant_id       TEXT,
+    target_principal_provider  TEXT NOT NULL,
+    target_principal_subject   TEXT NOT NULL,
+    participant_id             TEXT NOT NULL,
+    capability                 TEXT NOT NULL,
+    resource                   TEXT,
+    intent_id                  TEXT,
+    expires_at                 INTEGER,
+    one_shot                   INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    before_status              TEXT CHECK (before_status IS NULL OR before_status IN ('active', 'inactive')),
+    after_status               TEXT NOT NULL CHECK (after_status IN ('active', 'inactive')),
+    created_at                 INTEGER NOT NULL DEFAULT (unixepoch()),
+    CHECK (
+        (actor_provider IS NULL AND actor_subject IS NULL)
+        OR (actor_provider IS NOT NULL AND actor_subject IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_authorization_admin_events_grant
+ON authorization_admin_events(grant_store, grant_id, id);
+
 CREATE TABLE IF NOT EXISTS channels (
     name        TEXT PRIMARY KEY,
     visibility  TEXT NOT NULL DEFAULT 'private',

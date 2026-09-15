@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Result};
 
 use crate::{
-    execution,
+    authorization_admin, execution,
     model::{ChannelMetadata, ChannelSummary, Identity, Message},
 };
 
@@ -50,6 +50,7 @@ pub fn initialize(path: &Path) -> Result<()> {
     migrate_web_participant_status(&conn)?;
     migrate_message_conversation_ref(&conn)?;
     migrate_channel_metadata(&conn)?;
+    authorization_admin::migrate_schema(&conn)?;
     execution::migrate_execution_schema(&conn)?;
     Ok(())
 }

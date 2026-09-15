@@ -4,6 +4,7 @@ mod access_control_contract_tests;
 mod adapter_profile;
 mod admin;
 mod authorization;
+mod authorization_admin;
 mod client;
 mod client_cli;
 #[cfg(test)]
