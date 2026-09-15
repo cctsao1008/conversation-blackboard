@@ -487,7 +487,8 @@ async fn http_tool_call_requires_auth(state: &AppState, object: &Map<String, Val
         | "blackboard_execution_audit"
         | "blackboard_execution_audit_integrity"
         | "blackboard_execution_audit_sweep"
-        | "blackboard_authorization_policy_integrity" => true,
+        | "blackboard_authorization_policy_integrity"
+        | "blackboard_authorization_policy" => true,
         "blackboard_read" => {
             let Some(arguments) = arguments else {
                 return false;
@@ -882,6 +883,22 @@ fn tools_list_result() -> Value {
                 },
                 "outputSchema": contract_schema::authorization_integrity_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
+                "name": "blackboard_authorization_policy",
+                "title": "Read Blackboard Authorization Policy",
+                "description": "Read the privileged canonical inventory of explicit durable and delegated authorization objects without modifying, normalizing, repairing, or consuming authority.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": contract_schema::authorization_policy_envelope_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
     })
@@ -961,6 +978,9 @@ async fn tool_call_result(
         "blackboard_authorization_policy_integrity" => Ok(
             blackboard_authorization_policy_integrity(state, &arguments, transport_principal).await,
         ),
+        "blackboard_authorization_policy" => {
+            Ok(blackboard_authorization_policy(state, &arguments, transport_principal).await)
+        }
         _ => Err("unknown_tool"),
     }
 }
@@ -1347,6 +1367,83 @@ async fn blackboard_execution_audit_sweep(
         Err(()) => return tool_error("database_unavailable"),
     };
     tool_success(json!({"sweep": report}))
+}
+
+async fn blackboard_authorization_policy(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
+    if !only_keys(arguments, &["participant_id", "auth"]) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+
+    // Authenticate first without evaluating policy. This keeps stale-schema
+    // requests observationally read-only even though the shared authorization
+    // evaluator has a compatibility ensure path.
+    let principal = if let Some(principal) = transport_principal {
+        principal.clone()
+    } else {
+        if let Err(code) = resolve_capability_identity(
+            state,
+            arguments,
+            &participant_id,
+            authorization::READ_AUTHORIZATION_POLICY,
+            Some(authorization::AUTHORIZATION_POLICY_RESOURCE),
+        )
+        .await
+        {
+            return tool_error(code);
+        }
+        execution::Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: participant_id.clone(),
+        }
+    };
+
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let (schema_current, allowed, snapshot) = match with_db(state, move |conn| {
+        let schema_current = authorization::authorization_policy_snapshot_schema_current(conn)?;
+        if !schema_current {
+            return Ok((false, false, None));
+        }
+        let allowed = authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_AUTHORIZATION_POLICY,
+            Some(authorization::AUTHORIZATION_POLICY_RESOURCE),
+        )?;
+        if !allowed {
+            return Ok((true, false, None));
+        }
+        Ok((
+            true,
+            true,
+            Some(authorization::read_authorization_policy_snapshot(conn)?),
+        ))
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    if !schema_current {
+        return tool_error("authorization_schema_not_current");
+    }
+    if !allowed {
+        return tool_error("forbidden");
+    }
+    let snapshot = snapshot.expect("authorized current-schema policy read must produce snapshot");
+    tool_success(json!({"policy": snapshot}))
 }
 
 async fn blackboard_authorization_policy_integrity(

@@ -703,7 +703,7 @@ async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     )
     .await
     .unwrap();
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
 
     let unknown = mcp::stdio_dispatch(
         &state,
@@ -735,7 +735,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -774,6 +774,43 @@ async fn mcp_policy_integrity_tool_uses_canonical_read_only_schema() {
         contract_schema::authorization_integrity_envelope_schema()
     );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "auth"));
+}
+
+#[tokio::test]
+async fn mcp_policy_snapshot_tool_uses_canonical_read_only_schema() {
+    let fixture = fixture();
+    let response = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 122,
+            "method": "tools/list",
+            "params": {}
+        })),
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    let tool = value["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_authorization_policy")
+        .expect("policy snapshot tool must be advertised");
+    assert_eq!(
+        tool["outputSchema"],
+        contract_schema::authorization_policy_envelope_schema()
+    );
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    let delegated_properties = &tool["outputSchema"]["properties"]["policy"]["properties"]
+        ["delegated_grants"]["items"]["properties"];
+    assert!(delegated_properties.get("created_at").is_none());
+    assert!(delegated_properties.get("updated_at").is_none());
     assert!(tool["inputSchema"]["required"]
         .as_array()
         .unwrap()
@@ -828,6 +865,20 @@ fn sweep_arguments(secret: &str, participant_id: &str) -> Value {
         participant_id,
         authorization::READ_EXECUTION_AUDIT_SWEEP,
         Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+    )
+    .unwrap();
+    json!({
+        "participant_id": participant_id,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    })
+}
+
+fn policy_snapshot_arguments(secret: &str, participant_id: &str) -> Value {
+    let proof = participant_auth::compute_capability_proof(
+        secret,
+        participant_id,
+        authorization::READ_AUTHORIZATION_POLICY,
+        Some(authorization::AUTHORIZATION_POLICY_RESOURCE),
     )
     .unwrap();
     json!({
@@ -933,6 +984,235 @@ async fn mcp_audit_sweep_is_privileged_and_projects_canonical_report() {
             .unwrap()
             .iter()
             .any(|entry| entry["kind"] == "orphan_navigation_reservation")
+    );
+}
+
+#[tokio::test]
+async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migrates_schema() {
+    let fixture = fixture();
+
+    let denied = call_tool(
+        &fixture.router,
+        123,
+        "blackboard_authorization_policy",
+        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&denied), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_authorization_policy_integrity', 'authorization-policy-integrity')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let wrong_capability = call_tool(
+        &fixture.router,
+        124,
+        "blackboard_authorization_policy",
+        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&wrong_capability), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_authorization_policy', 'authorization-policy')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO delegated_grants
+            (principal_provider, principal_subject, participant_id, capability, resource,
+             intent_id, expires_at, one_shot, status)
+         VALUES ('oidc:https://issuer.example', 'expired-agent', 'single-main', 'post_message',
+                 'alpha', 'snapshot-expired-001', unixepoch() - 60, 0, 'active')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = call_tool(
+        &fixture.router,
+        125,
+        "blackboard_authorization_policy",
+        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(allowed["result"]["isError"], false);
+    let durable = allowed["result"]["structuredContent"]["policy"]["durable_grants"]
+        .as_array()
+        .unwrap();
+    assert!(durable.iter().any(|entry| {
+        entry["capability"] == authorization::READ_AUTHORIZATION_POLICY
+            && entry["resource"] == authorization::AUTHORIZATION_POLICY_RESOURCE
+    }));
+    let delegated = allowed["result"]["structuredContent"]["policy"]["delegated_grants"]
+        .as_array()
+        .unwrap();
+    assert!(delegated.iter().any(|entry| {
+        entry["intent_id"] == "snapshot-expired-001" && entry["expires_at"].is_number()
+    }));
+
+    // Snapshot authority alone does not imply policy-integrity authority.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "UPDATE principal_grants SET status = 'inactive'
+         WHERE principal_provider = 'participant-hmac'
+           AND principal_subject = 'single-main'
+           AND participant_id = 'single-main'
+           AND capability = 'read_authorization_policy_integrity'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let integrity = call_tool(
+        &fixture.router,
+        126,
+        "blackboard_authorization_policy_integrity",
+        policy_integrity_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&integrity), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+
+    let legacy = call_tool(
+        &fixture.router,
+        127,
+        "blackboard_authorization_policy",
+        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&legacy), "authorization_schema_not_current");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        table_count, 0,
+        "MCP snapshot read recreated authorization schema"
+    );
+}
+
+#[tokio::test]
+async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
+    let fixture = fixture();
+    let (verifier, token) = bearer_verifier_and_token("policy-reader");
+    let router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let authorization_header = format!("Bearer {token}");
+
+    let denied = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 128,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_policy",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, denied_value) = response_json(denied).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tool_error_code(&denied_value), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'policy-reader', 'single-main',
+                 'read_authorization_policy', 'authorization-policy')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 129,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_policy",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, allowed_value) = response_json(allowed).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(allowed_value["result"]["isError"], false);
+    assert!(
+        allowed_value["result"]["structuredContent"]["policy"]["durable_grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["principal_subject"] == "policy-reader")
+    );
+
+    // A verified Bearer must not make a stale authorization schema writable.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+    let legacy = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 130,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_policy",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, legacy_value) = response_json(legacy).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        tool_error_code(&legacy_value),
+        "authorization_schema_not_current"
+    );
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        table_count, 0,
+        "Bearer snapshot read recreated authorization schema"
     );
 }
 
@@ -1984,6 +2264,7 @@ async fn modern_http_oidc_projection_makes_hmac_auth_optional_without_removing_f
         "blackboard_execution_audit_integrity",
         "blackboard_execution_audit_sweep",
         "blackboard_authorization_policy_integrity",
+        "blackboard_authorization_policy",
     ] {
         let required = tool_required_fields(&value, name);
         assert!(!required.iter().any(|field| field == "auth"), "{name}");
@@ -2025,9 +2306,11 @@ async fn legacy_http_and_stdio_keep_hmac_auth_required_when_oidc_is_available() 
     )
     .await;
     let (_, legacy_value) = response_json(legacy).await;
-    assert!(tool_required_fields(&legacy_value, "blackboard_write")
-        .iter()
-        .any(|field| field == "auth"));
+    for name in ["blackboard_write", "blackboard_authorization_policy"] {
+        assert!(tool_required_fields(&legacy_value, name)
+            .iter()
+            .any(|field| field == "auth"));
+    }
 
     let stdio = mcp::stdio_dispatch(
         &AppState {
@@ -2038,9 +2321,11 @@ async fn legacy_http_and_stdio_keep_hmac_auth_required_when_oidc_is_available() 
     )
     .await
     .unwrap();
-    assert!(tool_required_fields(&stdio, "blackboard_write")
-        .iter()
-        .any(|field| field == "auth"));
+    for name in ["blackboard_write", "blackboard_authorization_policy"] {
+        assert!(tool_required_fields(&stdio, name)
+            .iter()
+            .any(|field| field == "auth"));
+    }
 }
 
 #[tokio::test]
@@ -2060,9 +2345,11 @@ async fn modern_http_without_oidc_keeps_hmac_auth_required() {
     )
     .await;
     let (_, value) = response_json(response).await;
-    assert!(tool_required_fields(&value, "blackboard_write")
-        .iter()
-        .any(|field| field == "auth"));
+    for name in ["blackboard_write", "blackboard_authorization_policy"] {
+        assert!(tool_required_fields(&value, name)
+            .iter()
+            .any(|field| field == "auth"));
+    }
 }
 
 #[tokio::test]
@@ -2086,7 +2373,7 @@ async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_resu
     let (_, value) = response_json(response).await;
     assert_eq!(value["result"]["resultType"], "complete");
     assert_eq!(value["result"]["cacheScope"], "public");
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 9);
 }
 
 #[tokio::test]

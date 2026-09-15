@@ -117,7 +117,7 @@ fn mcp_stdio_server_runs_real_process_lifecycle_and_tools_call() {
 
     assert_eq!(responses[1]["id"], 2);
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
     assert!(tools.iter().any(|tool| tool["name"] == "blackboard_read"));
     assert!(tools
         .iter()
@@ -128,6 +128,9 @@ fn mcp_stdio_server_runs_real_process_lifecycle_and_tools_call() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "blackboard_authorization_policy_integrity"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "blackboard_authorization_policy"));
 
     assert_eq!(responses[2]["id"], 3);
     assert_eq!(responses[2]["result"]["isError"], false);

@@ -287,3 +287,75 @@ pub fn authorization_integrity_envelope_schema() -> Value {
         "additionalProperties": false
     })
 }
+
+pub fn durable_grant_snapshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer", "minimum": 1},
+            "principal_provider": {"type": "string", "minLength": 1},
+            "principal_subject": {"type": "string", "minLength": 1},
+            "participant_id": participant_id_schema(),
+            "capability": {"type": "string", "minLength": 1},
+            "resource": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "status": {"type": "string", "enum": ["active", "inactive"]},
+            "created_at": {"type": "integer"},
+            "updated_at": {"type": "integer"}
+        },
+        "required": [
+            "id", "principal_provider", "principal_subject", "participant_id",
+            "capability", "resource", "status", "created_at", "updated_at"
+        ],
+        "additionalProperties": false,
+        "description": "Non-secret durable authorization grant inventory record."
+    })
+}
+
+pub fn delegated_grant_snapshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer", "minimum": 1},
+            "principal_provider": {"type": "string", "minLength": 1},
+            "principal_subject": {"type": "string", "minLength": 1},
+            "participant_id": participant_id_schema(),
+            "capability": {"type": "string", "minLength": 1},
+            "resource": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "intent_id": {"anyOf": [intent_id_schema(), {"type": "null"}]},
+            "expires_at": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "one_shot": {"type": "boolean"},
+            "consumed_at": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "consumed_intent_id": {"anyOf": [intent_id_schema(), {"type": "null"}]},
+            "status": {"type": "string", "enum": ["active", "inactive"]}
+        },
+        "required": [
+            "id", "principal_provider", "principal_subject", "participant_id",
+            "capability", "resource", "intent_id", "expires_at", "one_shot",
+            "consumed_at", "consumed_intent_id", "status"
+        ],
+        "additionalProperties": false,
+        "description": "Non-secret delegated authorization grant inventory record including lifecycle and consumption state."
+    })
+}
+
+pub fn authorization_policy_snapshot_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "durable_grants": {"type": "array", "items": durable_grant_snapshot_schema()},
+            "delegated_grants": {"type": "array", "items": delegated_grant_snapshot_schema()}
+        },
+        "required": ["durable_grants", "delegated_grants"],
+        "additionalProperties": false,
+        "description": "Canonical privileged read-only inventory of explicit Blackboard authorization objects."
+    })
+}
+
+pub fn authorization_policy_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"policy": authorization_policy_snapshot_schema()},
+        "required": ["policy"],
+        "additionalProperties": false
+    })
+}
