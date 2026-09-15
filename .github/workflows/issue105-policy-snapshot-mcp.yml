@@ -1,0 +1,45 @@
+name: issue105-policy-snapshot-mcp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue105_policy_snapshot_mcp.py'
+      - '.github/scripts/issue105_policy_snapshot_mcp_fix.py'
+      - '.github/workflows/issue105-policy-snapshot-mcp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply policy snapshot MCP migration
+        run: |
+          python .github/scripts/issue105_policy_snapshot_mcp.py
+          python .github/scripts/issue105_policy_snapshot_mcp_fix.py
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit policy snapshot MCP projection
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs
+          git commit -m "#105 Add canonical authorization policy snapshot MCP projection"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue105_policy_snapshot_mcp.py
+          git rm .github/scripts/issue105_policy_snapshot_mcp_fix.py
+          git rm .github/workflows/issue105-policy-snapshot-mcp.yml
+          git commit -m "#105 Remove policy snapshot MCP migration helpers"
+      - name: Push
+        run: git push origin main
