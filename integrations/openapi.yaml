@@ -434,6 +434,32 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/authorization-policy/integrity:
+    get:
+      operationId: blackboardAuthorizationPolicyIntegrity
+      summary: Verify integrity of durable authorization policy objects.
+      description: Privileged projection of the canonical read-only authorization-policy integrity audit. Invalid policy state is returned as report data with HTTP 200; legacy authorization schemas fail without migration or repair.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      responses:
+        '200':
+          description: Canonical authorization-policy integrity report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationIntegrityEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Authorization schema is not current. The read does not migrate or repair it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
@@ -781,6 +807,53 @@ components:
       properties:
         sweep:
           $ref: '#/components/schemas/ExecutionAuditSweepReport'
+
+    AuthorizationIntegrityViolation:
+      type: object
+      additionalProperties: false
+      required: [kind, store, grant_id, participant_id, detail]
+      description: Non-secret read-only classification of malformed or ambiguous authorization-policy state.
+      properties:
+        kind:
+          type: string
+        store:
+          type: string
+        grant_id:
+          type: [integer, 'null']
+          minimum: 1
+        participant_id:
+          anyOf:
+            - $ref: '#/components/schemas/ParticipantId'
+            - type: 'null'
+        detail:
+          type: string
+
+    AuthorizationIntegrityReport:
+      type: object
+      additionalProperties: false
+      required: [valid, durable_grants_scanned, delegated_grants_scanned, violations]
+      description: Canonical read-only integrity report over Blackboard authorization policy objects.
+      properties:
+        valid:
+          type: boolean
+        durable_grants_scanned:
+          type: integer
+          minimum: 0
+        delegated_grants_scanned:
+          type: integer
+          minimum: 0
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthorizationIntegrityViolation'
+
+    AuthorizationIntegrityEnvelope:
+      type: object
+      additionalProperties: false
+      required: [integrity]
+      properties:
+        integrity:
+          $ref: '#/components/schemas/AuthorizationIntegrityReport'
 
     Identity:
       type: object

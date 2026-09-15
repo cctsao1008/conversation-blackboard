@@ -1380,6 +1380,10 @@ async fn blackboard_authorization_policy_integrity(
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
     let (schema_current, report) = match with_db(state, move |conn| {
+        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
+        if !schema_current {
+            return Ok((false, None));
+        }
         if !authorization::authorize(
             conn,
             &policy_principal,
@@ -1388,10 +1392,6 @@ async fn blackboard_authorization_policy_integrity(
             Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
         )? {
             return Ok((true, None));
-        }
-        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
-        if !schema_current {
-            return Ok((false, None));
         }
         Ok((
             true,

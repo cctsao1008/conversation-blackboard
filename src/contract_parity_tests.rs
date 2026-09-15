@@ -206,3 +206,60 @@ fn execution_audit_sweep_contracts_match_canonical_rust_shape() {
         "${BLACKBOARD_URL}/api/execution-audit/sweep"
     );
 }
+
+#[test]
+fn authorization_policy_integrity_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    assert!(api["paths"]
+        .get("/api/authorization-policy/integrity")
+        .is_some());
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationIntegrityReport/properties"
+        ),
+        names(
+            &contract_schema::authorization_integrity_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationIntegrityViolation/properties"
+        ),
+        names(
+            &contract_schema::authorization_integrity_violation_schema(),
+            "/properties"
+        )
+    );
+
+    let utcp = utcp_json();
+    let policy = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "authorization_policy_integrity")
+        .expect("UTCP authorization-policy integrity projection must exist");
+    assert_eq!(
+        names(policy, "/outputs/properties/integrity/properties"),
+        names(
+            &contract_schema::authorization_integrity_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            policy,
+            "/outputs/properties/integrity/properties/violations/items/properties"
+        ),
+        names(
+            &contract_schema::authorization_integrity_violation_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        policy["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/authorization-policy/integrity"
+    );
+}

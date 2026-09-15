@@ -651,6 +651,106 @@
           "location": "header"
         }
       }
+    },
+    {
+      "name": "authorization_policy_integrity",
+      "description": "Run the privileged read-only authorization-policy integrity audit. Blackboard authorization remains authoritative; invalid policy state is returned as report data and the read never migrates or repairs policy storage.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "outputs": {
+        "type": "object",
+        "required": [
+          "integrity"
+        ],
+        "properties": {
+          "integrity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "valid",
+              "durable_grants_scanned",
+              "delegated_grants_scanned",
+              "violations"
+            ],
+            "properties": {
+              "valid": {
+                "type": "boolean"
+              },
+              "durable_grants_scanned": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "delegated_grants_scanned": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "violations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "store",
+                    "grant_id",
+                    "participant_id",
+                    "detail"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "store": {
+                      "type": "string"
+                    },
+                    "grant_id": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "participant_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 64
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "authorization",
+        "integrity",
+        "privileged",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_authorization_policy_integrity_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/authorization-policy/integrity",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
     }
   ]
 }

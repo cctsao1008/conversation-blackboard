@@ -690,3 +690,141 @@ async fn execution_audit_sweep_http_requires_privileged_authority_and_returns_in
         .iter()
         .any(|entry| entry["kind"] == "orphan_navigation_reservation"));
 }
+
+#[tokio::test]
+async fn authorization_policy_integrity_http_is_privileged_read_only_and_reports_invalid_state() {
+    let fixture = fixture("policy-integrity");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+
+    let unauthenticated = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    // A different privileged capability must not imply policy-integrity access.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('human-web', ?1, ?1, 'read_execution_audit_sweep', 'execution-audit-sweep')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let wrong_capability = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(wrong_capability.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "UPDATE web_participants SET role = 'admin' WHERE participant_id = ?1",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let clean = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (clean_status, clean_body) = response_json(clean).await;
+    assert_eq!(clean_status, StatusCode::OK);
+    assert_eq!(clean_body["integrity"]["valid"], true);
+
+    // Invalid policy is report data, not an HTTP failure and not auto-repaired.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('human-web', ?1, ?1, 'definitely_unknown_capability', NULL)",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let invalid = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (invalid_status, invalid_body) = response_json(invalid).await;
+    assert_eq!(invalid_status, StatusCode::OK);
+    assert_eq!(invalid_body["integrity"]["valid"], false);
+    assert!(invalid_body["integrity"]["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["kind"] == "unsupported_capability"));
+
+    // Legacy schema must fail before authorize() can run its compatibility
+    // ensure logic. The missing table must remain missing after the GET.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    let before: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, 0);
+    drop(conn);
+
+    let legacy = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy/integrity",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after, 0,
+        "read-only integrity GET recreated authorization schema"
+    );
+}

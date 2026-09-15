@@ -215,6 +215,10 @@ async fn authorization_policy_integrity(
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
     let (allowed, schema_current, report) = with_db(&state, move |conn| {
+        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
+        if !schema_current {
+            return Ok((false, false, None));
+        }
         let allowed = authorization::authorize(
             conn,
             &policy_principal,
@@ -225,10 +229,6 @@ async fn authorization_policy_integrity(
         if !allowed {
             return Ok((false, true, None));
         }
-        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
-        if !schema_current {
-            return Ok((true, false, None));
-        }
         Ok((
             true,
             true,
@@ -236,14 +236,14 @@ async fn authorization_policy_integrity(
         ))
     })
     .await?;
-    if !allowed {
-        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
-    }
     if !schema_current {
         return Err(AccessApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "authorization_schema_not_current",
         ));
+    }
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
     let report =
         report.expect("authorized current-schema policy integrity read must produce report");

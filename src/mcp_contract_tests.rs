@@ -836,6 +836,20 @@ fn sweep_arguments(secret: &str, participant_id: &str) -> Value {
     })
 }
 
+fn policy_integrity_arguments(secret: &str, participant_id: &str) -> Value {
+    let proof = participant_auth::compute_capability_proof(
+        secret,
+        participant_id,
+        authorization::READ_AUTHORIZATION_POLICY_INTEGRITY,
+        Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+    )
+    .unwrap();
+    json!({
+        "participant_id": participant_id,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    })
+}
+
 #[tokio::test]
 async fn mcp_audit_sweep_is_privileged_and_projects_canonical_report() {
     let fixture = fixture();
@@ -919,6 +933,148 @@ async fn mcp_audit_sweep_is_privileged_and_projects_canonical_report() {
             .unwrap()
             .iter()
             .any(|entry| entry["kind"] == "orphan_navigation_reservation")
+    );
+}
+
+#[tokio::test]
+async fn mcp_policy_integrity_requires_its_own_explicit_hmac_grant_and_never_migrates_schema() {
+    let fixture = fixture();
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_execution_audit_sweep', 'execution-audit-sweep')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let denied = call_tool(
+        &fixture.router,
+        117,
+        "blackboard_authorization_policy_integrity",
+        policy_integrity_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&denied), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_authorization_policy_integrity', 'authorization-policy-integrity')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let clean = call_tool(
+        &fixture.router,
+        118,
+        "blackboard_authorization_policy_integrity",
+        policy_integrity_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(clean["result"]["isError"], false);
+    assert_eq!(
+        clean["result"]["structuredContent"]["integrity"]["valid"],
+        true
+    );
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+
+    let legacy = call_tool(
+        &fixture.router,
+        119,
+        "blackboard_authorization_policy_integrity",
+        policy_integrity_arguments(&fixture.single_secret, "single-main"),
+    )
+    .await;
+    assert_eq!(tool_error_code(&legacy), "authorization_schema_not_current");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        table_count, 0,
+        "MCP integrity read recreated authorization schema"
+    );
+}
+
+#[tokio::test]
+async fn bearer_policy_integrity_requires_explicit_blackboard_grant() {
+    let fixture = fixture();
+    let (verifier, token) = bearer_verifier_and_token("policy-auditor");
+    let router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let authorization_header = format!("Bearer {token}");
+
+    let denied = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 120,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_policy_integrity",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, denied_value) = response_json(denied).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tool_error_code(&denied_value), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'policy-auditor', 'single-main',
+                 'read_authorization_policy_integrity', 'authorization-policy-integrity')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 121,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_policy_integrity",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, allowed_value) = response_json(allowed).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(allowed_value["result"]["isError"], false);
+    assert_eq!(
+        allowed_value["result"]["structuredContent"]["integrity"]["valid"],
+        true
     );
 }
 
