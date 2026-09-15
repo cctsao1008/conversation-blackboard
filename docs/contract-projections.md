@@ -23,7 +23,6 @@ Authorization-policy inventory has one canonical Rust data source: `authorizatio
 
 For MCP, authentication metadata may change the transport schema without changing the semantic tool. Modern Streamable HTTP with configured OIDC may omit body HMAC `auth` because the HTTP Bearer header authenticates the transport principal; legacy HTTP and stdio retain the participant-HMAC `auth` requirement. Both forms reach the same Blackboard authorization kernel and the same canonical snapshot reader.
 
-
 Authorization decision explanation has one canonical read-only evaluator: `authorization::explain_authorization(conn, ...)`, returning the same decision semantics used by execution without schema migration or delegated-grant consumption. REST `GET /api/authorization-decision/explain`, MCP `blackboard_authorization_decision`, OpenAPI, and UTCP project that result. Caller authority is separate from the target Principal being evaluated. REST participant-HMAC binds the target context through the full query-bearing request target; MCP participant-HMAC uses a decision-specific canonical proof binding the complete normalized target context. OIDC/Bearer MCP callers remain authenticated at the HTTP transport boundary. Adapters never classify policy reasons or enumerate grant tables for explanation.
 
 ## Generation and validation rule
@@ -36,4 +35,4 @@ Where runtime adapter schemas can directly reuse Rust schema builders, they do. 
 
 Normal `core-ci` is the acceptance boundary for contract projection changes. The Rust test suite parses checked-in OpenAPI and UTCP projections, compares shared semantic shapes against `src/contract_schema.rs`, and verifies that transport delivery identity does not leak into semantic execution receipts. Linux and Windows validation must both remain green before the projection contract is considered complete.
 
-`utcp-contract` adds an independent discovery/invocation smoke gate for changes to the HTTP/UTCP projection surface. Authorization-policy integrity and authorization-policy snapshot projection changes are complete only when canonical Rust parity tests, normal cross-platform core CI, and the UTCP discovery/invocation gate all remain green at the same final repository HEAD.
+`utcp-contract` adds an independent discovery/invocation smoke gate for changes to the HTTP/UTCP projection surface. Authorization-policy integrity, authorization-policy snapshot, and authorization-decision explanation projection changes are complete only when canonical Rust parity tests, normal cross-platform core CI, and the UTCP discovery/invocation gate all remain green at the same final repository HEAD.
