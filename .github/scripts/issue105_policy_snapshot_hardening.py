@@ -75,7 +75,7 @@ s += r'''
 #[test]
 fn authorization_policy_snapshot_adapters_reuse_canonical_reader_without_grant_sql() {
     let adapters = [
-        ("http", include_str!("main.rs")),
+        ("http", include_str!("access_api.rs")),
         ("mcp", include_str!("mcp.rs")),
     ];
     for (name, source) in adapters {
