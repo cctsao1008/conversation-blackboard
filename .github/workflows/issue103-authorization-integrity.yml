@@ -1,0 +1,43 @@
+name: issue103-authorization-integrity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue103_authorization_integrity.py'
+      - '.github/workflows/issue103-authorization-integrity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply authorization integrity audit migration
+        run: python .github/scripts/issue103_authorization_integrity.py
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit authorization integrity audit
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/authorization.rs src/grant_admin.rs src/main.rs docs/operations.md
+          git diff --cached --quiet && { echo 'migration produced no durable changes'; exit 1; }
+          git commit -m '#103 Add read-only authorization policy integrity audit'
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue103_authorization_integrity.py .github/workflows/issue103-authorization-integrity.yml
+          git commit -m '#103 Remove authorization integrity migration helpers'
+      - name: Push
+        run: git push origin main
