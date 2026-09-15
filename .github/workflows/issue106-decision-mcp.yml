@@ -1,4 +1,4 @@
-# Retry after precise 10-tool regression alignment.
+# Retry after unit and process-level 10-tool regression alignment.
 name: issue106-decision-mcp
 
 on:
@@ -32,7 +32,7 @@ jobs:
         run: |
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
-          git add src/participant_auth.rs src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs
+          git add src/participant_auth.rs src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs tests/mcp_stdio_server.rs
           git commit -m '#106 Project authorization decisions through MCP'
       - name: Remove temporary migration helpers
         run: |
