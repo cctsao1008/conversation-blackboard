@@ -24,6 +24,7 @@ jobs:
         run: python .github/scripts/issue100_mcp_bearer_principal.py
       - name: Format and verify
         run: |
+          cargo fmt
           cargo fmt --check
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --all-targets --all-features
