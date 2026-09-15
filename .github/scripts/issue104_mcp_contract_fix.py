@@ -101,3 +101,36 @@ s = replace_once(
 )
 
 p.write_text(s, encoding="utf-8")
+
+p = Path("tests/mcp_stdio_server.rs")
+s = p.read_text(encoding="utf-8")
+s = replace_once(
+    s,
+    '''    assert_eq!(responses[1]["id"], 2);
+    let tools = responses[1]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 7);
+    assert!(tools.iter().any(|tool| tool["name"] == "blackboard_read"));''',
+    '''    assert_eq!(responses[1]["id"], 2);
+    let tools = responses[1]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 8);
+    assert!(tools.iter().any(|tool| tool["name"] == "blackboard_read"));''',
+    "real stdio tool count",
+)
+s = replace_once(
+    s,
+    '''    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "blackboard_execution_audit_sweep"));
+
+    assert_eq!(responses[2]["id"], 3);''',
+    '''    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "blackboard_execution_audit_sweep"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "blackboard_authorization_policy_integrity"));
+
+    assert_eq!(responses[2]["id"], 3);''',
+    "real stdio policy integrity tool presence",
+)
+p.write_text(s, encoding="utf-8")
