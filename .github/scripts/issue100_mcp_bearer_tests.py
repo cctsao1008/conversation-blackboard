@@ -158,9 +158,10 @@ async fn mcp_bearer_write_uses_oidc_principal_and_matching_blackboard_grant() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(audit.authorization.principal.provider, "oidc:https://issuer.example");
-    assert_eq!(audit.authorization.principal.subject, "remote-agent-1");
-    assert_eq!(audit.authorization.mechanism, oidc::OIDC_MECHANISM);
+    let authorization = audit.authorization.as_ref().unwrap();
+    assert_eq!(authorization.principal.provider, "oidc:https://issuer.example");
+    assert_eq!(authorization.principal.subject, "remote-agent-1");
+    assert_eq!(authorization.mechanism, oidc::OIDC_MECHANISM);
 }
 
 #[tokio::test]
