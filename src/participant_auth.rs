@@ -64,6 +64,53 @@ pub fn canonical_read_bytes(
     serde_json::to_vec(&payload).expect("canonical authenticated-read payload must serialize")
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn canonical_authorization_decision_bytes(
+    participant_id: &str,
+    principal_provider: &str,
+    principal_subject: &str,
+    target_participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> Vec<u8> {
+    let mut payload = BTreeMap::<String, Value>::new();
+    payload.insert("auth_version".into(), json!(AUTH_SCHEME));
+    payload.insert("capability".into(), json!(capability));
+    payload.insert("intent_id".into(), json!(intent_id));
+    payload.insert("participant_id".into(), json!(participant_id));
+    payload.insert("principal_provider".into(), json!(principal_provider));
+    payload.insert("principal_subject".into(), json!(principal_subject));
+    payload.insert("purpose".into(), json!("authorization-decision-explain-v1"));
+    payload.insert("resource".into(), json!(resource));
+    payload.insert("target_participant_id".into(), json!(target_participant_id));
+    serde_json::to_vec(&payload).expect("canonical authorization decision payload must serialize")
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_authorization_decision_proof(
+    secret: &str,
+    participant_id: &str,
+    principal_provider: &str,
+    principal_subject: &str,
+    target_participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> Option<String> {
+    let canonical = canonical_authorization_decision_bytes(
+        participant_id,
+        principal_provider,
+        principal_subject,
+        target_participant_id,
+        capability,
+        resource,
+        intent_id,
+    );
+    compute_message_proof(secret, &canonical)
+}
+
 pub fn canonical_capability_bytes(
     participant_id: &str,
     capability: &str,

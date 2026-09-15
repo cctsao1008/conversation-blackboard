@@ -488,7 +488,8 @@ async fn http_tool_call_requires_auth(state: &AppState, object: &Map<String, Val
         | "blackboard_execution_audit_integrity"
         | "blackboard_execution_audit_sweep"
         | "blackboard_authorization_policy_integrity"
-        | "blackboard_authorization_policy" => true,
+        | "blackboard_authorization_policy"
+        | "blackboard_authorization_decision" => true,
         "blackboard_read" => {
             let Some(arguments) = arguments else {
                 return false;
@@ -899,6 +900,28 @@ fn tools_list_result() -> Value {
                 },
                 "outputSchema": contract_schema::authorization_policy_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
+                "name": "blackboard_authorization_decision",
+                "title": "Explain Blackboard Authorization Decision",
+                "description": "Explain one target authorization decision using the canonical read-only policy evaluator. Caller authority is separate from the target principal. Participant-HMAC auth for this tool is bound to the complete target decision query.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "auth": auth_schema(),
+                        "principal_provider": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "principal_subject": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "target_participant_id": contract_schema::participant_id_schema(),
+                        "capability": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "resource": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 256}, {"type": "null"}]},
+                        "intent_id": {"anyOf": [contract_schema::intent_id_schema(), {"type": "null"}]}
+                    },
+                    "required": ["participant_id", "auth", "principal_provider", "principal_subject", "target_participant_id", "capability"],
+                    "additionalProperties": false
+                },
+                "outputSchema": contract_schema::authorization_decision_envelope_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
     })
@@ -980,6 +1003,9 @@ async fn tool_call_result(
         ),
         "blackboard_authorization_policy" => {
             Ok(blackboard_authorization_policy(state, &arguments, transport_principal).await)
+        }
+        "blackboard_authorization_decision" => {
+            Ok(blackboard_authorization_decision(state, &arguments, transport_principal).await)
         }
         _ => Err("unknown_tool"),
     }
@@ -1367,6 +1393,162 @@ async fn blackboard_execution_audit_sweep(
         Err(()) => return tool_error("database_unavailable"),
     };
     tool_success(json!({"sweep": report}))
+}
+
+async fn blackboard_authorization_decision(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
+    if !only_keys(
+        arguments,
+        &[
+            "participant_id",
+            "auth",
+            "principal_provider",
+            "principal_subject",
+            "target_participant_id",
+            "capability",
+            "resource",
+            "intent_id",
+        ],
+    ) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    let principal_provider = match arguments.get("principal_provider").and_then(Value::as_str) {
+        Some(value) => value,
+        None => return tool_error("invalid_principal_provider"),
+    };
+    let principal_subject = match arguments.get("principal_subject").and_then(Value::as_str) {
+        Some(value) => value,
+        None => return tool_error("invalid_principal_subject"),
+    };
+    let target_participant_id = match arguments
+        .get("target_participant_id")
+        .and_then(Value::as_str)
+    {
+        Some(value) => value,
+        None => return tool_error("invalid_participant_id"),
+    };
+    let capability = match arguments.get("capability").and_then(Value::as_str) {
+        Some(value) => value,
+        None => return tool_error("invalid_capability"),
+    };
+    let resource = match arguments.get("resource") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => return tool_error("invalid_resource"),
+    };
+    let intent_id = match arguments.get("intent_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => return tool_error("invalid_intent_id"),
+    };
+    let target = match authorization::normalize_authorization_decision_target(
+        principal_provider,
+        principal_subject,
+        target_participant_id,
+        capability,
+        resource,
+        intent_id,
+    ) {
+        Ok(target) => target,
+        Err(code) => return tool_error(code),
+    };
+
+    let caller_principal = if let Some(principal) = transport_principal {
+        principal.clone()
+    } else {
+        let (_, proof) = match parse_auth(arguments) {
+            Ok(value) => value,
+            Err(code) => return tool_error(code),
+        };
+        let proof = proof.to_owned();
+        let lookup = participant_id.clone();
+        let auth = match with_db_read_only(state, move |conn| {
+            identity::get_web_participant_auth(conn, &lookup)
+        })
+        .await
+        {
+            Ok(Some(auth)) => auth,
+            Ok(None) => return tool_error("unauthorized"),
+            Err(()) => return tool_error("database_unavailable"),
+        };
+        if auth.auth_scheme != participant_auth::AUTH_SCHEME {
+            return tool_error("unsupported_auth_scheme");
+        }
+        let canonical = participant_auth::canonical_authorization_decision_bytes(
+            &participant_id,
+            &target.principal.provider,
+            &target.principal.subject,
+            &target.participant_id,
+            &target.capability,
+            target.resource.as_deref(),
+            target.intent_id.as_deref(),
+        );
+        if !participant_auth::verify_message_proof(&auth.auth_secret, &proof, &canonical) {
+            return tool_error("unauthorized");
+        }
+        execution::Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: participant_id.clone(),
+        }
+    };
+
+    let policy_principal = caller_principal.clone();
+    let caller_participant = participant_id.clone();
+    let (schema_current, caller_allowed, decision) = match with_db_read_only(state, move |conn| {
+        if !authorization::authorization_decision_schema_current(conn)? {
+            return Ok((false, false, None));
+        }
+        let caller_decision = authorization::explain_authorization(
+            conn,
+            &policy_principal,
+            &caller_participant,
+            authorization::READ_AUTHORIZATION_DECISION,
+            Some(authorization::AUTHORIZATION_DECISION_RESOURCE),
+            None,
+        )?;
+        if !caller_decision.allowed {
+            return Ok((true, false, None));
+        }
+        let decision = authorization::explain_authorization(
+            conn,
+            &target.principal,
+            &target.participant_id,
+            &target.capability,
+            target.resource.as_deref(),
+            target.intent_id.as_deref(),
+        )?;
+        Ok((
+            true,
+            true,
+            Some(authorization::AuthorizationDecisionExplanation::from(
+                decision,
+            )),
+        ))
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    if !schema_current {
+        return tool_error("authorization_schema_not_current");
+    }
+    if !caller_allowed {
+        return tool_error("forbidden");
+    }
+    tool_success(json!({
+        "decision": decision.expect("authorized decision explanation must produce a decision")
+    }))
 }
 
 async fn blackboard_authorization_policy(
@@ -1853,6 +2035,20 @@ where
     let db_path = state.db_path.clone();
     tokio::task::spawn_blocking(move || {
         let conn = db::connect(&db_path).map_err(|_| ())?;
+        operation(&conn).map_err(|_| ())
+    })
+    .await
+    .map_err(|_| ())?
+}
+
+async fn with_db_read_only<T, F>(state: &AppState, operation: F) -> Result<T, ()>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
+{
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = db::connect_read_only(&db_path).map_err(|_| ())?;
         operation(&conn).map_err(|_| ())
     })
     .await

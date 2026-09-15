@@ -117,7 +117,7 @@ fn mcp_stdio_server_runs_real_process_lifecycle_and_tools_call() {
 
     assert_eq!(responses[1]["id"], 2);
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     assert!(tools.iter().any(|tool| tool["name"] == "blackboard_read"));
     assert!(tools
         .iter()

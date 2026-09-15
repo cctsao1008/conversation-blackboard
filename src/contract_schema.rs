@@ -245,6 +245,31 @@ pub fn execution_audit_sweep_envelope_schema() -> Value {
     })
 }
 
+pub fn authorization_decision_explanation_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "allowed": {"type": "boolean"},
+            "source": {"type": "string"},
+            "reason": {"type": "string"},
+            "grant_id": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+            "consume_on_commit": {"type": "boolean"}
+        },
+        "required": ["allowed", "source", "reason", "grant_id", "consume_on_commit"],
+        "additionalProperties": false,
+        "description": "Canonical non-secret read-only explanation of one authorization decision."
+    })
+}
+
+pub fn authorization_decision_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"decision": authorization_decision_explanation_schema()},
+        "required": ["decision"],
+        "additionalProperties": false
+    })
+}
+
 pub fn authorization_integrity_violation_schema() -> Value {
     json!({
         "type": "object",

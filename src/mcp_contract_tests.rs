@@ -703,7 +703,7 @@ async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     )
     .await
     .unwrap();
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 10);
 
     let unknown = mcp::stdio_dispatch(
         &state,
@@ -735,7 +735,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -887,6 +887,45 @@ fn policy_snapshot_arguments(secret: &str, participant_id: &str) -> Value {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn decision_arguments(
+    secret: &str,
+    participant_id: &str,
+    principal_provider: &str,
+    principal_subject: &str,
+    target_participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> Value {
+    let proof = participant_auth::compute_authorization_decision_proof(
+        secret,
+        participant_id,
+        principal_provider,
+        principal_subject,
+        target_participant_id,
+        capability,
+        resource,
+        intent_id,
+    )
+    .unwrap();
+    let mut value = json!({
+        "participant_id": participant_id,
+        "principal_provider": principal_provider,
+        "principal_subject": principal_subject,
+        "target_participant_id": target_participant_id,
+        "capability": capability,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    });
+    if let Some(resource) = resource {
+        value["resource"] = json!(resource);
+    }
+    if let Some(intent_id) = intent_id {
+        value["intent_id"] = json!(intent_id);
+    }
+    value
+}
+
 fn policy_integrity_arguments(secret: &str, participant_id: &str) -> Value {
     let proof = participant_auth::compute_capability_proof(
         secret,
@@ -899,6 +938,287 @@ fn policy_integrity_arguments(secret: &str, participant_id: &str) -> Value {
         "participant_id": participant_id,
         "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
     })
+}
+
+#[tokio::test]
+async fn mcp_authorization_decision_tool_is_read_only_and_binds_hmac_to_target_query() {
+    let fixture = fixture();
+
+    let listed = mcp::stdio_dispatch(
+        &AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        &json!({"jsonrpc": "2.0", "id": 131, "method": "tools/list", "params": {}}),
+    )
+    .await
+    .unwrap();
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_authorization_decision")
+        .expect("authorization decision tool must be advertised");
+    assert_eq!(
+        tool["outputSchema"],
+        contract_schema::authorization_decision_envelope_schema()
+    );
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "auth"));
+
+    let args = decision_arguments(
+        &fixture.single_secret,
+        "single-main",
+        "oidc:https://issuer.example",
+        "target-agent",
+        "rotary-main",
+        authorization::POST_MESSAGE,
+        Some("alpha"),
+        None,
+    );
+    let denied = call_tool(
+        &fixture.router,
+        132,
+        "blackboard_authorization_decision",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(tool_error_code(&denied), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    authorization::ensure_grant_schema(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main',
+                 'read_authorization_decision', 'authorization-decision')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'target-agent', 'rotary-main',
+                 'post_message', 'alpha')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = call_tool(
+        &fixture.router,
+        133,
+        "blackboard_authorization_decision",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(allowed["result"]["isError"], false);
+    assert_eq!(
+        allowed["result"]["structuredContent"]["decision"]["allowed"],
+        true
+    );
+    assert_eq!(
+        allowed["result"]["structuredContent"]["decision"]["reason"],
+        "explicit_durable_grant_match"
+    );
+
+    // Reusing the exact proof after changing one target field must fail authentication.
+    let mut changed = args.clone();
+    changed["resource"] = json!("beta");
+    let replay = call_tool(
+        &fixture.router,
+        134,
+        "blackboard_authorization_decision",
+        changed,
+    )
+    .await;
+    assert_eq!(tool_error_code(&replay), "unauthorized");
+
+    // A freshly authenticated target mismatch is successful explanation data.
+    let mismatch = call_tool(
+        &fixture.router,
+        135,
+        "blackboard_authorization_decision",
+        decision_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "oidc:https://issuer.example",
+            "target-agent",
+            "rotary-main",
+            authorization::POST_MESSAGE,
+            Some("beta"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(mismatch["result"]["isError"], false);
+    assert_eq!(
+        mismatch["result"]["structuredContent"]["decision"]["allowed"],
+        false
+    );
+    assert_eq!(
+        mismatch["result"]["structuredContent"]["decision"]["reason"],
+        "explicit_resource_scope_mismatch"
+    );
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+    let legacy = call_tool(
+        &fixture.router,
+        136,
+        "blackboard_authorization_decision",
+        decision_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "oidc:https://issuer.example",
+            "target-agent",
+            "rotary-main",
+            authorization::POST_MESSAGE,
+            Some("alpha"),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(tool_error_code(&legacy), "authorization_schema_not_current");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        table_count, 0,
+        "MCP decision explain recreated authorization schema"
+    );
+}
+
+#[tokio::test]
+async fn bearer_authorization_decision_requires_explicit_explain_grant_and_omits_hmac_auth() {
+    let fixture = fixture();
+    let (verifier, token) = bearer_verifier_and_token("decision-reader");
+    let router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let authorization_header = format!("Bearer {token}");
+
+    let denied = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 137,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_decision",
+                "arguments": {
+                    "participant_id": "single-main",
+                    "principal_provider": "participant-hmac",
+                    "principal_subject": "rotary-main",
+                    "target_participant_id": "rotary-main",
+                    "capability": "read_messages",
+                    "resource": "blackboard-lounge"
+                }
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, denied_value) = response_json(denied).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tool_error_code(&denied_value), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'decision-reader', 'single-main',
+                 'read_authorization_decision', 'authorization-decision')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 138,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_decision",
+                "arguments": {
+                    "participant_id": "single-main",
+                    "principal_provider": "participant-hmac",
+                    "principal_subject": "rotary-main",
+                    "target_participant_id": "rotary-main",
+                    "capability": "read_messages",
+                    "resource": "blackboard-lounge"
+                }
+            }
+        }),
+        &authorization_header,
+    )
+    .await;
+    let (status, allowed_value) = response_json(allowed).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(allowed_value["result"]["isError"], false);
+    assert_eq!(
+        allowed_value["result"]["structuredContent"]["decision"]["allowed"],
+        true
+    );
+    assert_eq!(
+        allowed_value["result"]["structuredContent"]["decision"]["source"],
+        "implicit_authority"
+    );
+
+    // Modern HTTP OIDC discovery projects auth as optional for this tool.
+    let modern_list = Request::builder()
+        .method(Method::POST)
+        .uri("/mcp")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .header("mcp-protocol-version", "2026-07-28")
+        .header("mcp-method", "tools/list")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 139,
+                "method": "tools/list",
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let modern_response = router.clone().oneshot(modern_list).await.unwrap();
+    let (status, modern_value) = response_json(modern_response).await;
+    assert_eq!(status, StatusCode::OK);
+    let tool = modern_value["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_authorization_decision")
+        .unwrap();
+    assert!(!tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "auth"));
+    assert!(tool["inputSchema"]["properties"].get("auth").is_some());
 }
 
 #[tokio::test]
@@ -2373,7 +2693,7 @@ async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_resu
     let (_, value) = response_json(response).await;
     assert_eq!(value["result"]["resultType"], "complete");
     assert_eq!(value["result"]["cacheScope"], "public");
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 10);
 }
 
 #[tokio::test]
