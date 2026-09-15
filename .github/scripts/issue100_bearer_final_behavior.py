@@ -20,24 +20,22 @@ async fn bearer_audit_sweep_remains_explicitly_grant_controlled() {
         },
         Some(Arc::new(verifier)),
     );
+    let authorization = format!("Bearer {token}");
 
-    let call = |id: i64| {
-        request_with_authorization(
-            &router,
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "tools/call",
-                "params": {
-                    "name": "blackboard_execution_audit_sweep",
-                    "arguments": {"participant_id": "single-main"}
-                }
-            }),
-            &format!("Bearer {token}"),
-        )
-    };
-
-    let denied = call(114).await;
+    let denied = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 114,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_execution_audit_sweep",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization,
+    )
+    .await;
     let (status, denied_value) = response_json(denied).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(tool_error_code(&denied_value), "forbidden");
@@ -54,7 +52,20 @@ async fn bearer_audit_sweep_remains_explicitly_grant_controlled() {
     .unwrap();
     drop(conn);
 
-    let allowed = call(115).await;
+    let allowed = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 115,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_execution_audit_sweep",
+                "arguments": {"participant_id": "single-main"}
+            }
+        }),
+        &authorization,
+    )
+    .await;
     let (status, allowed_value) = response_json(allowed).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(allowed_value["result"]["isError"], false);
@@ -88,6 +99,7 @@ async fn raw_bearer_token_never_enters_durable_sqlite_storage() {
     .unwrap();
     drop(conn);
 
+    let authorization = format!("Bearer {token}");
     let response = request_with_authorization(
         &router,
         json!({
@@ -105,7 +117,7 @@ async fn raw_bearer_token_never_enters_durable_sqlite_storage() {
                 }
             }
         }),
-        &format!("Bearer {token}"),
+        &authorization,
     )
     .await;
     let (status, value) = response_json(response).await;
