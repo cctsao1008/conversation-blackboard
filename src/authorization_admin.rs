@@ -148,6 +148,18 @@ struct NormalizedDurableGrantCreate {
     resource: Option<String>,
 }
 
+#[derive(Debug)]
+struct NormalizedDelegatedGrantCreate {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+    intent_id: Option<String>,
+    expires_at: Option<i64>,
+    one_shot: bool,
+}
+
 pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
     authorization::ensure_grant_schema(conn)?;
     conn.execute_batch(
@@ -621,13 +633,9 @@ pub fn deactivate_durable_grant_authorized(
     Ok(outcome)
 }
 
-pub fn create_delegated_grant(
-    conn: &Connection,
-    actor: &AuthorizationAdministrationActor<'_>,
+fn normalize_delegated_grant_create_request(
     request: &DelegatedGrantCreateRequest<'_>,
-) -> AdministrationResult<DelegatedGrantCreateOutcome> {
-    require_schema_current(conn)?;
-    let actor = normalize_actor(actor)?;
+) -> AdministrationResult<NormalizedDelegatedGrantCreate> {
     let principal_provider = normalize(
         request.principal_provider,
         MAX_PROVIDER_BYTES,
@@ -646,9 +654,24 @@ pub fn create_delegated_grant(
         .intent_id
         .map(|value| execution::normalize_intent_id(value).map_err(|_| "invalid intent_id"))
         .transpose()?;
+    Ok(NormalizedDelegatedGrantCreate {
+        principal_provider,
+        principal_subject,
+        participant_id,
+        capability,
+        resource,
+        intent_id,
+        expires_at: request.expires_at,
+        one_shot: request.one_shot,
+    })
+}
 
-    let tx = conn.unchecked_transaction()?;
-    require_active_participant(&tx, &participant_id)?;
+fn create_delegated_grant_in_tx(
+    tx: &Transaction<'_>,
+    actor: &NormalizedActor,
+    request: &NormalizedDelegatedGrantCreate,
+) -> AdministrationResult<DelegatedGrantCreateOutcome> {
+    require_active_participant(tx, &request.participant_id)?;
     if let Some(expires_at) = request.expires_at {
         let now: i64 = tx.query_row("SELECT unixepoch()", [], |row| row.get(0))?;
         if expires_at <= now {
@@ -661,31 +684,31 @@ pub fn create_delegated_grant(
             (principal_provider, principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
-            principal_provider,
-            principal_subject,
-            participant_id,
-            capability,
-            resource,
-            intent_id,
+            &request.principal_provider,
+            &request.principal_subject,
+            &request.participant_id,
+            &request.capability,
+            request.resource.as_deref(),
+            request.intent_id.as_deref(),
             request.expires_at,
             i64::from(request.one_shot),
         ],
     )?;
     let id = tx.last_insert_rowid();
     record_event(
-        &tx,
-        &actor,
+        tx,
+        actor,
         &AdministrationEvent {
             grant_store: "delegated",
             grant_id: id,
             operation: "create",
             scope: GrantScope {
-                principal_provider: &principal_provider,
-                principal_subject: &principal_subject,
-                participant_id: &participant_id,
-                capability: &capability,
-                resource: resource.as_deref(),
-                intent_id: intent_id.as_deref(),
+                principal_provider: &request.principal_provider,
+                principal_subject: &request.principal_subject,
+                participant_id: &request.participant_id,
+                capability: &request.capability,
+                resource: request.resource.as_deref(),
+                intent_id: request.intent_id.as_deref(),
                 expires_at: request.expires_at,
                 one_shot: request.one_shot,
             },
@@ -693,8 +716,53 @@ pub fn create_delegated_grant(
             after_status: "active",
         },
     )?;
-    tx.commit()?;
     Ok(DelegatedGrantCreateOutcome { id })
+}
+
+pub fn create_delegated_grant(
+    conn: &Connection,
+    actor: &AuthorizationAdministrationActor<'_>,
+    request: &DelegatedGrantCreateRequest<'_>,
+) -> AdministrationResult<DelegatedGrantCreateOutcome> {
+    require_schema_current(conn)?;
+    let actor = normalize_actor(actor)?;
+    let request = normalize_delegated_grant_create_request(request)?;
+    let tx = conn.unchecked_transaction()?;
+    let outcome = create_delegated_grant_in_tx(&tx, &actor, &request)?;
+    tx.commit()?;
+    Ok(outcome)
+}
+
+pub fn create_delegated_grant_authorized(
+    conn: &Connection,
+    surface: &str,
+    caller_principal: &Principal,
+    caller_participant_id: &str,
+    request: &DelegatedGrantCreateRequest<'_>,
+) -> AdministrationResult<DelegatedGrantCreateOutcome> {
+    require_schema_current(conn)?;
+    let actor_spec = AuthorizationAdministrationActor {
+        surface,
+        principal: Some(caller_principal),
+        participant_id: Some(caller_participant_id),
+    };
+    let actor = normalize_actor(&actor_spec)?;
+    let request = normalize_delegated_grant_create_request(request)?;
+    let tx = conn.unchecked_transaction()?;
+    let decision = authorization::explain_authorization(
+        &tx,
+        caller_principal,
+        caller_participant_id,
+        authorization::MANAGE_AUTHORIZATION_POLICY,
+        Some(authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        None,
+    )?;
+    if !decision.allowed {
+        return Err("authorization denied".into());
+    }
+    let outcome = create_delegated_grant_in_tx(&tx, &actor, &request)?;
+    tx.commit()?;
+    Ok(outcome)
 }
 
 pub fn deactivate_delegated_grant(

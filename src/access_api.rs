@@ -40,6 +40,10 @@ pub fn app(state: AppState) -> Router {
             "/api/authorization-grants/durable/{grant_id}",
             delete(deactivate_durable_authorization_grant),
         )
+        .route(
+            "/api/authorization-grants/delegated",
+            post(create_delegated_authorization_grant),
+        )
         .with_state(state)
 }
 
@@ -104,6 +108,68 @@ async fn create_durable_authorization_grant(
                 "store": "durable",
                 "id": outcome.id,
                 "state": state_name,
+            }
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct DelegatedGrantCreateBody {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+    intent_id: Option<String>,
+    expires_at: Option<i64>,
+    one_shot: bool,
+}
+
+async fn create_delegated_authorization_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(body): Json<DelegatedGrantCreateBody>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "POST", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    if principal.provider == "participant-hmac" {
+        return Err(AccessApiError::new(
+            StatusCode::FORBIDDEN,
+            "unsupported_authentication",
+        ));
+    }
+
+    let caller_participant_id = resolved.instance.clone();
+    let outcome = with_db_access(&state, move |conn| {
+        let request = authorization_admin::DelegatedGrantCreateRequest {
+            principal_provider: &body.principal_provider,
+            principal_subject: &body.principal_subject,
+            participant_id: &body.participant_id,
+            capability: &body.capability,
+            resource: body.resource.as_deref(),
+            intent_id: body.intent_id.as_deref(),
+            expires_at: body.expires_at,
+            one_shot: body.one_shot,
+        };
+        authorization_admin::create_delegated_grant_authorized(
+            conn,
+            "rest-authorization-admin",
+            &principal,
+            &caller_participant_id,
+            &request,
+        )
+        .map_err(map_administration_error)
+    })
+    .await?;
+
+    Ok(json_response(
+        StatusCode::CREATED,
+        json!({
+            "grant": {
+                "store": "delegated",
+                "id": outcome.id,
+                "state": "created",
             }
         }),
     ))
