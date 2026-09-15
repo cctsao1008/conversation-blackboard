@@ -351,3 +351,28 @@ fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
         "${BLACKBOARD_URL}/api/authorization-policy"
     );
 }
+
+#[test]
+fn authorization_policy_snapshot_adapters_reuse_canonical_reader_without_grant_sql() {
+    let adapters = [
+        ("http", include_str!("access_api.rs")),
+        ("mcp", include_str!("mcp.rs")),
+    ];
+    for (name, source) in adapters {
+        assert!(
+            source.contains("read_authorization_policy_snapshot"),
+            "{name} adapter must reuse the canonical authorization snapshot reader"
+        );
+        for forbidden in [
+            "FROM principal_grants",
+            "FROM delegated_grants",
+            "JOIN principal_grants",
+            "JOIN delegated_grants",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} adapter must not enumerate grant tables directly: {forbidden}"
+            );
+        }
+    }
+}

@@ -90,6 +90,40 @@ Representative reason classes include:
 
 `/api/access-context` reports effective grants derived from the same authorization model. It exposes authorization state, not credentials.
 
+
+## Policy observation boundaries
+
+Authorization policy now exposes four deliberately separate concerns:
+
+```text
+authorization policy snapshot
+    = which explicit durable and delegated authority objects exist
+
+authorization policy integrity
+    = whether those stored authority objects are structurally coherent
+
+authorization decision / explain
+    = why one requested action is allowed or denied
+
+authorization administration
+    = creation, reactivation, deactivation, or other mutation of authority
+```
+
+The policy snapshot is a privileged observational surface, not a grant-administration surface. The canonical reader is `authorization::read_authorization_policy_snapshot(conn)`. REST `GET /api/authorization-policy`, MCP `blackboard_authorization_policy`, OpenAPI, and UTCP project that same domain result instead of enumerating grant tables in adapters.
+
+Snapshot visibility has its own capability and global resource:
+
+```text
+capability = read_authorization_policy
+resource   = authorization-policy
+```
+
+Implicit authority is intentionally narrow: only a `human-web` principal authenticating as its own admin participant receives implicit snapshot visibility. Participant HMAC self-authentication, GitHub owner compatibility authority, and OIDC/Bearer identity do not imply this capability. They require an explicit matching Blackboard grant. Conversely, a snapshot grant does not imply policy-integrity, execution-audit, audit-sweep, or channel-administration authority.
+
+The reader is observationally read-only. It does not call `ensure_grant_schema`, initialize storage, repair policy state, consume delegated grants, or normalize lifecycle state. An authorization schema too old for the snapshot contract is reported as migration-required without database mutation. Inactive durable grants plus expired or consumed delegated grants remain visible as inventory state rather than being silently filtered or reclassified as integrity failures.
+
+The snapshot contract contains only non-secret authority metadata. Bearer/JWT values, HMAC secrets, TOTP material, session credentials, and participant authentication secrets are outside the snapshot model.
+
 ## Verification boundary
 
 Authorization changes are accepted only after formatting, strict Clippy, Rust tests, release build, and Windows service/CLI/smoke/package verification pass in core CI. The #81 migration additionally verifies that execution and `grant explain` consume one canonical policy decision while one-shot consumption remains execution-only and atomic.

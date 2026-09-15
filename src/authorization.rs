@@ -1313,6 +1313,54 @@ mod tests {
     }
 
     #[test]
+    fn authorization_policy_snapshot_authority_does_not_imply_other_privileged_capabilities() {
+        let (_dir, conn) = setup();
+        let oidc = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "policy-reader".to_owned(),
+        };
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+            params![
+                oidc.provider,
+                oidc.subject,
+                READ_AUTHORIZATION_POLICY,
+                AUTHORIZATION_POLICY_RESOURCE
+            ],
+        )
+        .unwrap();
+
+        assert!(authorize(
+            &conn,
+            &oidc,
+            "maker-main",
+            READ_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_RESOURCE),
+        )
+        .unwrap());
+
+        for (capability, resource) in [
+            (
+                READ_AUTHORIZATION_POLICY_INTEGRITY,
+                Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            ),
+            (READ_EXECUTION_AUDIT, None),
+            (
+                READ_EXECUTION_AUDIT_SWEEP,
+                Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            ),
+            (MANAGE_CHANNELS, None),
+        ] {
+            assert!(
+                !authorize(&conn, &oidc, "maker-main", capability, resource).unwrap(),
+                "snapshot authority leaked into {capability}"
+            );
+        }
+    }
+
+    #[test]
     fn authorization_integrity_accepts_clean_expiry_and_inactive_history() {
         let (_dir, conn) = setup();
         conn.execute(
