@@ -1,4 +1,4 @@
-# Retry after evidence-backed compile fixes.
+# Retry after factoring delegated lifecycle query state.
 name: issue107-authorization-admin
 
 on:
