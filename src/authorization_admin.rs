@@ -444,7 +444,6 @@ pub fn create_durable_grant(
     Ok(outcome)
 }
 
-#[cfg(test)]
 pub fn create_durable_grant_authorized(
     conn: &Connection,
     surface: &str,
@@ -1234,10 +1233,10 @@ mod tests {
             ("MCP", include_str!("mcp.rs")),
         ] {
             for forbidden in [
-                "authorization_admin::create_durable_grant",
-                "authorization_admin::deactivate_durable_grant",
-                "authorization_admin::create_delegated_grant",
-                "authorization_admin::deactivate_delegated_grant",
+                "authorization_admin::create_durable_grant(",
+                "authorization_admin::deactivate_durable_grant(",
+                "authorization_admin::create_delegated_grant(",
+                "authorization_admin::deactivate_delegated_grant(",
                 "INSERT INTO principal_grants",
                 "UPDATE principal_grants",
                 "INSERT INTO delegated_grants",

@@ -692,6 +692,253 @@ async fn execution_audit_sweep_http_requires_privileged_authority_and_returns_in
 }
 
 #[tokio::test]
+async fn authorization_admin_rest_create_is_privileged_audited_and_hmac_rejected() {
+    let fixture = fixture("authorization-admin-http");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let uri = "/api/authorization-grants/durable";
+    let body = json!({
+        "principal_provider": "oidc:https://issuer.example",
+        "principal_subject": "worker-agent",
+        "participant_id": fixture.participant_id,
+        "capability": "read_messages",
+        "resource": null,
+    });
+
+    let unauthenticated = request(&router, Method::POST, uri, None, Some(body.clone())).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let canonical = web_auth::canonical_http_request_bytes(&fixture.participant_id, "POST", uri);
+    let proof =
+        participant_auth::compute_message_proof(&fixture.signing_private, &canonical).unwrap();
+    let hmac = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+                .header(
+                    request_auth::AUTH_SCHEME_HEADER,
+                    participant_auth::AUTH_SCHEME,
+                )
+                .header(request_auth::AUTH_PROOF_HEADER, proof)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hmac.status(), StatusCode::FORBIDDEN);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(
+        &router,
+        Method::POST,
+        uri,
+        Some(&session.token),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    drop(conn);
+
+    let created = request(
+        &router,
+        Method::POST,
+        uri,
+        Some(&session.token),
+        Some(body.clone()),
+    )
+    .await;
+    let (created_status, created_body) = response_json(created).await;
+    assert_eq!(created_status, StatusCode::CREATED);
+    assert_eq!(created_body["grant"]["store"], "durable");
+    assert_eq!(created_body["grant"]["state"], "created");
+    let grant_id = created_body["grant"]["id"].as_i64().unwrap();
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let event: (String, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT actor_surface, actor_provider, actor_subject, actor_participant_id
+             FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1",
+            [grant_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(event.0, "rest-authorization-admin");
+    assert_eq!(event.1.as_deref(), Some("human-web"));
+    assert_eq!(event.2.as_deref(), Some(fixture.participant_id.as_str()));
+    assert_eq!(event.3.as_deref(), Some(fixture.participant_id.as_str()));
+    let event_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events WHERE grant_id = ?1",
+            [grant_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+
+    let existing = request(&router, Method::POST, uri, Some(&session.token), Some(body)).await;
+    let (existing_status, existing_body) = response_json(existing).await;
+    assert_eq!(existing_status, StatusCode::OK);
+    assert_eq!(existing_body["grant"]["state"], "existing");
+    assert_eq!(existing_body["grant"]["id"], grant_id);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events WHERE grant_id = ?1",
+            [grant_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after_count, event_count,
+        "idempotent create emitted a false event"
+    );
+}
+
+#[tokio::test]
+async fn authorization_admin_rest_create_requires_explicit_bearer_authority() {
+    let fixture = fixture("authorization-admin-bearer");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let uri = "/api/authorization-grants/durable";
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let (bearer_identity, bearer_token) =
+        identity::register_identity(&conn, "remote-admin", Some("Remote admin")).unwrap();
+    identity::provision_web_participant_identity(
+        &conn,
+        &bearer_identity.instance,
+        "remote-admin",
+        Some("Remote admin participant"),
+    )
+    .unwrap()
+    .unwrap();
+    drop(conn);
+
+    let body = json!({
+        "principal_provider": "oidc:https://issuer.example",
+        "principal_subject": "remote-worker",
+        "participant_id": fixture.participant_id,
+        "capability": "read_messages",
+        "resource": null,
+    });
+    let bearer_request = |body: Value| {
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer_token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let denied = router
+        .clone()
+        .oneshot(bearer_request(body.clone()))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('bearer', ?1, ?1, ?2, ?3)",
+        rusqlite::params![
+            &bearer_identity.instance,
+            authorization::MANAGE_AUTHORIZATION_POLICY,
+            authorization::AUTHORIZATION_POLICY_ADMIN_RESOURCE,
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = router.clone().oneshot(bearer_request(body)).await.unwrap();
+    let (status, response) = response_json(allowed).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let grant_id = response["grant"]["id"].as_i64().unwrap();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let actor: (String, String) = conn
+        .query_row(
+            "SELECT actor_provider, actor_subject FROM authorization_admin_events
+             WHERE grant_store = 'durable' AND grant_id = ?1",
+            [grant_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(actor.0, "bearer");
+    assert_eq!(actor.1, bearer_identity.instance);
+}
+
+#[tokio::test]
+async fn authorization_admin_rest_create_rejects_stale_schema_without_repair() {
+    let fixture = fixture("authorization-admin-stale");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    conn.execute("DROP TABLE authorization_admin_events", [])
+        .unwrap();
+    drop(conn);
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let body = json!({
+        "principal_provider": "oidc:https://issuer.example",
+        "principal_subject": "stale-worker",
+        "participant_id": fixture.participant_id,
+        "capability": "read_messages",
+        "resource": null,
+    });
+    let response = request(
+        &router,
+        Method::POST,
+        "/api/authorization-grants/durable",
+        Some(&session.token),
+        Some(body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'authorization_admin_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 0, "REST mutation repaired stale schema");
+    let target_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM principal_grants WHERE principal_subject = 'stale-worker'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(target_count, 0);
+}
+
+#[tokio::test]
 async fn authorization_policy_http_is_privileged_canonical_and_observationally_read_only() {
     let fixture = fixture("policy-snapshot");
     let router = fixture

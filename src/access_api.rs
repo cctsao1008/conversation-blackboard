@@ -2,14 +2,15 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    authorization, execution, http::AppState, identity, model::Identity, request_auth, web_auth,
+    authorization, authorization_admin, execution, http::AppState, identity, model::Identity,
+    request_auth, web_auth,
 };
 
 pub fn app(state: AppState) -> Router {
@@ -31,7 +32,91 @@ pub fn app(state: AppState) -> Router {
             "/api/authorization-decision/explain",
             get(authorization_decision_explain),
         )
+        .route(
+            "/api/authorization-grants/durable",
+            post(create_durable_authorization_grant),
+        )
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+struct DurableGrantCreateBody {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+}
+
+async fn create_durable_authorization_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(body): Json<DurableGrantCreateBody>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "POST", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    if principal.provider == "participant-hmac" {
+        return Err(AccessApiError::new(
+            StatusCode::FORBIDDEN,
+            "unsupported_authentication",
+        ));
+    }
+
+    let caller_participant_id = resolved.instance.clone();
+    let outcome = with_db_access(&state, move |conn| {
+        let request = authorization_admin::DurableGrantCreateRequest {
+            principal_provider: &body.principal_provider,
+            principal_subject: &body.principal_subject,
+            participant_id: &body.participant_id,
+            capability: &body.capability,
+            resource: body.resource.as_deref(),
+        };
+        authorization_admin::create_durable_grant_authorized(
+            conn,
+            "rest-authorization-admin",
+            &principal,
+            &caller_participant_id,
+            &request,
+        )
+        .map_err(map_administration_error)
+    })
+    .await?;
+
+    let state_name = match outcome.state {
+        authorization_admin::DurableGrantCreateState::Created => "created",
+        authorization_admin::DurableGrantCreateState::Existing => "existing",
+        authorization_admin::DurableGrantCreateState::Reactivated => "reactivated",
+    };
+    let status = if outcome.state == authorization_admin::DurableGrantCreateState::Created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok(json_response(
+        status,
+        json!({
+            "grant": {
+                "store": "durable",
+                "id": outcome.id,
+                "state": state_name,
+            }
+        }),
+    ))
+}
+
+fn map_administration_error(error: Box<dyn std::error::Error + Send + Sync>) -> AccessApiError {
+    let message = error.to_string();
+    if message == "authorization denied" {
+        return AccessApiError::new(StatusCode::FORBIDDEN, "forbidden");
+    }
+    if message.contains("schema requires migration") {
+        return AccessApiError::new(StatusCode::SERVICE_UNAVAILABLE, "schema_migration_required");
+    }
+    if error.downcast_ref::<rusqlite::Error>().is_some() {
+        return AccessApiError::new(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable");
+    }
+    AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_grant_request")
 }
 
 async fn access_context(
@@ -428,6 +513,22 @@ where
     .await
     .map_err(|_| AccessApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?
     .map_err(|_| AccessApiError::new(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable"))
+}
+
+async fn with_db_access<T, F>(state: &AppState, operation: F) -> Result<T, AccessApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, AccessApiError> + Send + 'static,
+{
+    let path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = crate::db::connect(&path).map_err(|_| {
+            AccessApiError::new(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable")
+        })?;
+        operation(&conn)
+    })
+    .await
+    .map_err(|_| AccessApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?
 }
 
 async fn with_db_read_only<T, F>(state: &AppState, operation: F) -> Result<T, AccessApiError>
