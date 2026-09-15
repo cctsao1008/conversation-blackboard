@@ -89,6 +89,33 @@ ON principal_grants(
     status
 );
 
+CREATE TABLE IF NOT EXISTS delegated_grants (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal_provider  TEXT NOT NULL,
+    principal_subject   TEXT NOT NULL,
+    participant_id      TEXT NOT NULL,
+    capability          TEXT NOT NULL,
+    resource            TEXT,
+    intent_id           TEXT,
+    expires_at          INTEGER,
+    one_shot            INTEGER NOT NULL DEFAULT 0 CHECK (one_shot IN (0, 1)),
+    consumed_at         INTEGER,
+    consumed_intent_id  TEXT,
+    status              TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'inactive')),
+    created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegated_grants_lookup
+ON delegated_grants(
+    principal_provider,
+    principal_subject,
+    participant_id,
+    capability,
+    status
+);
+
 CREATE TABLE IF NOT EXISTS channels (
     name        TEXT PRIMARY KEY,
     visibility  TEXT NOT NULL DEFAULT 'private',

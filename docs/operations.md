@@ -155,6 +155,26 @@ Use the existing **delegated grants** for narrower authority with optional expir
 
 Delegated one-shot consumption remains part of the same semantic execution transaction as the committed effect and receipt. Failed semantic execution does not burn one-shot authority.
 
+### Authorization policy integrity
+
+Use the read-only policy audit to verify the grant objects themselves:
+
+```powershell
+.\conversation-blackboard.exe grant verify --db <DB>
+```
+
+Keep the three integrity questions distinct:
+
+```text
+db integrity          SQLite/file structural integrity
+execution verify-all  committed semantic execution-evidence integrity
+grant verify          authorization-policy object integrity
+```
+
+`grant verify` does not migrate, repair, deduplicate, deactivate, or consume authority. It reports malformed/ambiguous grant state such as duplicate durable scopes, missing participant references, unsupported capabilities, and inconsistent delegated one-shot consumption evidence. Normal grant expiry and retained grants for inactive participants are not policy-integrity violations by themselves.
+
+If the authorization schema is too old to audit, migrate explicitly with `db init`; verification never performs that mutation implicitly.
+
 ## GitHub participant ownership
 
 GitHub-originated Chat writes use an external owner relation rather than participant HMAC.

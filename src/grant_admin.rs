@@ -172,6 +172,11 @@ pub enum GrantCommand {
         #[command(subcommand)]
         command: DurableGrantCommand,
     },
+    /// Verify authorization-policy object integrity without repairing the database.
+    Verify {
+        #[arg(long)]
+        db: PathBuf,
+    },
 }
 
 pub fn dispatch(command: GrantCommand) -> DynResult {
@@ -330,6 +335,47 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
             Ok(())
         }
         GrantCommand::Durable { command } => dispatch_durable(command),
+        GrantCommand::Verify { db: path } => {
+            require_database(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            if !authorization::authorization_integrity_schema_current(&conn)? {
+                return Err(format!(
+                    "authorization grant schema requires migration: run `conversation-blackboard db init --db {}` before audit",
+                    path.display()
+                )
+                .into());
+            }
+            let report = authorization::audit_authorization_integrity(&conn)?;
+            println!("AUTHORIZATION POLICY INTEGRITY");
+            println!("valid                    : {}", report.valid);
+            println!(
+                "durable_grants_scanned   : {}",
+                report.durable_grants_scanned
+            );
+            println!(
+                "delegated_grants_scanned : {}",
+                report.delegated_grants_scanned
+            );
+            println!("violations               : {}", report.violations.len());
+            for violation in report.violations {
+                println!(
+                    "violation                : {}\t{}\t{}\t{}\t{}",
+                    violation.kind,
+                    violation.store,
+                    violation
+                        .grant_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    violation.participant_id.as_deref().unwrap_or("-"),
+                    violation.detail,
+                );
+            }
+            if report.valid {
+                Ok(())
+            } else {
+                Err("authorization policy integrity verification failed".into())
+            }
+        }
     }
 }
 
@@ -739,6 +785,97 @@ mod tests {
             .unwrap()
             .unwrap();
         (dir, conn)
+    }
+
+    #[test]
+    fn grant_verify_accepts_clean_database() {
+        let (dir, conn) = setup();
+        drop(conn);
+        dispatch(GrantCommand::Verify {
+            db: dir.path().join("board.db"),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn grant_verify_refuses_legacy_schema_without_mutation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let error = dispatch(GrantCommand::Verify { db: path.clone() })
+            .expect_err("legacy grant schema must be refused")
+            .to_string();
+        assert!(error.contains("authorization grant schema requires migration"));
+
+        let conn = Connection::open(&path).unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let grant_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('principal_grants', 'delegated_grants')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(grant_tables, 0);
+    }
+
+    #[test]
+    fn grant_verify_reports_invalid_state_without_repairing_it() {
+        let (dir, conn) = setup();
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO principal_grants
+                    (principal_provider, principal_subject, participant_id, capability, resource)
+                 VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM principal_grants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        drop(conn);
+
+        let error = dispatch(GrantCommand::Verify {
+            db: dir.path().join("board.db"),
+        })
+        .expect_err("duplicate wildcard authority must fail verification")
+        .to_string();
+        assert!(error.contains("authorization policy integrity verification failed"));
+
+        let conn = db::connect(&dir.path().join("board.db")).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM principal_grants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, after);
     }
 
     #[test]

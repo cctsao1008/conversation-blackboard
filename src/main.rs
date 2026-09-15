@@ -412,6 +412,24 @@ mod tests {
     }
 
     #[test]
+    fn authorization_grant_verify_cli_parses() {
+        let cli = Cli::try_parse_from([
+            "conversation-blackboard",
+            "grant",
+            "verify",
+            "--db",
+            "board.db",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Grant {
+                command: grant_admin::GrantCommand::Verify { .. }
+            })
+        ));
+    }
+
+    #[test]
     fn durable_principal_grant_cli_parses() {
         let create = Cli::try_parse_from([
             "conversation-blackboard",

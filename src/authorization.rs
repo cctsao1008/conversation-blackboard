@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
@@ -69,6 +71,23 @@ impl AuthorizationDecision {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AuthorizationIntegrityViolation {
+    pub kind: String,
+    pub store: String,
+    pub grant_id: Option<i64>,
+    pub participant_id: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AuthorizationIntegrityReport {
+    pub valid: bool,
+    pub durable_grants_scanned: usize,
+    pub delegated_grants_scanned: usize,
+    pub violations: Vec<AuthorizationIntegrityViolation>,
+}
+
 #[derive(Debug, Clone)]
 struct ParticipantPolicyRow {
     status: String,
@@ -133,6 +152,442 @@ pub fn ensure_grant_schema(conn: &Connection) -> rusqlite::Result<()> {
                 status
             );",
     )
+}
+
+pub fn authorization_integrity_schema_current(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(table_has_columns(
+        conn,
+        "principal_grants",
+        &[
+            "id",
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "status",
+        ],
+    )? && table_has_columns(
+        conn,
+        "delegated_grants",
+        &[
+            "id",
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "intent_id",
+            "expires_at",
+            "one_shot",
+            "consumed_at",
+            "consumed_intent_id",
+            "status",
+        ],
+    )? && table_has_columns(conn, "web_participants", &["participant_id", "status"])?
+        && table_has_columns(
+            conn,
+            "execution_receipts",
+            &["participant_id", "intent_id", "status"],
+        )?)
+}
+
+pub fn audit_authorization_integrity(
+    conn: &Connection,
+) -> rusqlite::Result<AuthorizationIntegrityReport> {
+    if !authorization_integrity_schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+
+    let participants = {
+        let mut stmt = conn.prepare("SELECT participant_id FROM web_participants")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        rows
+    };
+    let mut violations = Vec::new();
+    type DurableScopeKey = (String, String, String, String, Option<String>);
+    let mut durable_scopes: HashMap<DurableScopeKey, Vec<i64>> = HashMap::new();
+
+    let durable_rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, principal_provider, principal_subject, participant_id, capability,
+                    resource, status
+             FROM principal_grants
+             ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    for (id, provider, subject, participant_id, capability, resource, status) in &durable_rows {
+        audit_required_text(
+            &mut violations,
+            "principal_grants",
+            *id,
+            participant_id,
+            "malformed_principal_provider",
+            provider,
+        );
+        audit_required_text(
+            &mut violations,
+            "principal_grants",
+            *id,
+            participant_id,
+            "malformed_principal_subject",
+            subject,
+        );
+        audit_required_text(
+            &mut violations,
+            "principal_grants",
+            *id,
+            participant_id,
+            "malformed_participant_id",
+            participant_id,
+        );
+        audit_required_text(
+            &mut violations,
+            "principal_grants",
+            *id,
+            participant_id,
+            "malformed_capability",
+            capability,
+        );
+        if let Some(resource) = resource {
+            audit_required_text(
+                &mut violations,
+                "principal_grants",
+                *id,
+                participant_id,
+                "malformed_resource",
+                resource,
+            );
+        }
+        if !participants.contains(participant_id) {
+            push_violation(
+                &mut violations,
+                "missing_participant",
+                "principal_grants",
+                Some(*id),
+                Some(participant_id),
+                "grant references no durable participant",
+            );
+        }
+        if !is_known_capability(capability) {
+            push_violation(
+                &mut violations,
+                "unsupported_capability",
+                "principal_grants",
+                Some(*id),
+                Some(participant_id),
+                capability,
+            );
+        }
+        if !matches!(status.as_str(), "active" | "inactive") {
+            push_violation(
+                &mut violations,
+                "invalid_status",
+                "principal_grants",
+                Some(*id),
+                Some(participant_id),
+                status,
+            );
+        }
+        durable_scopes
+            .entry((
+                provider.clone(),
+                subject.clone(),
+                participant_id.clone(),
+                capability.clone(),
+                resource.clone(),
+            ))
+            .or_default()
+            .push(*id);
+    }
+
+    for ((provider, subject, participant_id, capability, resource), ids) in durable_scopes {
+        if ids.len() > 1 {
+            let id_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            push_violation(
+                &mut violations,
+                "duplicate_durable_scope",
+                "principal_grants",
+                ids.first().copied(),
+                Some(&participant_id),
+                &format!(
+                    "principal={provider}:{subject};capability={capability};resource={};grant_ids={id_list}",
+                    resource.as_deref().unwrap_or("*")
+                ),
+            );
+        }
+    }
+
+    let delegated_rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, principal_provider, principal_subject, participant_id, capability,
+                    resource, intent_id, expires_at, one_shot, consumed_at,
+                    consumed_intent_id, status
+             FROM delegated_grants
+             ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    for (
+        id,
+        provider,
+        subject,
+        participant_id,
+        capability,
+        resource,
+        intent_id,
+        _expires_at,
+        one_shot_raw,
+        consumed_at,
+        consumed_intent_id,
+        status,
+    ) in &delegated_rows
+    {
+        audit_required_text(
+            &mut violations,
+            "delegated_grants",
+            *id,
+            participant_id,
+            "malformed_principal_provider",
+            provider,
+        );
+        audit_required_text(
+            &mut violations,
+            "delegated_grants",
+            *id,
+            participant_id,
+            "malformed_principal_subject",
+            subject,
+        );
+        audit_required_text(
+            &mut violations,
+            "delegated_grants",
+            *id,
+            participant_id,
+            "malformed_participant_id",
+            participant_id,
+        );
+        audit_required_text(
+            &mut violations,
+            "delegated_grants",
+            *id,
+            participant_id,
+            "malformed_capability",
+            capability,
+        );
+        if let Some(resource) = resource {
+            audit_required_text(
+                &mut violations,
+                "delegated_grants",
+                *id,
+                participant_id,
+                "malformed_resource",
+                resource,
+            );
+        }
+        if let Some(intent_id) = intent_id {
+            audit_required_text(
+                &mut violations,
+                "delegated_grants",
+                *id,
+                participant_id,
+                "malformed_intent_id",
+                intent_id,
+            );
+        }
+        if !participants.contains(participant_id) {
+            push_violation(
+                &mut violations,
+                "missing_participant",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                "grant references no durable participant",
+            );
+        }
+        if !is_known_capability(capability) {
+            push_violation(
+                &mut violations,
+                "unsupported_capability",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                capability,
+            );
+        }
+        if !matches!(status.as_str(), "active" | "inactive") {
+            push_violation(
+                &mut violations,
+                "invalid_status",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                status,
+            );
+        }
+        if !matches!(*one_shot_raw, 0 | 1) {
+            push_violation(
+                &mut violations,
+                "invalid_one_shot_flag",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                &one_shot_raw.to_string(),
+            );
+        }
+
+        let has_consumed_at = consumed_at.is_some();
+        let has_consumed_intent = consumed_intent_id.is_some();
+        if has_consumed_at != has_consumed_intent {
+            push_violation(
+                &mut violations,
+                "partial_consumption_metadata",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                "consumed_at and consumed_intent_id must appear together",
+            );
+        }
+        if *one_shot_raw == 0 && (has_consumed_at || has_consumed_intent) {
+            push_violation(
+                &mut violations,
+                "non_one_shot_consumption_metadata",
+                "delegated_grants",
+                Some(*id),
+                Some(participant_id),
+                "only one-shot grants may carry consumption metadata",
+            );
+        }
+        if let (Some(bound), Some(consumed)) = (intent_id.as_deref(), consumed_intent_id.as_deref())
+        {
+            if bound != consumed {
+                push_violation(
+                    &mut violations,
+                    "consumed_intent_conflicts_with_binding",
+                    "delegated_grants",
+                    Some(*id),
+                    Some(participant_id),
+                    &format!("bound={bound};consumed={consumed}"),
+                );
+            }
+        }
+        if *one_shot_raw == 1 && has_consumed_at && has_consumed_intent {
+            let consumed_intent = consumed_intent_id.as_deref().expect("checked above");
+            if !committed_receipt_exists(conn, participant_id, consumed_intent)? {
+                push_violation(
+                    &mut violations,
+                    "consumed_one_shot_without_committed_receipt",
+                    "delegated_grants",
+                    Some(*id),
+                    Some(participant_id),
+                    consumed_intent,
+                );
+            }
+        }
+    }
+
+    violations.sort_by(|left, right| {
+        left.store
+            .cmp(&right.store)
+            .then_with(|| left.grant_id.cmp(&right.grant_id))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    Ok(AuthorizationIntegrityReport {
+        valid: violations.is_empty(),
+        durable_grants_scanned: durable_rows.len(),
+        delegated_grants_scanned: delegated_rows.len(),
+        violations,
+    })
+}
+
+fn table_has_columns(conn: &Connection, table: &str, required: &[&str]) -> rusqlite::Result<bool> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(false);
+    }
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    Ok(required.iter().all(|column| columns.contains(*column)))
+}
+
+fn audit_required_text(
+    violations: &mut Vec<AuthorizationIntegrityViolation>,
+    store: &str,
+    grant_id: i64,
+    participant_id: &str,
+    kind: &str,
+    value: &str,
+) {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        push_violation(
+            violations,
+            kind,
+            store,
+            Some(grant_id),
+            Some(participant_id),
+            "value is blank or contains control characters",
+        );
+    }
+}
+
+fn push_violation(
+    violations: &mut Vec<AuthorizationIntegrityViolation>,
+    kind: &str,
+    store: &str,
+    grant_id: Option<i64>,
+    participant_id: Option<&str>,
+    detail: &str,
+) {
+    violations.push(AuthorizationIntegrityViolation {
+        kind: kind.to_owned(),
+        store: store.to_owned(),
+        grant_id,
+        participant_id: participant_id.map(str::to_owned),
+        detail: detail.to_owned(),
+    });
 }
 
 pub fn evaluate_authorization(
@@ -555,6 +1010,136 @@ mod tests {
         )
         .unwrap();
         (dir, conn)
+    }
+
+    #[test]
+    fn authorization_integrity_accepts_clean_expiry_and_inactive_history() {
+        let (_dir, conn) = setup();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource, status)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', 'control-systems', 'inactive')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message',
+                     'control-systems', 'expired-history', unixepoch() - 60, 0)",
+            [],
+        )
+        .unwrap();
+        identity::set_web_participant_status(&conn, "maker-main", "inactive").unwrap();
+
+        let report = audit_authorization_integrity(&conn).unwrap();
+        assert!(report.valid);
+        assert_eq!(report.durable_grants_scanned, 1);
+        assert_eq!(report.delegated_grants_scanned, 1);
+        assert!(report.violations.is_empty());
+    }
+
+    #[test]
+    fn authorization_integrity_detects_durable_scope_and_reference_corruption() {
+        let (_dir, conn) = setup();
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO principal_grants
+                    (principal_provider, principal_subject, participant_id, capability, resource)
+                 VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('oidc:https://issuer.example', 'agent-2', 'maker-main', 'invented_capability', 'x')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('oidc:https://issuer.example', 'agent-3', 'ghost-main', 'post_message', 'x')",
+            [],
+        )
+        .unwrap();
+
+        let report = audit_authorization_integrity(&conn).unwrap();
+        assert!(!report.valid);
+        let kinds = report
+            .violations
+            .iter()
+            .map(|violation| violation.kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"duplicate_durable_scope"));
+        assert!(kinds.contains(&"unsupported_capability"));
+        assert!(kinds.contains(&"missing_participant"));
+    }
+
+    #[test]
+    fn authorization_integrity_detects_delegated_consumption_corruption() {
+        let (_dir, conn) = setup();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, one_shot, consumed_at, consumed_intent_id)
+             VALUES ('oidc:https://issuer.example', 'partial', 'maker-main', 'post_message',
+                     'control-systems', 'partial-1', 1, unixepoch(), NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, one_shot, consumed_at, consumed_intent_id)
+             VALUES ('oidc:https://issuer.example', 'non-one-shot', 'maker-main', 'post_message',
+                     'control-systems', NULL, 0, unixepoch(), 'non-one-shot-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, one_shot, consumed_at, consumed_intent_id)
+             VALUES ('oidc:https://issuer.example', 'conflict', 'maker-main', 'post_message',
+                     'control-systems', 'bound-1', 1, unixepoch(), 'other-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, one_shot, consumed_at, consumed_intent_id)
+             VALUES ('oidc:https://issuer.example', 'missing-receipt', 'maker-main', 'post_message',
+                     'control-systems', 'missing-receipt-1', 1, unixepoch(), 'missing-receipt-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, one_shot)
+             VALUES ('oidc:https://issuer.example', 'unknown-cap', 'maker-main', 'unknown_delegate',
+                     'control-systems', 'unknown-cap-1', 0)",
+            [],
+        )
+        .unwrap();
+
+        let report = audit_authorization_integrity(&conn).unwrap();
+        assert!(!report.valid);
+        let kinds = report
+            .violations
+            .iter()
+            .map(|violation| violation.kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"partial_consumption_metadata"));
+        assert!(kinds.contains(&"non_one_shot_consumption_metadata"));
+        assert!(kinds.contains(&"consumed_intent_conflicts_with_binding"));
+        assert!(kinds.contains(&"consumed_one_shot_without_committed_receipt"));
+        assert!(kinds.contains(&"unsupported_capability"));
     }
 
     #[test]
