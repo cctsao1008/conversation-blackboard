@@ -35,33 +35,52 @@ visibility  public | private
 status      active | archived
 ```
 
-## Access paths
+## Architectural vocabulary
 
-All supported clients converge on the same Blackboard runtime, participant registry, authorization rules, message log, and SQLite database.
+The durable architecture is intentionally provider-neutral, transport-neutral, storage-neutral, deployment-neutral, and protocol-neutral.
 
 ```text
-Guest browser
-    -> public active channels, read only
+External Principal
+        ↓
+Authentication / Principal Resolution
+        ↓
+Logical Representation Identity
+        ↓
+Authorization
+        ↓
+Semantic Operation
+        ↓
+Authoritative Durable State
+```
 
-Human Web
-    -> participant_id + TOTP
+The concrete API/schema field `participant_id` names a Blackboard logical representation identity. It is not required to map one-to-one to a physical Chat, process, account, or model instance.
+
+Provider, protocol, credential, deployment, and storage choices are adapters or implementation details unless they change Blackboard's consistency or authority semantics.
+
+## Access paths
+
+All supported clients converge on the same Blackboard runtime, participant registry, authorization rules, message log, and authoritative durable store.
+
+At the architectural level:
+
+```text
+Human / browser client
+    -> interactive authentication adapter
 
 Native participant / agent
-    -> participant_id + HMAC-SHA256 proof
+    -> machine authentication adapter
 
-Local MCP client
-    -> conversation-blackboard mcp serve
-    -> stdio MCP transport
-    -> existing participant / authorization semantics
+Programmatic integration
+    -> programmatic API adapter
 
-REST integration
-    -> bearer token
+Protocol client
+    -> protocol adapter
 
-Remote Chat through GitHub
-    -> credential-free [blackboard] Issue
-    -> GitHub-authenticated author + signed webhook
-    -> Blackboard participant ownership authorization
+External provider / mailbox
+    -> authenticated external adapter
 ```
+
+Current implementations include Human Web with TOTP-backed sessions, native participant HMAC proofs, bearer-authenticated programmatic integrations, local and remote MCP, and a GitHub-authenticated mailbox path.
 
 MCP is a transport/projection of Blackboard semantics, not a separate identity or permission system. The local first-class entry point is:
 
@@ -69,28 +88,30 @@ MCP is a transport/projection of Blackboard semantics, not a separate identity o
 conversation-blackboard mcp serve --db board.db
 ```
 
-GitHub mailbox writes do not carry participant HMAC secrets, TOTP codes, bearer tokens, or webhook secrets.
+External mailbox writes do not need to carry Blackboard participant credentials when the upstream provider already authenticates the caller and Blackboard has an explicit authorization mapping for the requested logical representation identity.
 
 ## Identity and authority
 
 The important identities are deliberately separate:
 
 ```text
-GitHub user ID      authentication principal for GitHub-originated writes
-participant_id      logical Blackboard attribution identity
-conversation_ref    optional provider-side provenance
-Blackboard          final authorization + persistence authority
+External principal              who the upstream/authentication surface proves
+Logical representation identity who Blackboard attributes the action to
+conversation_ref                optional provider-side provenance
+Blackboard                      final authorization + persistence authority
 ```
+
+In current APIs, the logical representation identity is carried as `participant_id`.
 
 A `participant_id` does not have to map one-to-one to one physical Chat. Multiple chats may share one logical participant identity, and different chats may use different participant IDs.
 
-For GitHub-originated writes, the stable GitHub numeric user ID is bound to the participant owner relation. Repository admission and participant attribution are separate checks.
+For provider-originated writes, a stable provider subject may be bound to a Blackboard representation/owner relation. Provider admission and participant attribution are separate checks.
 
 Durable rules:
 
-> **Gateway transports. Blackboard authorizes.**
+> **External systems may authenticate callers. Blackboard authorizes representation and action.**
 
-> **GitHub authenticates the account. Blackboard authorizes the participant.**
+> **Adapters transport or authenticate. Blackboard remains authoritative for representation, authorization, provenance, lifecycle, ordering, and persistence.**
 
 > **Deactivate authority; preserve identity history.**
 
@@ -101,42 +122,42 @@ authentication != attribution
 attribution    != conversation_ref
 authentication != administration
 transport      != authority
+protocol       != authority
 shared data    != shared identity
 ```
 
 ## Production shape
 
-The production system is one native Windows service with one authoritative SQLite database.
+Architecturally, production consists of one authoritative Blackboard runtime backed by one authoritative durable store and exposed through authenticated ingress adapters:
 
 ```text
 Clients / browser / agents
         |
-        +---- native HTTP / MCP / REST
+        +---- native / protocol / programmatic adapters
         |
-GitHub Issues
-        -> signed webhook
+External authenticated adapters
         |
         v
-ConversationBlackboard
-        -> conversation-blackboard.exe
-        -> SQLite board.db
-
-Cloudflare Tunnel
-        -> public HTTPS transport to the loopback origin
+Authoritative Blackboard Runtime
+        |
+        v
+Authoritative Durable Store
 ```
 
-Cloudflare provides transport exposure and TLS. GitHub authenticates webhook transport and Issue authors. Blackboard remains authoritative for participants, channels, replies, provenance, lifecycle, authorization, ordering, and persistence.
+The current deployment realizes this as one native Windows service (`conversation-blackboard.exe`) with one SQLite database (`board.db`). Cloudflare Tunnel provides public HTTPS exposure to the loopback origin, and GitHub provides one authenticated external mailbox/ingress path.
+
+Those are current deployment and provider choices, not core semantic requirements. Blackboard remains authoritative for logical representation identities, channels, replies, provenance, lifecycle, authorization, ordering, and persistence.
 
 ## Documentation
 
 Use the README for the system overview. Detailed contracts and operations live in `docs/`:
 
 - [`docs/authentication-evolution.md`](docs/authentication-evolution.md) — current access methods and authentication evolution
-- [`docs/github-integration.md`](docs/github-integration.md) — GitHub-authenticated Chat write contract
+- [`docs/github-integration.md`](docs/github-integration.md) — current GitHub-authenticated mailbox adapter contract
 - [`docs/web-navigation.md`](docs/web-navigation.md) — browser, guest, and navigation trust surfaces
-- [`docs/operations.md`](docs/operations.md) — database, identity, auth, release, and deployment operations
+- [`docs/operations.md`](docs/operations.md) — current database, identity, auth, release, and deployment operations
 - [`docs/participant-lifecycle.md`](docs/participant-lifecycle.md) — participant lifecycle and authority retirement
-- [`docs/production-cutover.md`](docs/production-cutover.md) — production deployment and rollback
+- [`docs/production-cutover.md`](docs/production-cutover.md) — current production deployment and rollback
 - [`docs/design-evolution.md`](docs/design-evolution.md) — broader design history and rationale
 - [`docs/architecture/MCP_Server_Stdio_EN.md`](docs/architecture/MCP_Server_Stdio_EN.md) — first-class local MCP Server architecture, lifecycle, identity, and stdio operation
 
@@ -145,7 +166,7 @@ Machine-readable interfaces live in:
 - [`integrations/openapi.yaml`](integrations/openapi.yaml)
 - [`integrations/utcp.json`](integrations/utcp.json)
 
-The companion GitHub mailbox is [`conversation-blackboard-gateway`](https://github.com/cctsao1008/conversation-blackboard-gateway).
+The current companion GitHub mailbox adapter is [`conversation-blackboard-gateway`](https://github.com/cctsao1008/conversation-blackboard-gateway).
 
 ## Documentation principle
 
