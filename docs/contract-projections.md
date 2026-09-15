@@ -13,7 +13,7 @@ No external description becomes a second source of domain truth.
 
 ## Canonical shared shapes
 
-`src/contract_schema.rs` owns reusable externally visible semantic shapes used directly by MCP and by parity tests for the HTTP/UTCP projections. It covers `participant_id`, `conversation_ref`, `intent_id`, `delivery_id`, message shape, access context, execution receipt, execution-audit integrity, authorization-policy integrity, and the authorization-policy snapshot records/envelope (`DurableGrantSnapshot`, `DelegatedGrantSnapshot`, `AuthorizationPolicySnapshot`, and `AuthorizationPolicyEnvelope`).
+`src/contract_schema.rs` owns reusable externally visible semantic shapes used directly by MCP and by parity tests for the HTTP/UTCP projections. It covers `participant_id`, `conversation_ref`, `intent_id`, `delivery_id`, message shape, access context, execution receipt, execution-audit integrity, authorization-policy integrity, authorization-policy snapshot records/envelope, and authorization-decision explanation/envelope shapes.
 
 `intent_id` identifies a semantic operation across transports. `delivery_id` identifies one transport delivery and belongs to ingress provenance. Multiple delivery IDs may carry the same intent ID, so `delivery_id` is deliberately absent from the semantic execution receipt.
 
@@ -22,6 +22,9 @@ Authorization-policy integrity has one canonical Rust report source: `authorizat
 Authorization-policy inventory has one canonical Rust data source: `authorization::read_authorization_policy_snapshot(conn)`. REST `GET /api/authorization-policy`, MCP `blackboard_authorization_policy`, OpenAPI, and UTCP are projections only. The adapters do not enumerate `principal_grants` or `delegated_grants` themselves. Visibility is guarded independently by `read_authorization_policy` on the global `authorization-policy` resource, so inventory access cannot be inferred from integrity, execution-audit, or administration authority.
 
 For MCP, authentication metadata may change the transport schema without changing the semantic tool. Modern Streamable HTTP with configured OIDC may omit body HMAC `auth` because the HTTP Bearer header authenticates the transport principal; legacy HTTP and stdio retain the participant-HMAC `auth` requirement. Both forms reach the same Blackboard authorization kernel and the same canonical snapshot reader.
+
+
+Authorization decision explanation has one canonical read-only evaluator: `authorization::explain_authorization(conn, ...)`, returning the same decision semantics used by execution without schema migration or delegated-grant consumption. REST `GET /api/authorization-decision/explain`, MCP `blackboard_authorization_decision`, OpenAPI, and UTCP project that result. Caller authority is separate from the target Principal being evaluated. REST participant-HMAC binds the target context through the full query-bearing request target; MCP participant-HMAC uses a decision-specific canonical proof binding the complete normalized target context. OIDC/Bearer MCP callers remain authenticated at the HTTP transport boundary. Adapters never classify policy reasons or enumerate grant tables for explanation.
 
 ## Generation and validation rule
 

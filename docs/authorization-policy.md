@@ -43,19 +43,22 @@ Participant lifecycle remains authoritative. A missing participant is denied. An
 
 ## Canonical decision kernel
 
-`authorization::evaluate_authorization` is the policy kernel for both execution and operator explanation. It owns participant lifecycle, durable grant matching, implicit compatibility authority, delegated constraints, expiry, intent binding, one-shot replay classification, and consumption intent.
+`authorization::evaluate_authorization_current_schema` is the single policy kernel that owns participant lifecycle, durable grant matching, implicit compatibility authority, delegated constraints, expiry, intent binding, one-shot replay classification, and consumption intent. It is reached through two deliberately different wrappers:
 
 ```text
-authenticated Principal
-        ↓
-authorization::evaluate_authorization
-        ↓
-AuthorizationDecision
-        ├─ execution.rs -> enforce allow/deny and consume only on commit
-        └─ grant explain -> render the same decision read-only
+execution / compatibility
+    -> authorization::evaluate_authorization
+       -> may ensure the current grant schema
+       -> shared current-schema decision kernel
+
+observation / explanation
+    -> authorization::explain_authorization
+       -> requires the schema to already be current
+       -> never migrates or repairs
+       -> same shared current-schema decision kernel
 ```
 
-`authorize` remains a thin compatibility projection for non-intent boolean checks. Intent-aware execution consumes the canonical decision directly.
+Both wrappers return the same `AuthorizationDecision`; only execution may act on `consume_grant_id`. `authorize` remains a thin boolean compatibility projection over the execution-compatible wrapper.
 
 ## One-shot delegated authority
 
@@ -65,7 +68,22 @@ A committed replay of the same semantic intent is classified separately and does
 
 ## Explainability
 
-`conversation-blackboard grant explain` renders the canonical decision without mutating authority. Its decision source/reason therefore cannot drift into a second policy implementation.
+`conversation-blackboard grant explain` and the privileged remote decision projections render the canonical decision without mutating authority. Their decision source/reason therefore cannot drift into a second policy implementation.
+
+Remote decision visibility is independently privileged:
+
+```text
+capability = read_authorization_decision
+resource   = authorization-decision
+```
+
+The authenticated caller `Principal` is distinct from the target `Principal` whose authorization context is being explained. Caller authorization is evaluated first; only then is the target principal/participant/capability/resource/intent context passed to the read-only canonical evaluator. A target denial remains successful explanation data after caller authorization succeeds.
+
+REST uses `GET /api/authorization-decision/explain` with the target context in query parameters. This is intentional: participant-HMAC HTTP authentication binds the complete `method + path_and_query`, so the authenticated request covers the exact decision query without introducing a new body-signing protocol.
+
+MCP exposes `blackboard_authorization_decision`. Modern HTTP MCP with a verified OIDC Bearer authenticates the caller at the transport boundary and may omit body HMAC `auth`. Legacy HTTP and stdio retain participant-HMAC authentication, but this tool uses a dedicated canonical proof payload that binds the complete normalized target principal, target participant, capability, resource, and intent. A proof for one decision query therefore cannot be replayed for another target context.
+
+All explanation paths are observational. They use the read-only evaluator, do not consume one-shot grants, do not create or repair grant storage, and expose `consume_on_commit` rather than an internal consumption identifier.
 
 Representative reason classes include:
 
@@ -123,6 +141,9 @@ Implicit authority is intentionally narrow: only a `human-web` principal authent
 The reader is observationally read-only. It does not call `ensure_grant_schema`, initialize storage, repair policy state, consume delegated grants, or normalize lifecycle state. An authorization schema too old for the snapshot contract is reported as migration-required without database mutation. Inactive durable grants plus expired or consumed delegated grants remain visible as inventory state rather than being silently filtered or reclassified as integrity failures.
 
 The snapshot contract contains only non-secret authority metadata. Bearer/JWT values, HMAC secrets, TOTP material, session credentials, and participant authentication secrets are outside the snapshot model.
+
+
+Decision/explain visibility is a third independent observational surface. Only Human Web admin self receives implicit global explain authority; participant-HMAC self, GitHub-owner compatibility authority, and OIDC/Bearer identity require an explicit `read_authorization_decision` grant. Explain authority does not imply policy snapshot, policy integrity, execution audit/sweep, or channel administration, and those capabilities do not imply explain visibility.
 
 ## Verification boundary
 

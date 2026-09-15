@@ -1493,6 +1493,98 @@ mod tests {
     }
 
     #[test]
+    fn authorization_decision_authority_is_isolated_from_other_privileged_capabilities() {
+        let (_dir, conn) = setup();
+        let decision_reader = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "decision-reader".to_owned(),
+        };
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+            params![
+                &decision_reader.provider,
+                &decision_reader.subject,
+                READ_AUTHORIZATION_DECISION,
+                AUTHORIZATION_DECISION_RESOURCE
+            ],
+        )
+        .unwrap();
+        assert!(authorize(
+            &conn,
+            &decision_reader,
+            "maker-main",
+            READ_AUTHORIZATION_DECISION,
+            Some(AUTHORIZATION_DECISION_RESOURCE),
+        )
+        .unwrap());
+        for (capability, resource) in [
+            (
+                READ_AUTHORIZATION_POLICY,
+                Some(AUTHORIZATION_POLICY_RESOURCE),
+            ),
+            (
+                READ_AUTHORIZATION_POLICY_INTEGRITY,
+                Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            ),
+            (READ_EXECUTION_AUDIT, None),
+            (
+                READ_EXECUTION_AUDIT_SWEEP,
+                Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            ),
+            (MANAGE_CHANNELS, None),
+        ] {
+            assert!(
+                !authorize(&conn, &decision_reader, "maker-main", capability, resource).unwrap(),
+                "decision authority leaked into {capability}"
+            );
+        }
+
+        let other_reader = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "other-reader".to_owned(),
+        };
+        for (capability, resource) in [
+            (
+                READ_AUTHORIZATION_POLICY,
+                Some(AUTHORIZATION_POLICY_RESOURCE),
+            ),
+            (
+                READ_AUTHORIZATION_POLICY_INTEGRITY,
+                Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            ),
+            (READ_EXECUTION_AUDIT, None),
+            (
+                READ_EXECUTION_AUDIT_SWEEP,
+                Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            ),
+            (MANAGE_CHANNELS, None),
+        ] {
+            conn.execute(
+                "INSERT INTO principal_grants
+                    (principal_provider, principal_subject, participant_id, capability, resource)
+                 VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+                params![
+                    &other_reader.provider,
+                    &other_reader.subject,
+                    capability,
+                    resource
+                ],
+            )
+            .unwrap();
+        }
+        assert!(!authorize(
+            &conn,
+            &other_reader,
+            "maker-main",
+            READ_AUTHORIZATION_DECISION,
+            Some(AUTHORIZATION_DECISION_RESOURCE),
+        )
+        .unwrap());
+    }
+
+    #[test]
     fn authorization_policy_snapshot_reads_full_lifecycle_without_filtering() {
         let (_dir, conn) = setup();
         conn.execute(

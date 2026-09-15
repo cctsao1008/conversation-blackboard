@@ -449,3 +449,37 @@ fn authorization_policy_snapshot_adapters_reuse_canonical_reader_without_grant_s
         }
     }
 }
+
+#[test]
+fn authorization_decision_adapters_reuse_canonical_evaluator_without_policy_sql() {
+    let adapters = [
+        ("http", include_str!("access_api.rs")),
+        ("mcp", include_str!("mcp.rs")),
+    ];
+    for (name, source) in adapters {
+        assert!(
+            source.contains("normalize_authorization_decision_target"),
+            "{name} adapter must reuse canonical authorization decision target normalization"
+        );
+        assert!(
+            source.contains("explain_authorization"),
+            "{name} adapter must reuse the canonical read-only authorization evaluator"
+        );
+        for forbidden in [
+            "FROM principal_grants",
+            "FROM delegated_grants",
+            "JOIN principal_grants",
+            "JOIN delegated_grants",
+            "explicit_durable_grant_match",
+            "explicit_resource_scope_mismatch",
+            "delegated_grant_expired",
+            "delegated_intent_mismatch",
+            "no_matching_authority",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} adapter must not reconstruct authorization policy/reason logic: {forbidden}"
+            );
+        }
+    }
+}
