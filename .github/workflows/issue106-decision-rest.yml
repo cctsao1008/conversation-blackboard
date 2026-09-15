@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Apply authorization decision REST projection
-        run: python .github/scripts/issue106_decision_rest.py
+        run: |
+          python .github/scripts/issue106_decision_rest.py
+          cargo fmt --all
       - name: Verify REST decision projection
         run: |
           cargo fmt --all -- --check
