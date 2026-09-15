@@ -16,7 +16,7 @@ use url::Url;
 use crate::{db, execution, identity};
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
-const OIDC_MECHANISM: &str = "oidc-bearer-jwt";
+pub(crate) const OIDC_MECHANISM: &str = "oidc-bearer-jwt";
 
 #[derive(Clone)]
 pub struct OidcState {

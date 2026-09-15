@@ -32,7 +32,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
 #[derive(Clone)]
 struct McpHttpState {
     app: AppState,
-    _oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
+    oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
 }
 
 #[cfg(test)]
@@ -54,7 +54,7 @@ pub(crate) fn app_with_oidc(
         )
         .with_state(McpHttpState {
             app: state,
-            _oidc_verifier: oidc_verifier,
+            oidc_verifier,
         })
 }
 
@@ -139,7 +139,7 @@ pub(crate) async fn stdio_dispatch(state: &AppState, value: &Value) -> Option<Va
         },
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
-        "tools/call" => match tool_call_result(state, object).await {
+        "tools/call" => match tool_call_result(state, object, None).await {
             Ok(result) => Ok(result),
             Err(message) => Err((-32602, message)),
         },
@@ -167,7 +167,7 @@ async fn mcp_options(request: Request<Body>) -> Response {
     response.headers_mut().insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         HeaderValue::from_static(
-            "content-type, accept, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id",
+            "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, mcp-session-id",
         ),
     );
     response
@@ -238,6 +238,11 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
         None => return jsonrpc_http_error(StatusCode::BAD_REQUEST, id, -32600, "invalid_request"),
     };
 
+    let transport_principal = match resolve_http_bearer_principal(&state, &headers) {
+        Ok(principal) => principal,
+        Err(()) => return bearer_unauthorized(id),
+    };
+
     let body_protocol = request_protocol_version(object);
     let header_protocol = headers
         .get("mcp-protocol-version")
@@ -262,10 +267,12 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
         let result = match method {
             "server/discover" => discover_result(),
             "tools/list" => modern_result(method, tools_list_result()),
-            "tools/call" => match tool_call_result(&state.app, object).await {
-                Ok(result) => modern_result(method, result),
-                Err(message) => return jsonrpc_error_response(id, -32602, message),
-            },
+            "tools/call" => {
+                match tool_call_result(&state.app, object, transport_principal.as_ref()).await {
+                    Ok(result) => modern_result(method, result),
+                    Err(message) => return jsonrpc_error_response(id, -32602, message),
+                }
+            }
             _ => return jsonrpc_http_error(StatusCode::NOT_FOUND, id, -32601, "method_not_found"),
         };
         return jsonrpc_result_response(id, result);
@@ -288,10 +295,12 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
         },
         "ping" => json!({}),
         "tools/list" => tools_list_result(),
-        "tools/call" => match tool_call_result(&state.app, object).await {
-            Ok(result) => result,
-            Err(message) => return jsonrpc_error_response(id, -32602, message),
-        },
+        "tools/call" => {
+            match tool_call_result(&state.app, object, transport_principal.as_ref()).await {
+                Ok(result) => result,
+                Err(message) => return jsonrpc_error_response(id, -32602, message),
+            }
+        }
         _ => return jsonrpc_error_response(id, -32601, "method_not_found"),
     };
 
@@ -715,6 +724,7 @@ fn write_output_schema() -> Value {
 async fn tool_call_result(
     state: &AppState,
     object: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
 ) -> Result<Value, &'static str> {
     let params = object
         .get("params")
@@ -731,16 +741,22 @@ async fn tool_call_result(
     };
 
     match name {
-        "blackboard_read" => Ok(blackboard_read(state, &arguments).await),
-        "blackboard_write" => Ok(blackboard_write(state, &arguments).await),
-        "blackboard_access_context" => Ok(blackboard_access_context(state, &arguments).await),
-        "blackboard_execution_receipt" => Ok(blackboard_execution_receipt(state, &arguments).await),
-        "blackboard_execution_audit" => Ok(blackboard_execution_audit(state, &arguments).await),
+        "blackboard_read" => Ok(blackboard_read(state, &arguments, transport_principal).await),
+        "blackboard_write" => Ok(blackboard_write(state, &arguments, transport_principal).await),
+        "blackboard_access_context" => {
+            Ok(blackboard_access_context(state, &arguments, transport_principal).await)
+        }
+        "blackboard_execution_receipt" => {
+            Ok(blackboard_execution_receipt(state, &arguments, transport_principal).await)
+        }
+        "blackboard_execution_audit" => {
+            Ok(blackboard_execution_audit(state, &arguments, transport_principal).await)
+        }
         "blackboard_execution_audit_integrity" => {
-            Ok(blackboard_execution_audit_integrity(state, &arguments).await)
+            Ok(blackboard_execution_audit_integrity(state, &arguments, transport_principal).await)
         }
         "blackboard_execution_audit_sweep" => {
-            Ok(blackboard_execution_audit_sweep(state, &arguments).await)
+            Ok(blackboard_execution_audit_sweep(state, &arguments, transport_principal).await)
         }
         _ => Err("unknown_tool"),
     }
@@ -803,7 +819,49 @@ async fn resolve_capability_identity(
     Ok(auth.identity)
 }
 
-async fn blackboard_access_context(state: &AppState, arguments: &Map<String, Value>) -> Value {
+async fn resolve_capability_principal(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    transport_principal: Option<&execution::Principal>,
+) -> Result<execution::Principal, &'static str> {
+    if let Some(principal) = transport_principal {
+        let principal = principal.clone();
+        let policy_principal = principal.clone();
+        let participant = participant_id.to_owned();
+        let capability = capability.to_owned();
+        let resource = resource.map(str::to_owned);
+        let allowed = with_db(state, move |conn| {
+            authorization::authorize(
+                conn,
+                &policy_principal,
+                &participant,
+                &capability,
+                resource.as_deref(),
+            )
+        })
+        .await
+        .map_err(|_| "database_unavailable")?;
+        if !allowed {
+            return Err("forbidden");
+        }
+        return Ok(principal);
+    }
+
+    resolve_capability_identity(state, arguments, participant_id, capability, resource).await?;
+    Ok(execution::Principal {
+        provider: "participant-hmac".to_owned(),
+        subject: participant_id.to_owned(),
+    })
+}
+
+async fn blackboard_access_context(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
     if !only_keys(arguments, &["participant_id", "auth"]) {
         return tool_error("invalid_arguments");
     }
@@ -814,14 +872,19 @@ async fn blackboard_access_context(state: &AppState, arguments: &Map<String, Val
         },
         None => return tool_error("invalid_participant_id"),
     };
-    if let Err(code) =
-        resolve_capability_identity(state, arguments, &participant_id, "access_context", None).await
-    {
-        return tool_error(code);
-    }
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+    let principal = if let Some(principal) = transport_principal {
+        principal.clone()
+    } else {
+        if let Err(code) =
+            resolve_capability_identity(state, arguments, &participant_id, "access_context", None)
+                .await
+        {
+            return tool_error(code);
+        }
+        execution::Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: participant_id.clone(),
+        }
     };
     let principal_for_grants = principal.clone();
     let lookup = participant_id.clone();
@@ -833,6 +896,9 @@ async fn blackboard_access_context(state: &AppState, arguments: &Map<String, Val
         Ok(grants) => grants,
         Err(()) => return tool_error("database_unavailable"),
     };
+    if transport_principal.is_some() && grants.is_empty() {
+        return tool_error("forbidden");
+    }
     let mut capabilities = grants
         .iter()
         .map(|grant| grant.capability.clone())
@@ -848,7 +914,11 @@ async fn blackboard_access_context(state: &AppState, arguments: &Map<String, Val
     }))
 }
 
-async fn blackboard_execution_receipt(state: &AppState, arguments: &Map<String, Value>) -> Value {
+async fn blackboard_execution_receipt(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
     if !only_keys(arguments, &["participant_id", "intent_id", "auth"]) {
         return tool_error("invalid_arguments");
     }
@@ -866,20 +936,18 @@ async fn blackboard_execution_receipt(state: &AppState, arguments: &Map<String, 
         },
         None => return tool_error("invalid_intent_id"),
     };
-    if let Err(code) = resolve_capability_identity(
+    let principal = match resolve_capability_principal(
         state,
         arguments,
         &participant_id,
         authorization::READ_EXECUTION_RECEIPT,
         Some(&intent_id),
+        transport_principal,
     )
     .await
     {
-        return tool_error(code);
-    }
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+        Ok(principal) => principal,
+        Err(code) => return tool_error(code),
     };
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
@@ -905,7 +973,11 @@ async fn blackboard_execution_receipt(state: &AppState, arguments: &Map<String, 
     tool_success(json!({"execution": receipt}))
 }
 
-async fn blackboard_execution_audit(state: &AppState, arguments: &Map<String, Value>) -> Value {
+async fn blackboard_execution_audit(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
     if !only_keys(arguments, &["participant_id", "intent_id", "auth"]) {
         return tool_error("invalid_arguments");
     }
@@ -923,20 +995,18 @@ async fn blackboard_execution_audit(state: &AppState, arguments: &Map<String, Va
         },
         None => return tool_error("invalid_intent_id"),
     };
-    if let Err(code) = resolve_capability_identity(
+    let principal = match resolve_capability_principal(
         state,
         arguments,
         &participant_id,
         authorization::READ_EXECUTION_AUDIT,
         Some(&intent_id),
+        transport_principal,
     )
     .await
     {
-        return tool_error(code);
-    }
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+        Ok(principal) => principal,
+        Err(code) => return tool_error(code),
     };
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
@@ -965,6 +1035,7 @@ async fn blackboard_execution_audit(state: &AppState, arguments: &Map<String, Va
 async fn blackboard_execution_audit_integrity(
     state: &AppState,
     arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
 ) -> Value {
     if !only_keys(arguments, &["participant_id", "intent_id", "auth"]) {
         return tool_error("invalid_arguments");
@@ -983,20 +1054,18 @@ async fn blackboard_execution_audit_integrity(
         },
         None => return tool_error("invalid_intent_id"),
     };
-    if let Err(code) = resolve_capability_identity(
+    let principal = match resolve_capability_principal(
         state,
         arguments,
         &participant_id,
         authorization::READ_EXECUTION_AUDIT,
         Some(&intent_id),
+        transport_principal,
     )
     .await
     {
-        return tool_error(code);
-    }
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+        Ok(principal) => principal,
+        Err(code) => return tool_error(code),
     };
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
@@ -1029,6 +1098,7 @@ async fn blackboard_execution_audit_integrity(
 async fn blackboard_execution_audit_sweep(
     state: &AppState,
     arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
 ) -> Value {
     if !only_keys(arguments, &["participant_id", "auth"]) {
         return tool_error("invalid_arguments");
@@ -1040,20 +1110,18 @@ async fn blackboard_execution_audit_sweep(
         },
         None => return tool_error("invalid_participant_id"),
     };
-    if let Err(code) = resolve_capability_identity(
+    let principal = match resolve_capability_principal(
         state,
         arguments,
         &participant_id,
         authorization::READ_EXECUTION_AUDIT_SWEEP,
         Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
+        transport_principal,
     )
     .await
     {
-        return tool_error(code);
-    }
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+        Ok(principal) => principal,
+        Err(code) => return tool_error(code),
     };
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
@@ -1078,7 +1146,11 @@ async fn blackboard_execution_audit_sweep(
     tool_success(json!({"sweep": report}))
 }
 
-async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Value {
+async fn blackboard_read(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
     if !only_keys(
         arguments,
         &["channel", "after", "limit", "participant_id", "auth"],
@@ -1111,34 +1183,57 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
             Some(value) => value,
             None => return tool_error("invalid_participant_id"),
         };
-        let (_, proof) = match parse_auth(arguments) {
-            Ok(value) => value,
-            Err(code) => return tool_error(code),
-        };
-        let proof = proof.to_owned();
-        let lookup = participant_id.clone();
-        let verify_channel = channel.clone();
-        let verified = match with_db(state, move |conn| {
-            let Some(auth) = identity::get_web_participant_auth(conn, &lookup)? else {
-                return Ok(false);
-            };
-            Ok(auth.auth_scheme == participant_auth::AUTH_SCHEME
-                && participant_auth::verify_read_proof(
-                    &auth.auth_secret,
-                    &proof,
+        if let Some(principal) = transport_principal {
+            let principal = principal.clone();
+            let lookup = participant_id.clone();
+            let verify_channel = channel.clone();
+            let allowed = match with_db(state, move |conn| {
+                authorization::authorize(
+                    conn,
+                    &principal,
                     &lookup,
-                    &verify_channel,
-                    after,
-                    limit,
-                ))
-        })
-        .await
-        {
-            Ok(value) => value,
-            Err(()) => return tool_error("database_unavailable"),
-        };
-        if !verified {
-            return tool_error("unauthorized");
+                    authorization::READ_MESSAGES,
+                    Some(&verify_channel),
+                )
+            })
+            .await
+            {
+                Ok(value) => value,
+                Err(()) => return tool_error("database_unavailable"),
+            };
+            if !allowed {
+                return tool_error("forbidden");
+            }
+        } else {
+            let (_, proof) = match parse_auth(arguments) {
+                Ok(value) => value,
+                Err(code) => return tool_error(code),
+            };
+            let proof = proof.to_owned();
+            let lookup = participant_id.clone();
+            let verify_channel = channel.clone();
+            let verified = match with_db(state, move |conn| {
+                let Some(auth) = identity::get_web_participant_auth(conn, &lookup)? else {
+                    return Ok(false);
+                };
+                Ok(auth.auth_scheme == participant_auth::AUTH_SCHEME
+                    && participant_auth::verify_read_proof(
+                        &auth.auth_secret,
+                        &proof,
+                        &lookup,
+                        &verify_channel,
+                        after,
+                        limit,
+                    ))
+            })
+            .await
+            {
+                Ok(value) => value,
+                Err(()) => return tool_error("database_unavailable"),
+            };
+            if !verified {
+                return tool_error("unauthorized");
+            }
         }
     } else {
         let check_channel = channel.clone();
@@ -1174,7 +1269,11 @@ async fn blackboard_read(state: &AppState, arguments: &Map<String, Value>) -> Va
     }))
 }
 
-async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> Value {
+async fn blackboard_write(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
     if arguments.contains_key("source") || arguments.contains_key("instance") {
         return tool_error("identity_is_server_resolved");
     }
@@ -1236,6 +1335,7 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         &message_body,
         reply_to,
         &nonce,
+        transport_principal,
     )
     .await
     {
@@ -1245,13 +1345,19 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
 
     let request_hash =
         execution::message_request_hash(&channel, &kind, &message_body, None, reply_to);
-    let principal = execution::Principal {
-        provider: "participant-hmac".to_owned(),
-        subject: participant_id.clone(),
+    let (principal, mechanism) = match transport_principal {
+        Some(principal) => (principal.clone(), oidc::OIDC_MECHANISM.to_owned()),
+        None => (
+            execution::Principal {
+                provider: "participant-hmac".to_owned(),
+                subject: participant_id.clone(),
+            },
+            participant_auth::AUTH_SCHEME.to_owned(),
+        ),
     };
     let authority = execution::AuthorityContext {
         principal: principal.clone(),
-        mechanism: participant_auth::AUTH_SCHEME.to_owned(),
+        mechanism,
     };
     let intent = execution::IntentEnvelope {
         intent_id: nonce.clone(),
@@ -1262,7 +1368,10 @@ async fn blackboard_write(state: &AppState, arguments: &Map<String, Value>) -> V
         request_hash,
     };
     let ingress = execution::IngressProvenance {
-        delivery_id: format!("mcp-hmac:{participant_id}:{nonce}"),
+        delivery_id: match transport_principal {
+            Some(_) => format!("mcp-bearer:{participant_id}:{nonce}"),
+            None => format!("mcp-hmac:{participant_id}:{nonce}"),
+        },
         intent_id: nonce.clone(),
         transport: "mcp".to_owned(),
         external_ref: nonce.clone(),
@@ -1329,7 +1438,20 @@ async fn resolve_write_identity(
     body: &str,
     reply_to: Option<i64>,
     nonce: &str,
+    transport_principal: Option<&execution::Principal>,
 ) -> Result<Identity, &'static str> {
+    if transport_principal.is_some() {
+        let lookup_participant = participant_id.to_owned();
+        return match with_db(state, move |conn| {
+            identity::get_web_participant(conn, &lookup_participant)
+        })
+        .await
+        {
+            Ok(Some(identity)) => Ok(identity),
+            Ok(None) => Err("forbidden"),
+            Err(()) => Err("database_unavailable"),
+        };
+    }
     let (_, proof) = parse_auth(arguments)?;
     let proof = proof.to_owned();
     let lookup_participant = participant_id.to_owned();
@@ -1408,6 +1530,30 @@ fn kind_re() -> &'static Regex {
 fn nonce_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$").unwrap())
+}
+
+fn resolve_http_bearer_principal(
+    state: &McpHttpState,
+    headers: &HeaderMap,
+) -> Result<Option<execution::Principal>, ()> {
+    let Some(value) = headers.get(header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    let (scheme, token) = value.split_once(' ').ok_or(())?;
+    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
+        return Err(());
+    }
+    let verifier = state.oidc_verifier.as_ref().ok_or(())?;
+    verifier.verify(token).map(Some).map_err(|_| ())
+}
+
+fn bearer_unauthorized(id: Value) -> Response {
+    let mut response = jsonrpc_http_error(StatusCode::UNAUTHORIZED, id, -32001, "unauthorized");
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    response
 }
 
 fn origin_allowed(headers: &HeaderMap) -> bool {
