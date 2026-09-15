@@ -1,0 +1,42 @@
+name: issue100-bearer-claim-regressions
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/scripts/issue100_bearer_claim_regressions.py'
+      - '.github/workflows/issue100-bearer-claim-regressions.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply bearer claim regression migration
+        run: python .github/scripts/issue100_bearer_claim_regressions.py
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit bearer claim regressions
+        run: |
+          git config user.name "Cheng"
+          git config user.email "chiacheng.tsao@gmail.com"
+          git add src/mcp_contract_tests.rs
+          git commit -m "#100 Lock bearer issuer audience expiry regressions"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue100_bearer_claim_regressions.py .github/workflows/issue100-bearer-claim-regressions.yml
+          git commit -m "#100 Remove bearer claim regression helpers"
+      - name: Push
+        run: git push origin HEAD:main
