@@ -9,6 +9,7 @@ pub struct RuntimeConfig {
     pub port: u16,
     pub db_path: PathBuf,
     pub registration_key: Option<String>,
+    pub mcp_resource_url: Option<String>,
 }
 
 impl RuntimeConfig {
@@ -33,12 +34,17 @@ impl RuntimeConfig {
         let registration_key = env::var("BLACKBOARD_REGISTRATION_KEY")
             .ok()
             .filter(|value| !value.is_empty());
+        let mcp_resource_url = env::var("BLACKBOARD_MCP_RESOURCE_URL")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
 
         Self {
             host,
             port,
             db_path,
             registration_key,
+            mcp_resource_url,
         }
     }
 }
@@ -67,7 +73,11 @@ where
     let mut app = http::app(state.clone())
         .merge(history::app(state.clone()))
         .merge(access_api::app(state.clone()))
-        .merge(mcp::app_with_oidc(state, oidc_verifier))
+        .merge(mcp::app_with_remote_auth(
+            state,
+            oidc_verifier,
+            config.mcp_resource_url.as_deref(),
+        )?)
         .merge(github_webhook::app(github_state));
     if let Some(oidc_state) = oidc_state {
         app = app.merge(oidc::app(oidc_state));

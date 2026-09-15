@@ -149,6 +149,10 @@ impl OidcState {
 }
 
 impl OidcVerifier {
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     pub(crate) fn from_jwks(
         issuer: String,
         audience: String,

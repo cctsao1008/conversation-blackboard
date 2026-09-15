@@ -368,6 +368,86 @@ async fn invalid_bearer_never_falls_back_to_valid_participant_hmac() {
 }
 
 #[tokio::test]
+async fn mcp_rfc9728_metadata_uses_canonical_resource_and_oidc_issuer() {
+    let fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    let router = mcp::app_with_remote_auth(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+        Some("https://board.example/mcp"),
+    )
+    .unwrap();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/.well-known/oauth-protected-resource/mcp")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, value) = response_json(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["resource"], "https://board.example/mcp");
+    assert_eq!(value["authorization_servers"][0], "https://issuer.example");
+    assert_eq!(value["bearer_methods_supported"][0], "header");
+}
+
+#[tokio::test]
+async fn invalid_bearer_challenge_points_to_rfc9728_metadata_when_configured() {
+    let fixture = fixture();
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    let router = mcp::app_with_remote_auth(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+        Some("https://board.example/mcp"),
+    )
+    .unwrap();
+    let response = request_with_authorization(
+        &router,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 104,
+            "method": "tools/call",
+            "params": {"name": "blackboard_write", "arguments": {}}
+        }),
+        "Bearer invalid",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+        "Bearer resource_metadata=\"https://board.example/.well-known/oauth-protected-resource/mcp\""
+    );
+}
+
+#[test]
+fn mcp_resource_url_requires_https_and_oidc() {
+    let fixture = fixture();
+    let state = AppState {
+        db_path: fixture.db_path,
+        registration_key: None,
+    };
+    assert!(
+        mcp::app_with_remote_auth(state.clone(), None, Some("https://board.example/mcp")).is_err()
+    );
+    let (verifier, _) = bearer_verifier_and_token("remote-agent-1");
+    assert!(mcp::app_with_remote_auth(
+        state,
+        Some(Arc::new(verifier)),
+        Some("http://board.example/mcp")
+    )
+    .is_err());
+}
+
+#[tokio::test]
 async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     let fixture = fixture();
     let state = AppState {

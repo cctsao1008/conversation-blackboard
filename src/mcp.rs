@@ -5,7 +5,7 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -33,6 +33,14 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
 struct McpHttpState {
     app: AppState,
     oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
+    protected_resource: Option<ProtectedResourceConfig>,
+}
+
+#[derive(Clone, Debug)]
+struct ProtectedResourceConfig {
+    resource: String,
+    metadata_path: String,
+    metadata_url: String,
 }
 
 #[cfg(test)]
@@ -40,22 +48,91 @@ pub fn app(state: AppState) -> Router {
     app_with_oidc(state, None)
 }
 
+#[cfg(test)]
 pub(crate) fn app_with_oidc(
     state: AppState,
     oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
 ) -> Router {
-    Router::new()
-        .route(
-            "/mcp",
-            post(mcp_post)
-                .get(mcp_get)
-                .delete(mcp_delete)
-                .options(mcp_options),
-        )
-        .with_state(McpHttpState {
-            app: state,
-            oidc_verifier,
+    app_with_remote_auth(state, oidc_verifier, None).expect("no MCP resource URL is always valid")
+}
+
+pub(crate) fn app_with_remote_auth(
+    state: AppState,
+    oidc_verifier: Option<Arc<oidc::OidcVerifier>>,
+    resource_url: Option<&str>,
+) -> Result<Router, Box<dyn std::error::Error + Send + Sync>> {
+    let protected_resource = match resource_url {
+        Some(resource_url) => Some(ProtectedResourceConfig::parse(resource_url)?),
+        None => None,
+    };
+    if protected_resource.is_some() && oidc_verifier.is_none() {
+        return Err("BLACKBOARD_MCP_RESOURCE_URL requires OIDC configuration".into());
+    }
+    let state = McpHttpState {
+        app: state,
+        oidc_verifier,
+        protected_resource: protected_resource.clone(),
+    };
+    let mut router = Router::new().route(
+        "/mcp",
+        post(mcp_post)
+            .get(mcp_get)
+            .delete(mcp_delete)
+            .options(mcp_options),
+    );
+    if let Some(config) = protected_resource {
+        router = router.route(&config.metadata_path, get(protected_resource_metadata));
+    }
+    Ok(router.with_state(state))
+}
+
+impl ProtectedResourceConfig {
+    fn parse(resource: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let url = Url::parse(resource)?;
+        if url.scheme() != "https" || url.host_str().is_none() || url.fragment().is_some() {
+            return Err(
+                "BLACKBOARD_MCP_RESOURCE_URL must be an absolute HTTPS URL without a fragment"
+                    .into(),
+            );
+        }
+        if url.query().is_some() {
+            return Err("BLACKBOARD_MCP_RESOURCE_URL must not contain a query".into());
+        }
+        let path = url.path();
+        let suffix = if path == "/" {
+            String::new()
+        } else {
+            path.to_owned()
+        };
+        let metadata_path = format!("/.well-known/oauth-protected-resource{suffix}");
+        let mut metadata = url.clone();
+        metadata.set_path(&metadata_path);
+        metadata.set_query(None);
+        metadata.set_fragment(None);
+        Ok(Self {
+            resource: url.to_string(),
+            metadata_path,
+            metadata_url: metadata.to_string(),
         })
+    }
+}
+
+async fn protected_resource_metadata(State(state): State<McpHttpState>) -> Response {
+    let Some(resource) = state.protected_resource.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(verifier) = state.oidc_verifier.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [(header::CACHE_CONTROL, "public, max-age=300")],
+        Json(json!({
+            "resource": resource.resource,
+            "authorization_servers": [verifier.issuer()],
+            "bearer_methods_supported": ["header"]
+        })),
+    )
+        .into_response()
 }
 
 /// Serve MCP over newline-delimited JSON-RPC on stdin/stdout.
@@ -240,7 +317,7 @@ async fn mcp_post(State(state): State<McpHttpState>, request: Request<Body>) -> 
 
     let transport_principal = match resolve_http_bearer_principal(&state, &headers) {
         Ok(principal) => principal,
-        Err(()) => return bearer_unauthorized(id),
+        Err(()) => return bearer_unauthorized(id, state.protected_resource.as_ref()),
     };
 
     let body_protocol = request_protocol_version(object);
@@ -1548,11 +1625,17 @@ fn resolve_http_bearer_principal(
     verifier.verify(token).map(Some).map_err(|_| ())
 }
 
-fn bearer_unauthorized(id: Value) -> Response {
+fn bearer_unauthorized(id: Value, resource: Option<&ProtectedResourceConfig>) -> Response {
     let mut response = jsonrpc_http_error(StatusCode::UNAUTHORIZED, id, -32001, "unauthorized");
-    response
-        .headers_mut()
-        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    let challenge = match resource {
+        Some(resource) => format!("Bearer resource_metadata=\"{}\"", resource.metadata_url),
+        None => "Bearer".to_owned(),
+    };
+    if let Ok(value) = HeaderValue::from_str(&challenge) {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
     response
 }
 
