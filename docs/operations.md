@@ -182,6 +182,8 @@ If the authorization schema is too old to audit, migrate explicitly and then rer
 
 The first command is an explicit mutating schema operation. The second opens the database read-only and never performs that migration implicitly.
 
+The same canonical policy-integrity report is available remotely only as a **privileged read projection** through `GET /api/authorization-policy/integrity` and the MCP tool `blackboard_authorization_policy_integrity`. Both use the dedicated `read_authorization_policy_integrity` capability against the global `authorization-policy-integrity` resource. Human Web admin self-authority may satisfy that check implicitly; participant HMAC, GitHub-owner, bearer, and OIDC principals require applicable explicit authority. An authorized invalid policy state remains successful report data with `valid: false`. If the authorization schema is too old, the remote read fails explicitly and does not create, migrate, normalize, or repair grant storage.
+
 ## GitHub participant ownership
 
 GitHub-originated Chat writes use an external owner relation rather than participant HMAC.
