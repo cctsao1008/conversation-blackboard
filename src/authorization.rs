@@ -16,9 +16,11 @@ pub const READ_AUTHORIZATION_POLICY_INTEGRITY: &str = "read_authorization_policy
 pub const AUTHORIZATION_POLICY_INTEGRITY_RESOURCE: &str = "authorization-policy-integrity";
 pub const READ_AUTHORIZATION_POLICY: &str = "read_authorization_policy";
 pub const AUTHORIZATION_POLICY_RESOURCE: &str = "authorization-policy";
+pub const READ_AUTHORIZATION_DECISION: &str = "read_authorization_decision";
+pub const AUTHORIZATION_DECISION_RESOURCE: &str = "authorization-decision";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 9] = [
+const KNOWN_CAPABILITIES: [&str; 10] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
@@ -27,6 +29,7 @@ const KNOWN_CAPABILITIES: [&str; 9] = [
     READ_EXECUTION_AUDIT_SWEEP,
     READ_AUTHORIZATION_POLICY_INTEGRITY,
     READ_AUTHORIZATION_POLICY,
+    READ_AUTHORIZATION_DECISION,
     MANAGE_CHANNELS,
 ];
 
@@ -733,6 +736,74 @@ fn push_violation(
     });
 }
 
+pub fn authorization_decision_schema_current(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(table_has_columns(
+        conn,
+        "principal_grants",
+        &[
+            "id",
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "status",
+        ],
+    )? && table_has_columns(
+        conn,
+        "delegated_grants",
+        &[
+            "id",
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "intent_id",
+            "expires_at",
+            "one_shot",
+            "consumed_at",
+            "consumed_intent_id",
+            "status",
+        ],
+    )? && table_has_columns(
+        conn,
+        "web_participants",
+        &[
+            "participant_id",
+            "status",
+            "role",
+            "owner_provider",
+            "owner_subject",
+        ],
+    )? && table_has_columns(
+        conn,
+        "execution_receipts",
+        &["participant_id", "intent_id", "status"],
+    )?)
+}
+
+pub fn explain_authorization(
+    conn: &Connection,
+    principal: &Principal,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> rusqlite::Result<AuthorizationDecision> {
+    if !authorization_decision_schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    evaluate_authorization_current_schema(
+        conn,
+        principal,
+        participant_id,
+        capability,
+        resource,
+        intent_id,
+    )
+}
+
 pub fn evaluate_authorization(
     conn: &Connection,
     principal: &Principal,
@@ -742,6 +813,24 @@ pub fn evaluate_authorization(
     intent_id: Option<&str>,
 ) -> rusqlite::Result<AuthorizationDecision> {
     ensure_grant_schema(conn)?;
+    evaluate_authorization_current_schema(
+        conn,
+        principal,
+        participant_id,
+        capability,
+        resource,
+        intent_id,
+    )
+}
+
+fn evaluate_authorization_current_schema(
+    conn: &Connection,
+    principal: &Principal,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> rusqlite::Result<AuthorizationDecision> {
     let Some(participant) = participant_policy_row(conn, participant_id)? else {
         return Ok(AuthorizationDecision::deny(
             "participant_lifecycle",
@@ -1020,6 +1109,7 @@ pub fn effective_grants(
             READ_EXECUTION_AUDIT_SWEEP => Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
             READ_AUTHORIZATION_POLICY_INTEGRITY => Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
             READ_AUTHORIZATION_POLICY => Some(AUTHORIZATION_POLICY_RESOURCE),
+            READ_AUTHORIZATION_DECISION => Some(AUTHORIZATION_DECISION_RESOURCE),
             _ => None,
         };
         if authorize(
@@ -1089,6 +1179,12 @@ fn implicit_authority_reason(
                 && participant.role == "admin"
                 && resource == Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE))
             .then_some("implicit_human_web_admin_authorization_policy_integrity");
+        }
+        if capability == READ_AUTHORIZATION_DECISION {
+            return (principal.provider == "human-web"
+                && participant.role == "admin"
+                && resource == Some(AUTHORIZATION_DECISION_RESOURCE))
+            .then_some("implicit_human_web_admin_authorization_decision");
         }
         if capability == READ_EXECUTION_AUDIT_SWEEP {
             return (principal.provider == "human-web"
@@ -1169,6 +1265,159 @@ mod tests {
         )
         .unwrap();
         (dir, conn)
+    }
+
+    #[test]
+    fn authorization_decision_explain_refuses_legacy_schema_without_mutation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                owner_provider TEXT,
+                owner_subject TEXT
+            );
+            INSERT INTO web_participants (participant_id, status, role)
+            VALUES ('maker-main', 'active', 'admin');",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "agent-1".to_owned(),
+        };
+        assert!(!authorization_decision_schema_current(&conn).unwrap());
+        assert!(explain_authorization(
+            &conn,
+            &principal,
+            "maker-main",
+            POST_MESSAGE,
+            Some("control-systems"),
+            None,
+        )
+        .is_err());
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let grant_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('principal_grants', 'delegated_grants')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(grant_tables, 0);
+    }
+
+    #[test]
+    fn authorization_decision_explain_reuses_kernel_without_consuming_one_shot() {
+        let (_dir, conn) = setup();
+        conn.execute(
+            "INSERT INTO delegated_grants
+                (principal_provider, principal_subject, participant_id, capability, resource,
+                 intent_id, expires_at, one_shot)
+             VALUES ('oidc:https://issuer.example', 'agent-1', 'maker-main', 'post_message',
+                     'control-systems', 'intent-106', unixepoch() + 3600, 1)",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "agent-1".to_owned(),
+        };
+        let explained = explain_authorization(
+            &conn,
+            &principal,
+            "maker-main",
+            POST_MESSAGE,
+            Some("control-systems"),
+            Some("intent-106"),
+        )
+        .unwrap();
+        let executable = evaluate_authorization(
+            &conn,
+            &principal,
+            "maker-main",
+            POST_MESSAGE,
+            Some("control-systems"),
+            Some("intent-106"),
+        )
+        .unwrap();
+        assert_eq!(explained, executable);
+        assert!(explained.allowed);
+        assert!(explained.consume_grant_id.is_some());
+        let consumed_at: Option<i64> = conn
+            .query_row(
+                "SELECT consumed_at FROM delegated_grants WHERE intent_id = 'intent-106'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(consumed_at.is_none());
+    }
+
+    #[test]
+    fn authorization_decision_implicit_authority_is_human_web_admin_only() {
+        let (_dir, conn) = setup();
+        let human = Principal {
+            provider: "human-web".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let hmac = Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let github = Principal {
+            provider: "github".to_owned(),
+            subject: "543608".to_owned(),
+        };
+        let oidc = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "agent-1".to_owned(),
+        };
+
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_DECISION,
+            Some(AUTHORIZATION_DECISION_RESOURCE),
+        )
+        .unwrap());
+        identity::set_web_participant_role(&conn, "maker-main", "admin").unwrap();
+        assert!(authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_DECISION,
+            Some(AUTHORIZATION_DECISION_RESOURCE),
+        )
+        .unwrap());
+        for principal in [&hmac, &github, &oidc] {
+            assert!(!authorize(
+                &conn,
+                principal,
+                "maker-main",
+                READ_AUTHORIZATION_DECISION,
+                Some(AUTHORIZATION_DECISION_RESOURCE),
+            )
+            .unwrap());
+        }
     }
 
     #[test]

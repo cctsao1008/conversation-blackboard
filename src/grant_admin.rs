@@ -272,7 +272,14 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
             intent_id,
         } => {
             require_database(&path)?;
-            let conn = db::connect(&path)?;
+            let conn = db::connect_read_only(&path)?;
+            if !authorization::authorization_decision_schema_current(&conn)? {
+                return Err(format!(
+                    "authorization decision schema requires migration: run `conversation-blackboard db init --db {}` before explain",
+                    path.display()
+                )
+                .into());
+            }
             let principal = Principal {
                 provider: normalize(
                     &principal_provider,
@@ -292,7 +299,7 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                 ),
                 None => None,
             };
-            let explanation = authorization::evaluate_authorization(
+            let explanation = authorization::explain_authorization(
                 &conn,
                 &principal,
                 &participant_id,
@@ -788,6 +795,65 @@ mod tests {
     }
 
     #[test]
+    fn grant_explain_refuses_legacy_schema_without_mutation() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy-explain.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                owner_provider TEXT,
+                owner_subject TEXT
+            );
+            INSERT INTO web_participants (participant_id, status, role)
+            VALUES ('maker-main', 'active', 'admin');",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let error = dispatch(GrantCommand::Explain {
+            db: path.clone(),
+            principal_provider: "oidc:https://issuer.example".to_owned(),
+            principal_subject: "agent-1".to_owned(),
+            participant_id: "maker-main".to_owned(),
+            capability: authorization::POST_MESSAGE.to_owned(),
+            resource: Some("control-systems".to_owned()),
+            intent_id: None,
+        })
+        .expect_err("legacy decision schema must be refused")
+        .to_string();
+        assert!(error.contains("authorization decision schema requires migration"));
+
+        let conn = Connection::open(&path).unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let grant_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('principal_grants', 'delegated_grants')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(grant_tables, 0);
+    }
+
+    #[test]
     fn grant_verify_accepts_clean_database() {
         let (dir, conn) = setup();
         drop(conn);
@@ -1099,7 +1165,7 @@ mod tests {
             provider: "oidc:https://issuer.example".to_owned(),
             subject: "agent-1".to_owned(),
         };
-        let explanation = authorization::evaluate_authorization(
+        let explanation = authorization::explain_authorization(
             &conn,
             &principal,
             "maker-main",
@@ -1127,7 +1193,7 @@ mod tests {
             provider: "oidc:https://issuer.example".to_owned(),
             subject: "agent-1".to_owned(),
         };
-        let explanation = authorization::evaluate_authorization(
+        let explanation = authorization::explain_authorization(
             &conn,
             &principal,
             "maker-main",
