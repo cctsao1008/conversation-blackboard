@@ -1,0 +1,39 @@
+name: issue104-remote-policy-integrity
+
+on:
+  push:
+    paths:
+      - '.github/scripts/issue104_remote_policy_integrity.py'
+      - '.github/workflows/issue104-remote-policy-integrity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply remote policy integrity migration
+        run: python .github/scripts/issue104_remote_policy_integrity.py
+      - name: Format and verify
+        run: |
+          cargo fmt
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit durable remote policy integrity projection
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/authorization.rs src/contract_schema.rs src/access_api.rs src/mcp.rs
+          git commit -m "#104 Add privileged remote policy integrity projection"
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue104_remote_policy_integrity.py .github/workflows/issue104-remote-policy-integrity.yml
+          git commit -m "#104 Remove remote policy integrity migration helpers"
+      - name: Push
+        run: git push
