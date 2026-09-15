@@ -417,7 +417,7 @@ fn initialize_result(object: &Map<String, Value>) -> Result<Value, &'static str>
             "title": "Conversation Blackboard",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, blackboard_execution_receipt for semantic execution read-back, blackboard_execution_audit for immutable historical audit, and blackboard_execution_audit_integrity for structural audit verification. Use blackboard_execution_audit_sweep only with privileged corpus-wide audit authority. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
+        "instructions": "MCP is an adapter over Blackboard domain semantics. Use blackboard_read / blackboard_write for messages, blackboard_access_context for effective grants, blackboard_execution_receipt for semantic execution read-back, blackboard_execution_audit for immutable historical audit, and blackboard_execution_audit_integrity for structural audit verification. Use blackboard_execution_audit_sweep only with privileged corpus-wide audit authority, and blackboard_authorization_policy_integrity only with privileged global policy-integrity authority. Authenticated calls use hmac-sha256-v1 proofs bound to the canonical request."
     }))
 }
 
@@ -486,7 +486,8 @@ async fn http_tool_call_requires_auth(state: &AppState, object: &Map<String, Val
         | "blackboard_execution_receipt"
         | "blackboard_execution_audit"
         | "blackboard_execution_audit_integrity"
-        | "blackboard_execution_audit_sweep" => true,
+        | "blackboard_execution_audit_sweep"
+        | "blackboard_authorization_policy_integrity" => true,
         "blackboard_read" => {
             let Some(arguments) = arguments else {
                 return false;
@@ -865,6 +866,22 @@ fn tools_list_result() -> Value {
                 },
                 "outputSchema": contract_schema::execution_audit_sweep_envelope_schema(),
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
+                "name": "blackboard_authorization_policy_integrity",
+                "title": "Verify Blackboard Authorization Policy Integrity",
+                "description": "Run the privileged canonical read-only integrity audit over durable and delegated authorization policy objects without repairing policy state.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": contract_schema::authorization_integrity_envelope_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             }
         ]
     })
@@ -941,6 +958,9 @@ async fn tool_call_result(
         "blackboard_execution_audit_sweep" => {
             Ok(blackboard_execution_audit_sweep(state, &arguments, transport_principal).await)
         }
+        "blackboard_authorization_policy_integrity" => Ok(
+            blackboard_authorization_policy_integrity(state, &arguments, transport_principal).await,
+        ),
         _ => Err("unknown_tool"),
     }
 }
@@ -1327,6 +1347,69 @@ async fn blackboard_execution_audit_sweep(
         Err(()) => return tool_error("database_unavailable"),
     };
     tool_success(json!({"sweep": report}))
+}
+
+async fn blackboard_authorization_policy_integrity(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
+    if !only_keys(arguments, &["participant_id", "auth"]) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    let principal = match resolve_capability_principal(
+        state,
+        arguments,
+        &participant_id,
+        authorization::READ_AUTHORIZATION_POLICY_INTEGRITY,
+        Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+        transport_principal,
+    )
+    .await
+    {
+        Ok(principal) => principal,
+        Err(code) => return tool_error(code),
+    };
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let (schema_current, report) = match with_db(state, move |conn| {
+        if !authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_AUTHORIZATION_POLICY_INTEGRITY,
+            Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+        )? {
+            return Ok((true, None));
+        }
+        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
+        if !schema_current {
+            return Ok((false, None));
+        }
+        Ok((
+            true,
+            Some(authorization::audit_authorization_integrity(conn)?),
+        ))
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    if !schema_current {
+        return tool_error("authorization_schema_not_current");
+    }
+    let Some(report) = report else {
+        return tool_error("forbidden");
+    };
+    tool_success(json!({"integrity": report}))
 }
 
 async fn blackboard_read(

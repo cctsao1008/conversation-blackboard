@@ -703,7 +703,7 @@ async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     )
     .await
     .unwrap();
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);
 
     let unknown = mcp::stdio_dispatch(
         &state,
@@ -735,7 +735,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 8);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -746,6 +746,39 @@ async fn mcp_advertises_hmac_only_auth_contract() {
         assert!(auth["properties"]["signature"].is_null());
         assert!(auth["properties"]["private_key"].is_null());
     }
+}
+
+#[tokio::test]
+async fn mcp_policy_integrity_tool_uses_canonical_read_only_schema() {
+    let fixture = fixture();
+    let response = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/list",
+            "params": {}
+        })),
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    let tool = value["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_authorization_policy_integrity")
+        .expect("policy integrity tool must be advertised");
+    assert_eq!(
+        tool["outputSchema"],
+        contract_schema::authorization_integrity_envelope_schema()
+    );
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    assert!(tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "auth"));
 }
 
 #[tokio::test]
@@ -1794,6 +1827,7 @@ async fn modern_http_oidc_projection_makes_hmac_auth_optional_without_removing_f
         "blackboard_execution_audit",
         "blackboard_execution_audit_integrity",
         "blackboard_execution_audit_sweep",
+        "blackboard_authorization_policy_integrity",
     ] {
         let required = tool_required_fields(&value, name);
         assert!(!required.iter().any(|field| field == "auth"), "{name}");
@@ -1896,7 +1930,7 @@ async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_resu
     let (_, value) = response_json(response).await;
     assert_eq!(value["result"]["resultType"], "complete");
     assert_eq!(value["result"]["cacheScope"], "public");
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 8);
 }
 
 #[tokio::test]

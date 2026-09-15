@@ -244,3 +244,46 @@ pub fn execution_audit_sweep_envelope_schema() -> Value {
         "additionalProperties": false
     })
 }
+
+pub fn authorization_integrity_violation_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string"},
+            "store": {"type": "string"},
+            "grant_id": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+            "participant_id": {"anyOf": [participant_id_schema(), {"type": "null"}]},
+            "detail": {"type": "string"}
+        },
+        "required": ["kind", "store", "grant_id", "participant_id", "detail"],
+        "additionalProperties": false,
+        "description": "Non-secret read-only classification of malformed or ambiguous authorization-policy state."
+    })
+}
+
+pub fn authorization_integrity_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "valid": {"type": "boolean"},
+            "durable_grants_scanned": {"type": "integer", "minimum": 0},
+            "delegated_grants_scanned": {"type": "integer", "minimum": 0},
+            "violations": {
+                "type": "array",
+                "items": authorization_integrity_violation_schema()
+            }
+        },
+        "required": ["valid", "durable_grants_scanned", "delegated_grants_scanned", "violations"],
+        "additionalProperties": false,
+        "description": "Canonical read-only integrity report over Blackboard authorization policy objects."
+    })
+}
+
+pub fn authorization_integrity_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"integrity": authorization_integrity_schema()},
+        "required": ["integrity"],
+        "additionalProperties": false
+    })
+}

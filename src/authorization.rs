@@ -12,15 +12,18 @@ pub const READ_EXECUTION_RECEIPT: &str = "read_execution_receipt";
 pub const READ_EXECUTION_AUDIT: &str = "read_execution_audit";
 pub const READ_EXECUTION_AUDIT_SWEEP: &str = "read_execution_audit_sweep";
 pub const EXECUTION_AUDIT_SWEEP_RESOURCE: &str = "execution-audit-sweep";
+pub const READ_AUTHORIZATION_POLICY_INTEGRITY: &str = "read_authorization_policy_integrity";
+pub const AUTHORIZATION_POLICY_INTEGRITY_RESOURCE: &str = "authorization-policy-integrity";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 7] = [
+const KNOWN_CAPABILITIES: [&str; 8] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
     READ_EXECUTION_RECEIPT,
     READ_EXECUTION_AUDIT,
     READ_EXECUTION_AUDIT_SWEEP,
+    READ_AUTHORIZATION_POLICY_INTEGRITY,
     MANAGE_CHANNELS,
 ];
 
@@ -873,8 +876,11 @@ pub fn effective_grants(
         if explicit.iter().any(|grant| grant.capability == capability) {
             continue;
         }
-        let implicit_resource =
-            (capability == READ_EXECUTION_AUDIT_SWEEP).then_some(EXECUTION_AUDIT_SWEEP_RESOURCE);
+        let implicit_resource = match capability {
+            READ_EXECUTION_AUDIT_SWEEP => Some(EXECUTION_AUDIT_SWEEP_RESOURCE),
+            READ_AUTHORIZATION_POLICY_INTEGRITY => Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            _ => None,
+        };
         if authorize(
             conn,
             principal,
@@ -931,6 +937,12 @@ fn implicit_authority_reason(
         "participant-hmac" | "human-web"
     ) && principal.subject == participant_id;
     if self_authenticated {
+        if capability == READ_AUTHORIZATION_POLICY_INTEGRITY {
+            return (principal.provider == "human-web"
+                && participant.role == "admin"
+                && resource == Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE))
+            .then_some("implicit_human_web_admin_authorization_policy_integrity");
+        }
         if capability == READ_EXECUTION_AUDIT_SWEEP {
             return (principal.provider == "human-web"
                 && participant.role == "admin"
@@ -1493,6 +1505,98 @@ mod tests {
                 && grant.resource.as_deref() == Some(EXECUTION_AUDIT_SWEEP_RESOURCE)
                 && grant.origin == "implicit"
         }));
+    }
+
+    #[test]
+    fn policy_integrity_implicit_authority_is_human_web_admin_only() {
+        let (_dir, conn) = setup();
+        let human = Principal {
+            provider: "human-web".into(),
+            subject: "maker-main".into(),
+        };
+        let hmac = Principal {
+            provider: "participant-hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let github = Principal {
+            provider: "github".into(),
+            subject: "543608".into(),
+        };
+
+        for principal in [&human, &hmac, &github] {
+            assert!(!authorize(
+                &conn,
+                principal,
+                "maker-main",
+                READ_AUTHORIZATION_POLICY_INTEGRITY,
+                Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            )
+            .unwrap());
+        }
+
+        conn.execute(
+            "UPDATE web_participants SET role = 'admin' WHERE participant_id = 'maker-main'",
+            [],
+        )
+        .unwrap();
+        let decision = evaluate_authorization(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_POLICY_INTEGRITY,
+            Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            None,
+        )
+        .unwrap();
+        assert!(decision.allowed);
+        assert_eq!(
+            decision.reason,
+            "implicit_human_web_admin_authorization_policy_integrity"
+        );
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_POLICY_INTEGRITY,
+            Some("wrong-resource"),
+        )
+        .unwrap());
+
+        let grants = effective_grants(&conn, &human, "maker-main").unwrap();
+        assert!(grants.iter().any(|grant| {
+            grant.capability == READ_AUTHORIZATION_POLICY_INTEGRITY
+                && grant.resource.as_deref() == Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE)
+                && grant.origin == "implicit"
+        }));
+    }
+
+    #[test]
+    fn explicit_grant_can_authorize_participant_hmac_policy_integrity() {
+        let (_dir, conn) = setup();
+        ensure_grant_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES ('participant-hmac', 'maker-main', 'maker-main',
+                     'read_authorization_policy_integrity', 'authorization-policy-integrity')",
+            [],
+        )
+        .unwrap();
+        let principal = Principal {
+            provider: "participant-hmac".into(),
+            subject: "maker-main".into(),
+        };
+        let decision = evaluate_authorization(
+            &conn,
+            &principal,
+            "maker-main",
+            READ_AUTHORIZATION_POLICY_INTEGRITY,
+            Some(AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+            None,
+        )
+        .unwrap();
+        assert!(decision.allowed);
+        assert_eq!(decision.reason, "explicit_durable_grant_match");
     }
 
     #[test]

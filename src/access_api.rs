@@ -21,6 +21,10 @@ pub fn app(state: AppState) -> Router {
             get(execution_audit_integrity),
         )
         .route("/api/execution-audit/sweep", get(execution_audit_sweep))
+        .route(
+            "/api/authorization-policy/integrity",
+            get(authorization_policy_integrity),
+        )
         .with_state(state)
 }
 
@@ -198,6 +202,52 @@ async fn execution_audit_sweep(
     }
     let report = report.expect("authorized audit sweep must produce a report");
     Ok(json_response(StatusCode::OK, json!({"sweep": report})))
+}
+
+async fn authorization_policy_integrity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    let participant_id = resolved.instance.clone();
+    let policy_principal = principal.clone();
+    let lookup_participant = participant_id.clone();
+    let (allowed, schema_current, report) = with_db(&state, move |conn| {
+        let allowed = authorization::authorize(
+            conn,
+            &policy_principal,
+            &lookup_participant,
+            authorization::READ_AUTHORIZATION_POLICY_INTEGRITY,
+            Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
+        )?;
+        if !allowed {
+            return Ok((false, true, None));
+        }
+        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
+        if !schema_current {
+            return Ok((true, false, None));
+        }
+        Ok((
+            true,
+            true,
+            Some(authorization::audit_authorization_integrity(conn)?),
+        ))
+    })
+    .await?;
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
+    let report =
+        report.expect("authorized current-schema policy integrity read must produce report");
+    Ok(json_response(StatusCode::OK, json!({"integrity": report})))
 }
 
 fn principal_for_headers(headers: &HeaderMap, resolved: &Identity) -> execution::Principal {
