@@ -15,7 +15,7 @@ use crate::{
     http::{self, AppState},
     identity,
     model::Identity,
-    participant_auth, web_auth,
+    participant_auth, request_auth, web_auth,
 };
 
 struct Fixture {
@@ -851,6 +851,185 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
     assert_eq!(
         after, 0,
         "read-only policy GET recreated authorization schema"
+    );
+}
+
+#[tokio::test]
+async fn authorization_decision_http_is_privileged_query_bound_and_read_only() {
+    let fixture = fixture("decision-http");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let target_query = "/api/authorization-decision/explain?principal_provider=oidc%3Ahttps%3A%2F%2Fissuer.example&principal_subject=target-agent&participant_id=decision-http-main&capability=post_message&resource=alpha";
+
+    let unauthenticated = request(&router, Method::GET, target_query, None, None).await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(
+        &router,
+        Method::GET,
+        target_query,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    // Snapshot authority is not decision-explain authority.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('human-web', ?1, ?1, 'read_authorization_policy', 'authorization-policy')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'target-agent', ?1, 'post_message', 'alpha')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let wrong_capability = request(
+        &router,
+        Method::GET,
+        target_query,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(wrong_capability.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "UPDATE web_participants SET role = 'admin' WHERE participant_id = ?1",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Caller is Human Web admin while the target is a distinct OIDC principal.
+    let allowed = request(
+        &router,
+        Method::GET,
+        target_query,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (allowed_status, allowed_body) = response_json(allowed).await;
+    assert_eq!(allowed_status, StatusCode::OK);
+    assert_eq!(allowed_body["decision"]["allowed"], true);
+    assert_eq!(allowed_body["decision"]["source"], "principal_grants");
+    assert_eq!(
+        allowed_body["decision"]["reason"],
+        "explicit_durable_grant_match"
+    );
+    assert_eq!(allowed_body["decision"]["consume_on_commit"], false);
+    assert!(allowed_body["decision"].get("consume_grant_id").is_none());
+
+    // A target denial is successful explanation data, not transport authorization failure.
+    let denied_query = target_query.replace("resource=alpha", "resource=beta");
+    let denied = request(
+        &router,
+        Method::GET,
+        &denied_query,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (denied_status, denied_body) = response_json(denied).await;
+    assert_eq!(denied_status, StatusCode::OK);
+    assert_eq!(denied_body["decision"]["allowed"], false);
+    assert_eq!(
+        denied_body["decision"]["reason"],
+        "explicit_resource_scope_mismatch"
+    );
+
+    // Explicit participant-HMAC explain authority succeeds, and its proof binds
+    // the exact path+query target. Reusing the proof for a changed resource fails.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', ?1, ?1, 'read_authorization_decision',
+                 'authorization-decision')",
+        [&fixture.participant_id],
+    )
+    .unwrap();
+    drop(conn);
+    let canonical =
+        web_auth::canonical_http_request_bytes(&fixture.participant_id, "GET", target_query);
+    let proof =
+        participant_auth::compute_message_proof(&fixture.signing_private, &canonical).unwrap();
+    let hmac_request = |uri: &str| {
+        Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+            .header(
+                request_auth::AUTH_SCHEME_HEADER,
+                participant_auth::AUTH_SCHEME,
+            )
+            .header(request_auth::AUTH_PROOF_HEADER, &proof)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let hmac_allowed = router
+        .clone()
+        .oneshot(hmac_request(target_query))
+        .await
+        .unwrap();
+    assert_eq!(hmac_allowed.status(), StatusCode::OK);
+    let changed_target = router
+        .clone()
+        .oneshot(hmac_request(&denied_query))
+        .await
+        .unwrap();
+    assert_eq!(changed_target.status(), StatusCode::UNAUTHORIZED);
+
+    // Invalid target inputs are rejected after caller authentication.
+    let invalid = request(
+        &router,
+        Method::GET,
+        "/api/authorization-decision/explain?principal_provider=oidc&principal_subject=target-agent&participant_id=decision-http-main&capability=definitely_unknown",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    // Legacy authorization state fails without recreating the missing table.
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute("DROP TABLE delegated_grants", []).unwrap();
+    drop(conn);
+    let legacy = request(
+        &router,
+        Method::GET,
+        target_query,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'delegated_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        table_count, 0,
+        "decision explain recreated authorization schema"
     );
 }
 

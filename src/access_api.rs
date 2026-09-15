@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
@@ -25,6 +26,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/authorization-policy/integrity",
             get(authorization_policy_integrity),
+        )
+        .route(
+            "/api/authorization-decision/explain",
+            get(authorization_decision_explain),
         )
         .with_state(state)
 }
@@ -205,6 +210,85 @@ async fn execution_audit_sweep(
     Ok(json_response(StatusCode::OK, json!({"sweep": report})))
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthorizationDecisionExplainQuery {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+    intent_id: Option<String>,
+}
+
+async fn authorization_decision_explain(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(query): Query<AuthorizationDecisionExplainQuery>,
+) -> Result<Response, AccessApiError> {
+    // Authentication deliberately uses the full path_and_query target so the
+    // participant-HMAC proof binds every decision-input query parameter.
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let caller_principal = principal_for_headers(&headers, &resolved);
+    let target = authorization::normalize_authorization_decision_target(
+        &query.principal_provider,
+        &query.principal_subject,
+        &query.participant_id,
+        &query.capability,
+        query.resource.as_deref(),
+        query.intent_id.as_deref(),
+    )
+    .map_err(|code| AccessApiError::new(StatusCode::BAD_REQUEST, code))?;
+    let caller_participant = resolved.instance.clone();
+
+    let (schema_current, caller_allowed, decision) = with_db_read_only(&state, move |conn| {
+        if !authorization::authorization_decision_schema_current(conn)? {
+            return Ok((false, false, None));
+        }
+        let caller_decision = authorization::explain_authorization(
+            conn,
+            &caller_principal,
+            &caller_participant,
+            authorization::READ_AUTHORIZATION_DECISION,
+            Some(authorization::AUTHORIZATION_DECISION_RESOURCE),
+            None,
+        )?;
+        if !caller_decision.allowed {
+            return Ok((true, false, None));
+        }
+        let decision = authorization::explain_authorization(
+            conn,
+            &target.principal,
+            &target.participant_id,
+            &target.capability,
+            target.resource.as_deref(),
+            target.intent_id.as_deref(),
+        )?;
+        Ok((
+            true,
+            true,
+            Some(authorization::AuthorizationDecisionExplanation::from(
+                decision,
+            )),
+        ))
+    })
+    .await?;
+
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
+    if !caller_allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    Ok(json_response(
+        StatusCode::OK,
+        json!({"decision": decision.expect("authorized explain must return a decision")}),
+    ))
+}
+
 async fn authorization_policy(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -339,6 +423,21 @@ where
     let path = state.db_path.clone();
     tokio::task::spawn_blocking(move || {
         let conn = crate::db::connect(&path)?;
+        operation(&conn)
+    })
+    .await
+    .map_err(|_| AccessApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?
+    .map_err(|_| AccessApiError::new(StatusCode::SERVICE_UNAVAILABLE, "database_unavailable"))
+}
+
+async fn with_db_read_only<T, F>(state: &AppState, operation: F) -> Result<T, AccessApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
+{
+    let path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = crate::db::connect_read_only(&path)?;
         operation(&conn)
     })
     .await

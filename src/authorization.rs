@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
-use crate::execution::Principal;
+use crate::{execution, execution::Principal, identity};
 
 pub const READ_MESSAGES: &str = "read_messages";
 pub const POST_MESSAGE: &str = "post_message";
@@ -78,6 +78,78 @@ impl AuthorizationDecision {
             consume_grant_id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationDecisionTarget {
+    pub principal: Principal,
+    pub participant_id: String,
+    pub capability: String,
+    pub resource: Option<String>,
+    pub intent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AuthorizationDecisionExplanation {
+    pub allowed: bool,
+    pub source: &'static str,
+    pub reason: &'static str,
+    pub grant_id: Option<i64>,
+    pub consume_on_commit: bool,
+}
+
+impl From<AuthorizationDecision> for AuthorizationDecisionExplanation {
+    fn from(decision: AuthorizationDecision) -> Self {
+        Self {
+            allowed: decision.allowed,
+            source: decision.source,
+            reason: decision.reason,
+            grant_id: decision.grant_id,
+            consume_on_commit: decision.consume_grant_id.is_some(),
+        }
+    }
+}
+
+pub fn normalize_authorization_decision_target(
+    principal_provider: &str,
+    principal_subject: &str,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+    intent_id: Option<&str>,
+) -> Result<AuthorizationDecisionTarget, &'static str> {
+    fn normalize(value: &str, max_bytes: usize) -> Option<String> {
+        let value = value.trim();
+        (!value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control))
+            .then(|| value.to_owned())
+    }
+
+    let principal_provider =
+        normalize(principal_provider, 256).ok_or("invalid_principal_provider")?;
+    let principal_subject = normalize(principal_subject, 256).ok_or("invalid_principal_subject")?;
+    let participant_id =
+        identity::validate_participant_id(participant_id).ok_or("invalid_participant_id")?;
+    let capability = normalize(capability, 128).ok_or("invalid_capability")?;
+    if !is_known_capability(&capability) {
+        return Err("unsupported_capability");
+    }
+    let resource = resource
+        .map(|value| normalize(value, 256).ok_or("invalid_resource"))
+        .transpose()?;
+    let intent_id = intent_id
+        .map(|value| execution::normalize_intent_id(value).map_err(|_| "invalid_intent_id"))
+        .transpose()?;
+
+    Ok(AuthorizationDecisionTarget {
+        principal: Principal {
+            provider: principal_provider,
+            subject: principal_subject,
+        },
+        participant_id,
+        capability,
+        resource,
+        intent_id,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
