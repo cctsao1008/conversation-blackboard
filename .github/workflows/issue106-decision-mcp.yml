@@ -1,0 +1,40 @@
+name: issue106-decision-mcp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/issue106-decision-mcp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply authorization decision MCP projection
+        run: |
+          python .github/scripts/issue106_decision_mcp.py
+          cargo fmt --all
+      - name: Verify MCP decision projection
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+      - name: Commit MCP decision projection
+        run: |
+          git config user.name Cheng
+          git config user.email chiacheng.tsao@gmail.com
+          git add src/participant_auth.rs src/contract_schema.rs src/mcp.rs src/mcp_contract_tests.rs
+          git commit -m '#106 Project authorization decisions through MCP'
+      - name: Remove temporary migration helpers
+        run: |
+          git rm .github/scripts/issue106_decision_mcp.py .github/workflows/issue106-decision-mcp.yml
+          git commit -m '#106 Remove MCP decision migration helpers'
+      - name: Push
+        run: git push origin HEAD:main
