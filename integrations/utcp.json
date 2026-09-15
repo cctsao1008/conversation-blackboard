@@ -653,6 +653,202 @@
       }
     },
     {
+      "name": "authorization_policy",
+      "description": "Read the privileged canonical inventory of explicit durable and delegated Blackboard authorization objects. Blackboard authorization remains authoritative and the read never creates, repairs, normalizes, or consumes authority.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "outputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "policy"
+        ],
+        "properties": {
+          "policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "durable_grants",
+              "delegated_grants"
+            ],
+            "properties": {
+              "durable_grants": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "principal_provider",
+                    "principal_subject",
+                    "participant_id",
+                    "capability",
+                    "resource",
+                    "status",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "principal_provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "principal_subject": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "participant_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "capability": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "resource": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "inactive"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    },
+                    "updated_at": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "delegated_grants": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "principal_provider",
+                    "principal_subject",
+                    "participant_id",
+                    "capability",
+                    "resource",
+                    "intent_id",
+                    "expires_at",
+                    "one_shot",
+                    "consumed_at",
+                    "consumed_intent_id",
+                    "status"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "principal_provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "principal_subject": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "participant_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "capability": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "resource": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "intent_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 256
+                    },
+                    "expires_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "one_shot": {
+                      "type": "boolean"
+                    },
+                    "consumed_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "consumed_intent_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 256
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "inactive"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "authorization",
+        "policy",
+        "inventory",
+        "privileged",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_authorization_policy_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/authorization-policy",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
+    },
+    {
       "name": "authorization_policy_integrity",
       "description": "Run the privileged read-only authorization-policy integrity audit. Blackboard authorization remains authoritative; invalid policy state is returned as report data and the read never migrates or repairs policy storage.",
       "inputs": {

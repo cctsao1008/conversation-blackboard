@@ -263,3 +263,91 @@ fn authorization_policy_integrity_contracts_match_canonical_rust_shape() {
         "${BLACKBOARD_URL}/api/authorization-policy/integrity"
     );
 }
+
+#[test]
+fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    assert!(api["paths"].get("/api/authorization-policy").is_some());
+    assert_eq!(
+        names(&api, "/components/schemas/DurableGrantSnapshot/properties"),
+        names(
+            &contract_schema::durable_grant_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/DelegatedGrantSnapshot/properties"
+        ),
+        names(
+            &contract_schema::delegated_grant_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationPolicySnapshot/properties"
+        ),
+        names(
+            &contract_schema::authorization_policy_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert!(
+        api["components"]["schemas"]["DelegatedGrantSnapshot"]["properties"]
+            .get("created_at")
+            .is_none()
+    );
+    assert!(
+        api["components"]["schemas"]["DelegatedGrantSnapshot"]["properties"]
+            .get("updated_at")
+            .is_none()
+    );
+
+    let utcp = utcp_json();
+    let policy = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "authorization_policy")
+        .expect("UTCP authorization policy snapshot projection must exist");
+    assert_eq!(
+        names(policy, "/outputs/properties/policy/properties"),
+        names(
+            &contract_schema::authorization_policy_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            policy,
+            "/outputs/properties/policy/properties/durable_grants/items/properties"
+        ),
+        names(
+            &contract_schema::durable_grant_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            policy,
+            "/outputs/properties/policy/properties/delegated_grants/items/properties"
+        ),
+        names(
+            &contract_schema::delegated_grant_snapshot_schema(),
+            "/properties"
+        )
+    );
+    assert!(
+        policy["outputs"]["properties"]["policy"]["properties"]["delegated_grants"]["items"]
+            ["properties"]
+            .get("created_at")
+            .is_none()
+    );
+    assert_eq!(
+        policy["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/authorization-policy"
+    );
+}
