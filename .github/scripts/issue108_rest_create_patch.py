@@ -129,6 +129,16 @@ admin = ADMIN.read_text()
 old = '''#[cfg(test)]\npub fn create_durable_grant_authorized('''
 assert old in admin
 admin = admin.replace(old, 'pub fn create_durable_grant_authorized(', 1)
+for function in [
+    "create_durable_grant",
+    "deactivate_durable_grant",
+    "create_delegated_grant",
+    "deactivate_delegated_grant",
+]:
+    old = f'"authorization_admin::{function}",'
+    new = f'"authorization_admin::{function}(",'
+    assert old in admin
+    admin = admin.replace(old, new, 1)
 ADMIN.write_text(admin)
 
 tests = TESTS.read_text()
