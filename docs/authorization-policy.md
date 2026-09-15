@@ -145,6 +145,32 @@ The snapshot contract contains only non-secret authority metadata. Bearer/JWT va
 
 Decision/explain visibility is a third independent observational surface. Only Human Web admin self receives implicit global explain authority; participant-HMAC self, GitHub-owner compatibility authority, and OIDC/Bearer identity require an explicit `read_authorization_decision` grant. Explain authority does not imply policy snapshot, policy integrity, execution audit/sweep, or channel administration, and those capabilities do not imply explain visibility.
 
+## Authorization administration
+
+Authorization mutation is owned by `authorization_admin`, not by CLI, REST, MCP, or the read-side policy evaluator. The supported mutation path is:
+
+```text
+local operator CLI
+        ↓
+authorization_admin canonical service
+        ↓
+validated durable/delegated lifecycle mutation
+        +
+append-only authorization_admin_events provenance
+        ↓
+one SQLite transaction
+```
+
+The canonical service preserves existing lifecycle behavior: an exact active durable scope is idempotent, an exact inactive durable scope reactivates the same row, durable deactivation closes every active row in the same exact legacy scope, delegated create remains append-only, and delegated deactivation is idempotent. Execution-time one-shot consumption is not an administration mutation and remains owned by the semantic execution transaction.
+
+Only an **effective policy state change** emits an administration event. A durable create that resolves to an already-active exact grant and a repeated deactivation that changes zero rows do not create misleading mutation records.
+
+Administration provenance contains only non-secret actor and policy metadata: administration surface, optional authenticated `Principal`, optional actor participant attribution, target principal, participant, capability/resource/intent scope, lifecycle transition, and commit time. Local CLI administration is represented explicitly as `local-cli` with no fabricated remote principal. Authentication credentials are never written to administration evidence.
+
+Schema ownership is explicit. `db init` owns administration-schema creation/migration. Mutation services require a current writable schema and fail with migration-required semantics rather than repairing storage themselves. Read-side commands likewise remain observational: `grant list`, `grant durable list`, `grant explain`, `grant verify`, and `grant history` open/read current state without calling grant-schema migration.
+
+`authorization_admin::read_administration_events(conn, ...)` is the canonical local provenance reader. `conversation-blackboard grant history` is its operator projection. REST and MCP have no grant mutation endpoint/tool; source regressions protect that boundary so remote adapters cannot silently become a second administration implementation.
+
 ## Verification boundary
 
 Authorization changes are accepted only after formatting, strict Clippy, Rust tests, release build, and Windows service/CLI/smoke/package verification pass in core CI. The #81 migration additionally verifies that execution and `grant explain` consume one canonical policy decision while one-shot consumption remains execution-only and atomic.

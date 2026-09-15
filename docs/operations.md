@@ -155,6 +155,29 @@ Use the existing **delegated grants** for narrower authority with optional expir
 
 Delegated one-shot consumption remains part of the same semantic execution transaction as the committed effect and receipt. Failed semantic execution does not burn one-shot authority.
 
+### Authorization administration history
+
+Grant lifecycle mutations are audited locally. Effective durable/delegated create, durable reactivation, and durable/delegated deactivation commit an append-only non-secret administration event in the same SQLite transaction as the policy change.
+
+Inspect that evidence with:
+
+```powershell
+.\conversation-blackboard.exe grant history --db <DB>
+.\conversation-blackboard.exe grant history --db <DB> --participant-id <ID>
+```
+
+`grant history` is read-only. Local CLI mutations are recorded with the explicit `local-cli` administration surface and no invented remote identity. When a future trusted administration surface supplies an authenticated principal, only normalized principal/scope metadata may be recorded; bearer tokens, JWTs, HMAC secrets, TOTP material, session credentials, and passwords are never administration evidence.
+
+Grant administration schema changes are explicit database operations. If `grant history`, `grant list`, or `grant durable list` reports that the authorization schema requires migration, run:
+
+```powershell
+.\conversation-blackboard.exe db init --db <DB>
+```
+
+and then rerun the read command. Read commands do not perform that migration themselves.
+
+There is currently no REST or MCP grant-mutation operation. Remote policy snapshot, integrity, and decision/explain surfaces remain privileged read projections only.
+
 ### Authorization policy integrity
 
 Use the read-only policy audit to verify the grant objects themselves:

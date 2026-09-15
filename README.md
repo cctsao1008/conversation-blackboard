@@ -187,6 +187,8 @@ administration create, reactivate, or deactivate authority
 
 Snapshot reads do not migrate, repair, normalize, reactivate, deactivate, or consume authority. Inactive durable grants plus expired or consumed delegated grants remain visible as inventory history, and credential material is never part of the snapshot contract.
 
+Authorization administration is a separate local operator boundary. Durable/delegated create, durable reactivation, and durable/delegated deactivation pass through one canonical administration service and commit non-secret administration provenance atomically with effective policy changes. `grant history` reads that provenance observationally. Administration is not currently exposed as a REST or MCP mutation surface.
+
 ## Production shape
 
 Architecturally, production consists of one authoritative Blackboard runtime backed by one authoritative durable store and exposed through authenticated ingress adapters:
