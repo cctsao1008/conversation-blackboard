@@ -24,7 +24,6 @@ s = s.replace(old, new, 1)
 # The delegated canonical schema deliberately excludes CLI/private timestamps.
 old = '''    assert_eq!(tool["annotations"]["readOnlyHint"], true);\n    assert!(tool["inputSchema"]["required"]'''
 new = '''    assert_eq!(tool["annotations"]["readOnlyHint"], true);\n    let delegated_properties = &tool["outputSchema"]["properties"]["policy"]\n        ["properties"]["delegated_grants"]["items"]["properties"];\n    assert!(delegated_properties.get("created_at").is_none());\n    assert!(delegated_properties.get("updated_at").is_none());\n    assert!(tool["inputSchema"]["required"]'''
-# Apply only to the snapshot schema test by finding its local region.
 marker = 'async fn mcp_policy_snapshot_tool_uses_canonical_read_only_schema()'
 pos = s.find(marker)
 if pos < 0:
@@ -35,5 +34,11 @@ if old not in region:
     raise SystemExit("missing snapshot schema assertion anchor")
 region = region.replace(old, new, 1)
 s = s[:pos] + region + s[end:]
+
+old = '    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);'
+new = '    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);'
+if old not in s:
+    raise SystemExit("missing stdio tool-count anchor")
+s = s.replace(old, new, 1)
 
 p.write_text(s, encoding="utf-8")
