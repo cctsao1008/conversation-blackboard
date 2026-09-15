@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/issue105_policy_snapshot_domain.py'
       - '.github/scripts/issue105_policy_snapshot_domain_fix.py'
+      - '.github/scripts/issue105_policy_snapshot_rest.py'
       - '.github/workflows/issue105-policy-snapshot-domain.yml'
 
 permissions:
@@ -19,27 +20,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Apply policy snapshot domain migration
+      - name: Apply policy snapshot vertical slice
         run: |
           python .github/scripts/issue105_policy_snapshot_domain.py
           python .github/scripts/issue105_policy_snapshot_domain_fix.py
+          python .github/scripts/issue105_policy_snapshot_rest.py
       - name: Format and verify
         run: |
           cargo fmt
           cargo fmt --check
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --all-targets --all-features
-      - name: Commit policy snapshot domain
+      - name: Commit policy snapshot domain and REST projection
         run: |
           git config user.name Cheng
           git config user.email chiacheng.tsao@gmail.com
-          git add src/authorization.rs
-          git commit -m "#105 Add canonical authorization policy snapshot domain"
+          git add src/authorization.rs src/access_api.rs src/http_contract_tests.rs
+          git commit -m "#105 Add canonical authorization policy snapshot REST projection"
       - name: Remove temporary migration helpers
         run: |
           git rm .github/scripts/issue105_policy_snapshot_domain.py
           git rm .github/scripts/issue105_policy_snapshot_domain_fix.py
+          git rm .github/scripts/issue105_policy_snapshot_rest.py
           git rm .github/workflows/issue105-policy-snapshot-domain.yml
-          git commit -m "#105 Remove policy snapshot domain migration helpers"
+          git commit -m "#105 Remove policy snapshot REST migration helpers"
       - name: Push
         run: git push origin main
