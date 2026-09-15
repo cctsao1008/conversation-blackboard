@@ -13,9 +13,11 @@ No external description becomes a second source of domain truth.
 
 ## Canonical shared shapes
 
-`src/contract_schema.rs` owns reusable externally visible semantic shapes used directly by MCP and by parity tests for the HTTP/UTCP projections. It covers `participant_id`, `conversation_ref`, `intent_id`, `delivery_id`, message shape, access context, and execution receipt.
+`src/contract_schema.rs` owns reusable externally visible semantic shapes used directly by MCP and by parity tests for the HTTP/UTCP projections. It covers `participant_id`, `conversation_ref`, `intent_id`, `delivery_id`, message shape, access context, execution receipt, execution-audit integrity, and authorization-policy integrity report/violation/envelope shapes.
 
 `intent_id` identifies a semantic operation across transports. `delivery_id` identifies one transport delivery and belongs to ingress provenance. Multiple delivery IDs may carry the same intent ID, so `delivery_id` is deliberately absent from the semantic execution receipt.
+
+Authorization-policy integrity has one canonical Rust report source: `authorization::audit_authorization_integrity(conn)`. REST, MCP, OpenAPI, and UTCP only project that report; they do not reimplement grant-integrity SQL or define additional violation semantics. Remote visibility is guarded by the dedicated `read_authorization_policy_integrity` capability against the global `authorization-policy-integrity` resource. An authorized invalid policy state is successful report data (`valid: false`), while an old authorization schema fails explicitly without migration or repair.
 
 ## Generation and validation rule
 
@@ -26,3 +28,5 @@ Where runtime adapter schemas can directly reuse Rust schema builders, they do. 
 ## Verification boundary
 
 Normal `core-ci` is the acceptance boundary for contract projection changes. The Rust test suite parses checked-in OpenAPI and UTCP projections, compares shared semantic shapes against `src/contract_schema.rs`, and verifies that transport delivery identity does not leak into semantic execution receipts. Linux and Windows validation must both remain green before the projection contract is considered complete.
+
+`utcp-contract` adds an independent discovery/invocation smoke gate for changes to the HTTP/UTCP projection surface. Policy-integrity projection changes are complete only when the canonical Rust parity tests, normal cross-platform core CI, and the UTCP discovery/invocation gate remain green.
