@@ -149,7 +149,7 @@ impl OidcState {
 }
 
 impl OidcVerifier {
-    fn from_jwks(
+    pub(crate) fn from_jwks(
         issuer: String,
         audience: String,
         jwks: JwkSet,
