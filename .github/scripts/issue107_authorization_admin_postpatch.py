@@ -126,4 +126,113 @@ admin = replace_exact(
     2,
     "finish rusqlite row materialization inside block",
 )
+
+state_anchor = """struct AdministrationEvent<'a> {
+    grant_store: &'a str,
+    grant_id: i64,
+    operation: &'a str,
+    scope: GrantScope<'a>,
+    before_status: Option<&'a str>,
+    after_status: &'a str,
+}
+
+"""
+state_insert = state_anchor + """#[derive(Debug)]
+struct DelegatedGrantState {
+    principal_provider: String,
+    principal_subject: String,
+    participant_id: String,
+    capability: String,
+    resource: Option<String>,
+    intent_id: Option<String>,
+    expires_at: Option<i64>,
+    one_shot: bool,
+    status: String,
+}
+
+"""
+admin = replace_exact(
+    admin,
+    state_anchor,
+    state_insert,
+    1,
+    "add named delegated grant lifecycle row",
+)
+
+old_scope = """    let scope: Option<(
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        bool,
+        String,
+    )> = tx
+        .query_row(
+            "SELECT principal_provider, principal_subject, participant_id, capability,
+                    resource, intent_id, expires_at, one_shot, status
+             FROM delegated_grants WHERE id = ?1",
+            [grant_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get::<_, i64>(7)? != 0,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((provider, subject, participant_id, capability, resource, intent_id, expires_at, one_shot, status)) = scope else {
+        tx.commit()?;
+        return Ok(None);
+    };
+"""
+new_scope = """    let scope: Option<DelegatedGrantState> = tx
+        .query_row(
+            "SELECT principal_provider, principal_subject, participant_id, capability,
+                    resource, intent_id, expires_at, one_shot, status
+             FROM delegated_grants WHERE id = ?1",
+            [grant_id],
+            |row| {
+                Ok(DelegatedGrantState {
+                    principal_provider: row.get(0)?,
+                    principal_subject: row.get(1)?,
+                    participant_id: row.get(2)?,
+                    capability: row.get(3)?,
+                    resource: row.get(4)?,
+                    intent_id: row.get(5)?,
+                    expires_at: row.get(6)?,
+                    one_shot: row.get::<_, i64>(7)? != 0,
+                    status: row.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(scope) = scope else {
+        tx.commit()?;
+        return Ok(None);
+    };
+"""
+admin = replace_exact(
+    admin,
+    old_scope,
+    new_scope,
+    1,
+    "factor delegated grant query state",
+)
+admin = replace_exact(
+    admin,
+    "                    principal_provider: &provider,\n                    principal_subject: &subject,\n                    participant_id: &participant_id,\n                    capability: &capability,\n                    resource: resource.as_deref(),\n                    intent_id: intent_id.as_deref(),\n                    expires_at,\n                    one_shot,\n                },\n                before_status: Some(&status),",
+    "                    principal_provider: &scope.principal_provider,\n                    principal_subject: &scope.principal_subject,\n                    participant_id: &scope.participant_id,\n                    capability: &scope.capability,\n                    resource: scope.resource.as_deref(),\n                    intent_id: scope.intent_id.as_deref(),\n                    expires_at: scope.expires_at,\n                    one_shot: scope.one_shot,\n                },\n                before_status: Some(&scope.status),",
+    1,
+    "use named delegated grant state in provenance",
+)
 admin_path.write_text(admin, encoding="utf-8")
