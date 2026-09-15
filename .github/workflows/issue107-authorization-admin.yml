@@ -1,3 +1,4 @@
+# Retry after evidence-backed compile fixes.
 name: issue107-authorization-admin
 
 on:
