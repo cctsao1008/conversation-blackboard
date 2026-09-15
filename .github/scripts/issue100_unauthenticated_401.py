@@ -120,6 +120,26 @@ async fn oidc_enabled_remote_mcp_keeps_public_read_anonymous_and_challenges_priv
         Some(Arc::new(verifier)),
     );
 
+    // Materialize the lounge through the normal authenticated write path before
+    // asserting anonymous visibility. An absent channel is not an active public
+    // resource and must not be treated as public merely by name.
+    let seeded = call_tool(
+        &router,
+        1089,
+        "blackboard_write",
+        write_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "blackboard-lounge",
+            "message",
+            "issue100-public-seed",
+            None,
+            "issue100-public-seed",
+        ),
+    )
+    .await;
+    assert_eq!(seeded["result"]["isError"], false);
+
     let public_response = request(
         &router,
         Method::POST,
