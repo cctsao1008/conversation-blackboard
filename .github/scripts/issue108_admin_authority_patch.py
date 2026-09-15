@@ -284,6 +284,7 @@ pub fn create_durable_grant(
     Ok(outcome)
 }
 
+#[cfg(test)]
 pub fn create_durable_grant_authorized(
     conn: &Connection,
     surface: &str,
