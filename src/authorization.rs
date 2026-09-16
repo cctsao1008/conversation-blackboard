@@ -20,9 +20,13 @@ pub const READ_AUTHORIZATION_DECISION: &str = "read_authorization_decision";
 pub const AUTHORIZATION_DECISION_RESOURCE: &str = "authorization-decision";
 pub const MANAGE_AUTHORIZATION_POLICY: &str = "manage_authorization_policy";
 pub const AUTHORIZATION_POLICY_ADMIN_RESOURCE: &str = "authorization-policy-administration";
+pub const READ_AUTHORIZATION_ADMINISTRATION_HISTORY: &str =
+    "read_authorization_administration_history";
+pub const AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE: &str =
+    "authorization-administration-history";
 pub const MANAGE_CHANNELS: &str = "manage_channels";
 
-const KNOWN_CAPABILITIES: [&str; 11] = [
+const KNOWN_CAPABILITIES: [&str; 12] = [
     READ_MESSAGES,
     POST_MESSAGE,
     REPLY,
@@ -33,6 +37,7 @@ const KNOWN_CAPABILITIES: [&str; 11] = [
     READ_AUTHORIZATION_POLICY,
     READ_AUTHORIZATION_DECISION,
     MANAGE_AUTHORIZATION_POLICY,
+    READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
     MANAGE_CHANNELS,
 ];
 
@@ -1267,6 +1272,12 @@ fn implicit_authority_reason(
                 && participant.role == "admin"
                 && resource == Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE))
             .then_some("implicit_human_web_admin_authorization_administration");
+        }
+        if capability == READ_AUTHORIZATION_ADMINISTRATION_HISTORY {
+            return (principal.provider == "human-web"
+                && participant.role == "admin"
+                && resource == Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE))
+            .then_some("implicit_human_web_admin_authorization_administration_history");
         }
         if capability == READ_EXECUTION_AUDIT_SWEEP {
             return (principal.provider == "human-web"

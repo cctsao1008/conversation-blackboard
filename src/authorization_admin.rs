@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::Serialize;
 
 use crate::{authorization, execution, execution::Principal, identity};
 
@@ -73,7 +74,7 @@ pub struct GrantDeactivateOutcome {
     pub rows_changed: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AuthorizationAdministrationEvent {
     pub id: i64,
     pub grant_store: String,

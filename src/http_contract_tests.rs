@@ -1999,3 +1999,179 @@ async fn authorization_policy_integrity_http_is_privileged_read_only_and_reports
         "read-only integrity GET recreated authorization schema"
     );
 }
+
+#[tokio::test]
+async fn authorization_administration_history_rest_requires_dedicated_authority_and_is_read_only() {
+    let fixture = fixture("authorization-admin-history-http");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let uri = "/api/authorization-administration/history";
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let actor = crate::authorization_admin::AuthorizationAdministrationActor::local_cli();
+    let spec = crate::authorization_admin::DurableGrantCreateRequest {
+        principal_provider: "oidc:https://issuer.example",
+        principal_subject: "history-worker",
+        participant_id: &fixture.participant_id,
+        capability: authorization::READ_MESSAGES,
+        resource: None,
+    };
+    let created = crate::authorization_admin::create_durable_grant(&conn, &actor, &spec).unwrap();
+    let before_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(conn);
+
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let ordinary = request(&router, Method::GET, uri, Some(&session.token), None).await;
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let canonical = web_auth::canonical_http_request_bytes(&fixture.participant_id, "GET", uri);
+    let proof =
+        participant_auth::compute_message_proof(&fixture.signing_private, &canonical).unwrap();
+    let hmac_denied = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+                .header(
+                    request_auth::AUTH_SCHEME_HEADER,
+                    participant_auth::AUTH_SCHEME,
+                )
+                .header(request_auth::AUTH_PROOF_HEADER, proof.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hmac_denied.status(), StatusCode::FORBIDDEN);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', ?1, ?1, ?2, ?3)",
+        rusqlite::params![
+            &fixture.participant_id,
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE,
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let hmac_allowed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header(request_auth::PARTICIPANT_ID_HEADER, &fixture.participant_id)
+                .header(
+                    request_auth::AUTH_SCHEME_HEADER,
+                    participant_auth::AUTH_SCHEME,
+                )
+                .header(request_auth::AUTH_PROOF_HEADER, proof)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (hmac_status, hmac_body) = response_json(hmac_allowed).await;
+    assert_eq!(hmac_status, StatusCode::OK);
+    assert_eq!(hmac_body["history"]["events"].as_array().unwrap().len(), 1);
+    assert_eq!(hmac_body["history"]["events"][0]["grant_id"], created.id);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    drop(conn);
+    let admin = request(&router, Method::GET, uri, Some(&session.token), None).await;
+    let (admin_status, admin_body) = response_json(admin).await;
+    assert_eq!(admin_status, StatusCode::OK);
+    assert_eq!(admin_body["history"]["events"][0]["operation"], "create");
+    assert_eq!(
+        admin_body["history"]["events"][0]["actor_surface"],
+        "local-cli"
+    );
+
+    let filtered_uri = format!(
+        "/api/authorization-administration/history?participant_id={}",
+        fixture.participant_id
+    );
+    let filtered = request(
+        &router,
+        Method::GET,
+        &filtered_uri,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (filtered_status, filtered_body) = response_json(filtered).await;
+    assert_eq!(filtered_status, StatusCode::OK);
+    assert_eq!(
+        filtered_body["history"]["events"].as_array().unwrap().len(),
+        1
+    );
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let after_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM authorization_admin_events",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        after_events, before_events,
+        "history read mutated provenance"
+    );
+}
+
+#[tokio::test]
+async fn authorization_administration_history_rest_refuses_stale_schema_without_repair() {
+    let fixture = fixture("authorization-admin-history-stale");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    conn.execute("DROP TABLE authorization_admin_events", [])
+        .unwrap();
+    drop(conn);
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+
+    let response = request(
+        &router,
+        Method::GET,
+        "/api/authorization-administration/history",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'authorization_admin_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 0, "history read repaired stale schema");
+}

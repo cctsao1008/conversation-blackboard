@@ -33,6 +33,10 @@ pub fn app(state: AppState) -> Router {
             get(authorization_decision_explain),
         )
         .route(
+            "/api/authorization-administration/history",
+            get(authorization_administration_history),
+        )
+        .route(
             "/api/authorization-grants/durable",
             post(create_durable_authorization_grant),
         )
@@ -49,6 +53,66 @@ pub fn app(state: AppState) -> Router {
             delete(deactivate_delegated_authorization_grant),
         )
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizationAdministrationHistoryQuery {
+    participant_id: Option<String>,
+}
+
+async fn authorization_administration_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(query): Query<AuthorizationAdministrationHistoryQuery>,
+) -> Result<Response, AccessApiError> {
+    let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
+    let principal = principal_for_headers(&headers, &resolved);
+    let caller_participant_id = resolved.instance.clone();
+    let participant_filter = query
+        .participant_id
+        .map(|value| {
+            identity::validate_participant_id(&value).ok_or_else(|| {
+                AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_participant_id")
+            })
+        })
+        .transpose()?;
+
+    let (schema_current, allowed, events) = with_db_read_only(&state, move |conn| {
+        if !authorization_admin::schema_current(conn)? {
+            return Ok((false, false, Vec::new()));
+        }
+        let decision = authorization::explain_authorization(
+            conn,
+            &principal,
+            &caller_participant_id,
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+            None,
+        )?;
+        let events = if decision.allowed {
+            authorization_admin::read_administration_events(conn, participant_filter.as_deref())?
+        } else {
+            Vec::new()
+        };
+        Ok((true, decision.allowed, events))
+    })
+    .await?;
+
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "schema_migration_required",
+        ));
+    }
+    if !allowed {
+        return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+
+    Ok(json_response(
+        StatusCode::OK,
+        json!({"history": {"events": events}}),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
