@@ -15,8 +15,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use url::Url;
 
 use crate::{
-    adapter_profile, authorization, contract_schema, db, execution, http::AppState, identity,
-    model::Identity, oidc, participant_auth,
+    adapter_profile, authorization, authorization_admin, contract_schema, db, execution,
+    http::AppState, identity, model::Identity, oidc, participant_auth,
 };
 
 const MAX_MCP_REQUEST_BYTES: usize = 128 * 1024;
@@ -489,7 +489,8 @@ async fn http_tool_call_requires_auth(state: &AppState, object: &Map<String, Val
         | "blackboard_execution_audit_sweep"
         | "blackboard_authorization_policy_integrity"
         | "blackboard_authorization_policy"
-        | "blackboard_authorization_decision" => true,
+        | "blackboard_authorization_decision"
+        | "blackboard_authorization_administration_history" => true,
         "blackboard_read" => {
             let Some(arguments) = arguments else {
                 return false;
@@ -902,6 +903,23 @@ fn tools_list_result() -> Value {
                 "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
             },
             {
+                "name": "blackboard_authorization_administration_history",
+                "title": "Read Blackboard Authorization Administration History",
+                "description": "Read immutable privileged authorization-administration provenance without modifying, repairing, or re-evaluating policy. Optional filter_participant_id only filters returned history and does not scope reader authority.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "participant_id": contract_schema::participant_id_schema(),
+                        "filter_participant_id": {"anyOf": [contract_schema::participant_id_schema(), {"type": "null"}]},
+                        "auth": auth_schema()
+                    },
+                    "required": ["participant_id", "auth"],
+                    "additionalProperties": false
+                },
+                "outputSchema": contract_schema::authorization_administration_history_envelope_schema(),
+                "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+            },
+            {
                 "name": "blackboard_authorization_decision",
                 "title": "Explain Blackboard Authorization Decision",
                 "description": "Explain one target authorization decision using the canonical read-only policy evaluator. Caller authority is separate from the target principal. Participant-HMAC auth for this tool is bound to the complete target decision query.",
@@ -1004,6 +1022,10 @@ async fn tool_call_result(
         "blackboard_authorization_policy" => {
             Ok(blackboard_authorization_policy(state, &arguments, transport_principal).await)
         }
+        "blackboard_authorization_administration_history" => Ok(
+            blackboard_authorization_administration_history(state, &arguments, transport_principal)
+                .await,
+        ),
         "blackboard_authorization_decision" => {
             Ok(blackboard_authorization_decision(state, &arguments, transport_principal).await)
         }
@@ -1549,6 +1571,91 @@ async fn blackboard_authorization_decision(
     tool_success(json!({
         "decision": decision.expect("authorized decision explanation must produce a decision")
     }))
+}
+
+async fn blackboard_authorization_administration_history(
+    state: &AppState,
+    arguments: &Map<String, Value>,
+    transport_principal: Option<&execution::Principal>,
+) -> Value {
+    if !only_keys(
+        arguments,
+        &["participant_id", "filter_participant_id", "auth"],
+    ) {
+        return tool_error("invalid_arguments");
+    }
+    let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
+        Some(value) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == value => normalized,
+            _ => return tool_error("invalid_participant_id"),
+        },
+        None => return tool_error("invalid_participant_id"),
+    };
+    let filter_participant_id = match arguments.get("filter_participant_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => match identity::validate_participant_id(value) {
+            Some(normalized) if normalized == *value => Some(normalized),
+            _ => return tool_error("invalid_filter_participant_id"),
+        },
+        Some(_) => return tool_error("invalid_filter_participant_id"),
+    };
+
+    let caller_principal = if let Some(principal) = transport_principal {
+        principal.clone()
+    } else {
+        if let Err(code) = resolve_capability_identity(
+            state,
+            arguments,
+            &participant_id,
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+        )
+        .await
+        {
+            return tool_error(code);
+        }
+        execution::Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: participant_id.clone(),
+        }
+    };
+
+    let policy_principal = caller_principal.clone();
+    let caller_participant = participant_id.clone();
+    let filter = filter_participant_id.clone();
+    let (schema_current, allowed, events) = match with_db_read_only(state, move |conn| {
+        if !authorization_admin::schema_current(conn)? {
+            return Ok((false, false, Vec::new()));
+        }
+        let decision = authorization::explain_authorization(
+            conn,
+            &policy_principal,
+            &caller_participant,
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+            None,
+        )?;
+        if !decision.allowed {
+            return Ok((true, false, Vec::new()));
+        }
+        Ok((
+            true,
+            true,
+            authorization_admin::read_administration_events(conn, filter.as_deref())?,
+        ))
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(()) => return tool_error("database_unavailable"),
+    };
+    if !schema_current {
+        return tool_error("authorization_schema_not_current");
+    }
+    if !allowed {
+        return tool_error("forbidden");
+    }
+    tool_success(json!({"history": {"events": events}}))
 }
 
 async fn blackboard_authorization_policy(

@@ -245,6 +245,63 @@ pub fn execution_audit_sweep_envelope_schema() -> Value {
     })
 }
 
+pub fn authorization_administration_event_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer", "minimum": 1},
+            "grant_store": {"type": "string", "enum": ["durable", "delegated"]},
+            "grant_id": {"type": "integer", "minimum": 1},
+            "operation": {"type": "string", "enum": ["create", "reactivate", "deactivate"]},
+            "actor_surface": {"type": "string"},
+            "actor_provider": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "actor_subject": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "actor_participant_id": {"anyOf": [participant_id_schema(), {"type": "null"}]},
+            "target_principal_provider": {"type": "string"},
+            "target_principal_subject": {"type": "string"},
+            "participant_id": participant_id_schema(),
+            "capability": {"type": "string"},
+            "resource": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "intent_id": {"anyOf": [intent_id_schema(), {"type": "null"}]},
+            "expires_at": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            "one_shot": {"type": "boolean"},
+            "before_status": {"anyOf": [{"type": "string", "enum": ["active", "inactive"]}, {"type": "null"}]},
+            "after_status": {"type": "string", "enum": ["active", "inactive"]},
+            "created_at": {"type": "integer"}
+        },
+        "required": [
+            "id", "grant_store", "grant_id", "operation", "actor_surface",
+            "actor_provider", "actor_subject", "actor_participant_id",
+            "target_principal_provider", "target_principal_subject", "participant_id",
+            "capability", "resource", "intent_id", "expires_at", "one_shot",
+            "before_status", "after_status", "created_at"
+        ],
+        "additionalProperties": false,
+        "description": "Immutable non-secret authorization-administration provenance for one effective policy mutation."
+    })
+}
+
+pub fn authorization_administration_history_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "events": {"type": "array", "items": authorization_administration_event_schema()}
+        },
+        "required": ["events"],
+        "additionalProperties": false,
+        "description": "Canonical read-only committed authorization-administration history."
+    })
+}
+
+pub fn authorization_administration_history_envelope_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"history": authorization_administration_history_schema()},
+        "required": ["history"],
+        "additionalProperties": false
+    })
+}
+
 pub fn authorization_decision_explanation_schema() -> Value {
     json!({
         "type": "object",

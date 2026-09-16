@@ -13,7 +13,8 @@ use tempfile::{tempdir, TempDir};
 use tower::ServiceExt;
 
 use crate::{
-    authorization, contract_schema, db, http::AppState, identity, mcp, oidc, participant_auth,
+    authorization, authorization_admin, contract_schema, db, http::AppState, identity, mcp, oidc,
+    participant_auth,
 };
 
 struct Fixture {
@@ -703,7 +704,7 @@ async fn stdio_dispatch_supports_lifecycle_discovery_and_notifications() {
     )
     .await
     .unwrap();
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 10);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 11);
 
     let unknown = mcp::stdio_dispatch(
         &state,
@@ -735,7 +736,7 @@ async fn mcp_advertises_hmac_only_auth_contract() {
     .await;
     let (_, value) = response_json(response).await;
     let tools = value["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 11);
     for tool in tools {
         let auth = &tool["inputSchema"]["properties"]["auth"];
         assert_eq!(
@@ -2693,7 +2694,7 @@ async fn modern_tools_list_uses_per_request_metadata_and_cacheable_complete_resu
     let (_, value) = response_json(response).await;
     assert_eq!(value["result"]["resultType"], "complete");
     assert_eq!(value["result"]["cacheScope"], "public");
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 10);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 11);
 }
 
 #[tokio::test]
@@ -2879,4 +2880,222 @@ async fn modern_tool_results_stamp_result_type_and_server_identity() {
         value["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
         "conversation-blackboard"
     );
+}
+
+fn administration_history_arguments(
+    secret: &str,
+    participant_id: &str,
+    filter: Option<&str>,
+) -> Value {
+    let proof = participant_auth::compute_capability_proof(
+        secret,
+        participant_id,
+        authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+        Some(authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+    )
+    .unwrap();
+    let mut value = json!({
+        "participant_id": participant_id,
+        "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
+    });
+    if let Some(filter) = filter {
+        value["filter_participant_id"] = json!(filter);
+    }
+    value
+}
+
+#[tokio::test]
+async fn mcp_authorization_administration_history_requires_explicit_hmac_authority_and_filters() {
+    let fixture = fixture();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let actor = authorization_admin::AuthorizationAdministrationActor::local_cli();
+    let event_request = authorization_admin::DurableGrantCreateRequest {
+        principal_provider: "oidc:https://issuer.example",
+        principal_subject: "history-target",
+        participant_id: "rotary-main",
+        capability: authorization::READ_MESSAGES,
+        resource: None,
+    };
+    let event_grant =
+        authorization_admin::create_durable_grant(&conn, &actor, &event_request).unwrap();
+    drop(conn);
+
+    let denied = call_tool(
+        &fixture.router,
+        901,
+        "blackboard_authorization_administration_history",
+        administration_history_arguments(
+            &fixture.single_secret,
+            "single-main",
+            Some("rotary-main"),
+        ),
+    )
+    .await;
+    assert_eq!(tool_error_code(&denied), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main', ?1, ?2)",
+        params![
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE,
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed = call_tool(
+        &fixture.router,
+        902,
+        "blackboard_authorization_administration_history",
+        administration_history_arguments(
+            &fixture.single_secret,
+            "single-main",
+            Some("rotary-main"),
+        ),
+    )
+    .await;
+    assert_eq!(allowed["result"]["isError"], false);
+    let events = allowed["result"]["structuredContent"]["history"]["events"]
+        .as_array()
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["grant_id"], event_grant.id);
+    assert_eq!(events[0]["participant_id"], "rotary-main");
+}
+
+#[tokio::test]
+async fn mcp_authorization_administration_history_bearer_requires_explicit_grant() {
+    let mut fixture = fixture();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let actor = authorization_admin::AuthorizationAdministrationActor::local_cli();
+    let event_request = authorization_admin::DurableGrantCreateRequest {
+        principal_provider: "oidc:https://issuer.example",
+        principal_subject: "history-target",
+        participant_id: "rotary-main",
+        capability: authorization::READ_MESSAGES,
+        resource: None,
+    };
+    authorization_admin::create_durable_grant(&conn, &actor, &event_request).unwrap();
+    drop(conn);
+
+    let (verifier, token) = bearer_verifier_and_token("history-reader");
+    fixture.router = mcp::app_with_oidc(
+        AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        },
+        Some(Arc::new(verifier)),
+    );
+    let body = |id| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "blackboard_authorization_administration_history",
+                "arguments": {
+                    "participant_id": "single-main",
+                    "filter_participant_id": "rotary-main"
+                }
+            }
+        })
+    };
+    let denied =
+        request_with_authorization(&fixture.router, body(903), &format!("Bearer {token}")).await;
+    let (_, denied_value) = response_json(denied).await;
+    assert_eq!(tool_error_code(&denied_value), "forbidden");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('oidc:https://issuer.example', 'history-reader', 'single-main', ?1, ?2)",
+        params![
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE,
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    let allowed =
+        request_with_authorization(&fixture.router, body(904), &format!("Bearer {token}")).await;
+    let (_, allowed_value) = response_json(allowed).await;
+    assert_eq!(allowed_value["result"]["isError"], false);
+    assert_eq!(
+        allowed_value["result"]["structuredContent"]["history"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn mcp_authorization_administration_history_refuses_stale_schema_without_repair() {
+    let fixture = fixture();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute(
+        "INSERT INTO principal_grants
+            (principal_provider, principal_subject, participant_id, capability, resource)
+         VALUES ('participant-hmac', 'single-main', 'single-main', ?1, ?2)",
+        params![
+            authorization::READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE,
+        ],
+    )
+    .unwrap();
+    conn.execute("DROP TABLE authorization_admin_events", [])
+        .unwrap();
+    drop(conn);
+
+    let value = call_tool(
+        &fixture.router,
+        905,
+        "blackboard_authorization_administration_history",
+        administration_history_arguments(&fixture.single_secret, "single-main", None),
+    )
+    .await;
+    assert_eq!(tool_error_code(&value), "authorization_schema_not_current");
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'authorization_admin_events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 0, "MCP history read repaired stale schema");
+}
+
+#[tokio::test]
+async fn mcp_administration_history_schema_preserves_legacy_and_bearer_auth_projection() {
+    let fixture = fixture();
+    let response = request(
+        &fixture.router,
+        Method::POST,
+        Some(json!({"jsonrpc":"2.0","id":906,"method":"tools/list","params":{}})),
+    )
+    .await;
+    let (_, value) = response_json(response).await;
+    let tool = value["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "blackboard_authorization_administration_history")
+        .unwrap();
+    assert_eq!(
+        tool["outputSchema"],
+        contract_schema::authorization_administration_history_envelope_schema()
+    );
+    assert!(tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "auth"));
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
 }
