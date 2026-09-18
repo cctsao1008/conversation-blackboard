@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue112_policy_window_domain.py'
+      - '.github/scripts/issue112_policy_window_usage_fix.py'
       - '.github/workflows/issue112-policy-window-domain.yml'
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply canonical policy window patch
         run: python .github/scripts/issue112_policy_window_domain.py
+      - name: Reuse bounded kernel from legacy full snapshot
+        run: python .github/scripts/issue112_policy_window_usage_fix.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -39,6 +42,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue112_policy_window_domain.py
+          git rm .github/scripts/issue112_policy_window_usage_fix.py
           git rm .github/workflows/issue112-policy-window-domain.yml
           git commit -m '#112 Remove policy window domain migration helpers'
       - name: Push main
