@@ -1,6 +1,8 @@
 use std::error::Error;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{
+    params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, Transaction,
+};
 use serde::Serialize;
 
 use crate::{authorization, execution, execution::Principal, identity};
@@ -12,6 +14,48 @@ const MAX_SUBJECT_BYTES: usize = 256;
 const MAX_CAPABILITY_BYTES: usize = 128;
 const MAX_RESOURCE_BYTES: usize = 256;
 const MAX_SURFACE_BYTES: usize = 64;
+
+pub const DEFAULT_ADMINISTRATION_HISTORY_WINDOW_SIZE: usize = 20;
+pub const MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE: usize = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdministrationHistoryOrder {
+    Desc,
+    Asc,
+}
+
+impl AdministrationHistoryOrder {
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        match value.unwrap_or("desc") {
+            "desc" => Some(Self::Desc),
+            "asc" => Some(Self::Asc),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Desc => "desc",
+            Self::Asc => "asc",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AuthorizationAdministrationHistoryWindowRequest<'a> {
+    pub participant_id: Option<&'a str>,
+    pub before: Option<i64>,
+    pub after: Option<i64>,
+    pub limit: Option<usize>,
+    pub order: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AuthorizationAdministrationHistoryWindow {
+    pub events: Vec<AuthorizationAdministrationEvent>,
+    pub order: String,
+    pub has_more: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct AuthorizationAdministrationActor<'a> {
@@ -190,7 +234,9 @@ pub fn migrate_schema(conn: &Connection) -> rusqlite::Result<()> {
             )
         );
         CREATE INDEX IF NOT EXISTS idx_authorization_admin_events_grant
-            ON authorization_admin_events (grant_store, grant_id, id);",
+            ON authorization_admin_events (grant_store, grant_id, id);
+        CREATE INDEX IF NOT EXISTS idx_authorization_admin_events_participant_id
+            ON authorization_admin_events (participant_id, id);",
     )
 }
 
@@ -306,6 +352,111 @@ pub fn read_administration_events(
         stmt.query_map([], map_row)?
             .collect::<rusqlite::Result<Vec<_>>>()
     }
+}
+
+pub fn read_administration_event_window(
+    conn: &Connection,
+    request: AuthorizationAdministrationHistoryWindowRequest<'_>,
+) -> rusqlite::Result<AuthorizationAdministrationHistoryWindow> {
+    if !schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    if request.before.is_some_and(|value| value <= 0)
+        || request.after.is_some_and(|value| value <= 0)
+        || (request.before.is_some() && request.after.is_some())
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let order =
+        AdministrationHistoryOrder::parse(request.order).ok_or(rusqlite::Error::InvalidQuery)?;
+    if (order == AdministrationHistoryOrder::Desc && request.after.is_some())
+        || (order == AdministrationHistoryOrder::Asc && request.before.is_some())
+    {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_ADMINISTRATION_HISTORY_WINDOW_SIZE);
+    if !(1..=MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE).contains(&limit) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let participant_id = request
+        .participant_id
+        .map(|value| identity::validate_participant_id(value).ok_or(rusqlite::Error::InvalidQuery))
+        .transpose()?;
+
+    let mut query = String::from(
+        "SELECT id, grant_store, grant_id, operation, actor_surface, actor_provider, actor_subject,
+                actor_participant_id, target_principal_provider, target_principal_subject,
+                participant_id, capability, resource, intent_id, expires_at, one_shot,
+                before_status, after_status, created_at
+         FROM authorization_admin_events",
+    );
+    let mut predicates = Vec::new();
+    let mut values = Vec::<SqlValue>::new();
+    if let Some(participant_id) = participant_id {
+        predicates.push("participant_id = ?");
+        values.push(SqlValue::Text(participant_id));
+    }
+    match order {
+        AdministrationHistoryOrder::Desc => {
+            if let Some(before) = request.before {
+                predicates.push("id < ?");
+                values.push(SqlValue::Integer(before));
+            }
+        }
+        AdministrationHistoryOrder::Asc => {
+            if let Some(after) = request.after {
+                predicates.push("id > ?");
+                values.push(SqlValue::Integer(after));
+            }
+        }
+    }
+    if !predicates.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&predicates.join(" AND "));
+    }
+    match order {
+        AdministrationHistoryOrder::Desc => query.push_str(" ORDER BY id DESC"),
+        AdministrationHistoryOrder::Asc => query.push_str(" ORDER BY id ASC"),
+    }
+    query.push_str(" LIMIT ?");
+    values.push(SqlValue::Integer((limit + 1) as i64));
+
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt
+        .query_map(params_from_iter(values), |row| {
+            Ok(AuthorizationAdministrationEvent {
+                id: row.get(0)?,
+                grant_store: row.get(1)?,
+                grant_id: row.get(2)?,
+                operation: row.get(3)?,
+                actor_surface: row.get(4)?,
+                actor_provider: row.get(5)?,
+                actor_subject: row.get(6)?,
+                actor_participant_id: row.get(7)?,
+                target_principal_provider: row.get(8)?,
+                target_principal_subject: row.get(9)?,
+                participant_id: row.get(10)?,
+                capability: row.get(11)?,
+                resource: row.get(12)?,
+                intent_id: row.get(13)?,
+                expires_at: row.get(14)?,
+                one_shot: row.get::<_, i64>(15)? != 0,
+                before_status: row.get(16)?,
+                after_status: row.get(17)?,
+                created_at: row.get(18)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let has_more = rows.len() > limit;
+    let mut events = rows;
+    events.truncate(limit);
+    Ok(AuthorizationAdministrationHistoryWindow {
+        events,
+        order: order.as_str().to_owned(),
+        has_more,
+    })
 }
 
 fn normalize_durable_grant_create_request(
@@ -1000,6 +1151,194 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn administration_history_window_is_bounded_and_pages_without_overlap() {
+        let (_dir, conn) = setup();
+        let actor = AuthorizationAdministrationActor::local_cli();
+        for index in 0..25 {
+            let subject = format!("history-agent-{index}");
+            create_durable_grant(
+                &conn,
+                &actor,
+                &DurableGrantCreateRequest {
+                    principal_provider: "oidc:https://issuer.example",
+                    principal_subject: &subject,
+                    participant_id: "maker-main",
+                    capability: authorization::READ_MESSAGES,
+                    resource: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let first = read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: None,
+                limit: None,
+                order: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(first.order, "desc");
+        assert_eq!(
+            first.events.len(),
+            DEFAULT_ADMINISTRATION_HISTORY_WINDOW_SIZE
+        );
+        assert!(first.has_more);
+        assert_eq!(first.events.first().unwrap().id, 25);
+        assert_eq!(first.events.last().unwrap().id, 6);
+
+        let second = read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: Some(6),
+                after: None,
+                limit: None,
+                order: Some("desc"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            vec![5, 4, 3, 2, 1]
+        );
+        assert!(!second.has_more);
+
+        let ascending = read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: Some(20),
+                limit: Some(20),
+                order: Some("asc"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ascending
+                .events
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            vec![21, 22, 23, 24, 25]
+        );
+        assert!(!ascending.has_more);
+    }
+
+    #[test]
+    fn administration_history_window_validates_direction_limit_and_filter() {
+        let (_dir, conn) = setup();
+        let invalid = [
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: Some(2),
+                after: Some(1),
+                limit: Some(20),
+                order: Some("desc"),
+            },
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: Some(1),
+                limit: Some(20),
+                order: Some("desc"),
+            },
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: Some(1),
+                after: None,
+                limit: Some(20),
+                order: Some("asc"),
+            },
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: None,
+                limit: Some(0),
+                order: None,
+            },
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: None,
+                limit: Some(MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE + 1),
+                order: None,
+            },
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: Some("bad participant"),
+                before: None,
+                after: None,
+                limit: None,
+                order: None,
+            },
+        ];
+        for request in invalid {
+            assert!(read_administration_event_window(&conn, request).is_err());
+        }
+    }
+
+    #[test]
+    fn administration_history_window_filters_by_participant_and_schema_owns_index() {
+        let (_dir, conn) = setup();
+        identity::provision_web_participant_identity(&conn, "other-main", "other", Some("Other"))
+            .unwrap()
+            .unwrap();
+        let actor = AuthorizationAdministrationActor::local_cli();
+        for (participant_id, subject) in [
+            ("maker-main", "maker-history-1"),
+            ("other-main", "other-history-1"),
+            ("maker-main", "maker-history-2"),
+        ] {
+            create_durable_grant(
+                &conn,
+                &actor,
+                &DurableGrantCreateRequest {
+                    principal_provider: "oidc:https://issuer.example",
+                    principal_subject: subject,
+                    participant_id,
+                    capability: authorization::READ_MESSAGES,
+                    resource: None,
+                },
+            )
+            .unwrap();
+        }
+        let window = read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: Some("maker-main"),
+                before: None,
+                after: None,
+                limit: Some(10),
+                order: Some("asc"),
+            },
+        )
+        .unwrap();
+        assert_eq!(window.events.len(), 2);
+        assert!(window
+            .events
+            .iter()
+            .all(|event| event.participant_id == "maker-main"));
+        assert!(!window.has_more);
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_authorization_admin_events_participant_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
     }
 
     #[test]

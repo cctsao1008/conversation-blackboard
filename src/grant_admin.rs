@@ -125,6 +125,14 @@ pub enum GrantCommand {
         db: PathBuf,
         #[arg(long)]
         participant_id: Option<String>,
+        #[arg(long)]
+        before: Option<i64>,
+        #[arg(long)]
+        after: Option<i64>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        order: Option<String>,
     },
     /// Explain a read-only authorization decision using the authoritative policy evaluator.
     Explain {
@@ -255,6 +263,10 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
         GrantCommand::History {
             db: path,
             participant_id,
+            before,
+            after,
+            limit,
+            order,
         } => {
             require_database(&path)?;
             let conn = db::connect_read_only(&path)?;
@@ -265,11 +277,22 @@ pub fn dispatch(command: GrantCommand) -> DynResult {
                 )
                 .into());
             }
-            let events =
-                authorization_admin::read_administration_events(&conn, participant_id.as_deref())?;
+            let window = authorization_admin::read_administration_event_window(
+                &conn,
+                authorization_admin::AuthorizationAdministrationHistoryWindowRequest {
+                    participant_id: participant_id.as_deref(),
+                    before,
+                    after,
+                    limit,
+                    order: order.as_deref(),
+                },
+            )
+            .map_err(|_| "invalid administration history window")?;
             println!("AUTHORIZATION ADMINISTRATION HISTORY");
+            println!("order    : {}", window.order);
+            println!("has_more : {}", window.has_more);
             println!("id\tstore\tgrant_id\toperation\tactor\tparticipant_id\tprincipal\tcapability\tresource\tintent_id\texpires_at\tone_shot\tbefore\tafter\tcreated_at");
-            for event in events {
+            for event in window.events {
                 let actor = match (
                     event.actor_provider.as_deref(),
                     event.actor_subject.as_deref(),
@@ -744,6 +767,10 @@ mod tests {
         dispatch(GrantCommand::History {
             db: dir.path().join("board.db"),
             participant_id: Some("maker-main".to_owned()),
+            before: None,
+            after: None,
+            limit: None,
+            order: None,
         })
         .unwrap();
     }
@@ -787,6 +814,10 @@ mod tests {
             dispatch(GrantCommand::History {
                 db: path.clone(),
                 participant_id: None,
+                before: None,
+                after: None,
+                limit: None,
+                order: None,
             })
             .expect_err("history must refuse legacy schema")
             .to_string(),
