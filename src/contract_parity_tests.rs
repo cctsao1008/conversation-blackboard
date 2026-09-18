@@ -578,3 +578,88 @@ fn authorization_decision_adapters_reuse_canonical_evaluator_without_policy_sql(
         }
     }
 }
+
+#[test]
+fn authorization_administration_history_contracts_match_canonical_rust_shape() {
+    let api = yaml_json();
+    let operation = &api["paths"]["/api/authorization-administration/history"]["get"];
+    assert!(operation.is_object());
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/AuthorizationAdministrationHistoryEnvelope"
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationAdministrationEvent/properties"
+        ),
+        names(
+            &contract_schema::authorization_administration_event_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationAdministrationHistory/properties"
+        ),
+        names(
+            &contract_schema::authorization_administration_history_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            &api,
+            "/components/schemas/AuthorizationAdministrationHistoryEnvelope/properties"
+        ),
+        names(
+            &contract_schema::authorization_administration_history_envelope_schema(),
+            "/properties"
+        )
+    );
+
+    let utcp = utcp_json();
+    let history = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "authorization_administration_history")
+        .expect("UTCP authorization administration history projection must exist");
+    assert_eq!(
+        names(history, "/outputs/properties/history/properties"),
+        names(
+            &contract_schema::authorization_administration_history_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        names(
+            history,
+            "/outputs/properties/history/properties/events/items/properties"
+        ),
+        names(
+            &contract_schema::authorization_administration_event_schema(),
+            "/properties"
+        )
+    );
+    assert_eq!(
+        history["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/authorization-administration/history"
+    );
+    assert_eq!(history["tool_call_template"]["http_method"], "GET");
+
+    for (name, source) in [
+        ("http", include_str!("access_api.rs")),
+        ("mcp", include_str!("mcp.rs")),
+    ] {
+        assert!(
+            source.contains("read_administration_events"),
+            "{name} adapter must reuse the canonical administration history reader"
+        );
+        assert!(
+            !source.contains("FROM authorization_admin_events"),
+            "{name} adapter must not enumerate authorization administration events directly"
+        );
+    }
+}

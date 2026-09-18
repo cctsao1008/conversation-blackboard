@@ -1191,6 +1191,9 @@ pub fn effective_grants(
             READ_AUTHORIZATION_POLICY => Some(AUTHORIZATION_POLICY_RESOURCE),
             READ_AUTHORIZATION_DECISION => Some(AUTHORIZATION_DECISION_RESOURCE),
             MANAGE_AUTHORIZATION_POLICY => Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+            READ_AUTHORIZATION_ADMINISTRATION_HISTORY => {
+                Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE)
+            }
             _ => None,
         };
         if authorize(
@@ -1553,6 +1556,124 @@ mod tests {
         ] {
             assert!(!authorize(&conn, &oidc, "maker-main", capability, resource).unwrap());
         }
+    }
+
+    #[test]
+    fn authorization_administration_history_authority_is_narrow_and_bidirectionally_isolated() {
+        let (_dir, conn) = setup();
+        let human = Principal {
+            provider: "human-web".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let hmac = Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: "maker-main".to_owned(),
+        };
+        let github = Principal {
+            provider: "github".to_owned(),
+            subject: "543608".to_owned(),
+        };
+        let administrator = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "policy-admin".to_owned(),
+        };
+        let history_reader = Principal {
+            provider: "oidc:https://issuer.example".to_owned(),
+            subject: "history-reader".to_owned(),
+        };
+
+        assert!(!authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+        )
+        .unwrap());
+        identity::set_web_participant_role(&conn, "maker-main", "admin").unwrap();
+        assert!(authorize(
+            &conn,
+            &human,
+            "maker-main",
+            READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+        )
+        .unwrap());
+        for principal in [&hmac, &github, &administrator, &history_reader] {
+            assert!(!authorize(
+                &conn,
+                principal,
+                "maker-main",
+                READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+                Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+            )
+            .unwrap());
+        }
+
+        let human_grants = effective_grants(&conn, &human, "maker-main").unwrap();
+        assert!(human_grants.iter().any(|grant| {
+            grant.capability == READ_AUTHORIZATION_ADMINISTRATION_HISTORY
+                && grant.resource.as_deref() == Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE)
+                && grant.origin == "implicit"
+        }));
+
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+            params![
+                &administrator.provider,
+                &administrator.subject,
+                MANAGE_AUTHORIZATION_POLICY,
+                AUTHORIZATION_POLICY_ADMIN_RESOURCE,
+            ],
+        )
+        .unwrap();
+        assert!(authorize(
+            &conn,
+            &administrator,
+            "maker-main",
+            MANAGE_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        )
+        .unwrap());
+        assert!(!authorize(
+            &conn,
+            &administrator,
+            "maker-main",
+            READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+        )
+        .unwrap());
+
+        conn.execute(
+            "INSERT INTO principal_grants
+                (principal_provider, principal_subject, participant_id, capability, resource)
+             VALUES (?1, ?2, 'maker-main', ?3, ?4)",
+            params![
+                &history_reader.provider,
+                &history_reader.subject,
+                READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+                AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE,
+            ],
+        )
+        .unwrap();
+        assert!(authorize(
+            &conn,
+            &history_reader,
+            "maker-main",
+            READ_AUTHORIZATION_ADMINISTRATION_HISTORY,
+            Some(AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
+        )
+        .unwrap());
+        assert!(!authorize(
+            &conn,
+            &history_reader,
+            "maker-main",
+            MANAGE_AUTHORIZATION_POLICY,
+            Some(AUTHORIZATION_POLICY_ADMIN_RESOURCE),
+        )
+        .unwrap());
     }
 
     #[test]

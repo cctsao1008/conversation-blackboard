@@ -1059,6 +1059,194 @@
           "location": "header"
         }
       }
+    },
+    {
+      "name": "authorization_administration_history",
+      "description": "Read immutable privileged authorization-administration provenance through the canonical read-only history surface. The optional participant_id is only a returned-history filter; history-read authority remains independent from policy mutation authority.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "participant_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Optional returned-history filter; not an authorization scope."
+          }
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "events"
+            ],
+            "properties": {
+              "events": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "grant_store",
+                    "grant_id",
+                    "operation",
+                    "actor_surface",
+                    "actor_provider",
+                    "actor_subject",
+                    "actor_participant_id",
+                    "target_principal_provider",
+                    "target_principal_subject",
+                    "participant_id",
+                    "capability",
+                    "resource",
+                    "intent_id",
+                    "expires_at",
+                    "one_shot",
+                    "before_status",
+                    "after_status",
+                    "created_at"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "grant_store": {
+                      "type": "string",
+                      "enum": [
+                        "durable",
+                        "delegated"
+                      ]
+                    },
+                    "grant_id": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "operation": {
+                      "type": "string",
+                      "enum": [
+                        "create",
+                        "reactivate",
+                        "deactivate"
+                      ]
+                    },
+                    "actor_surface": {
+                      "type": "string"
+                    },
+                    "actor_provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "actor_subject": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "actor_participant_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 64
+                    },
+                    "target_principal_provider": {
+                      "type": "string"
+                    },
+                    "target_principal_subject": {
+                      "type": "string"
+                    },
+                    "participant_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "capability": {
+                      "type": "string"
+                    },
+                    "resource": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "intent_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "maxLength": 256
+                    },
+                    "expires_at": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "one_shot": {
+                      "type": "boolean"
+                    },
+                    "before_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "active",
+                        "inactive",
+                        null
+                      ]
+                    },
+                    "after_status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "inactive"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "tags": [
+        "blackboard",
+        "authorization",
+        "administration",
+        "history",
+        "privileged",
+        "read"
+      ],
+      "tool_call_template": {
+        "name": "blackboard_authorization_administration_history_http",
+        "call_template_type": "http",
+        "url": "${BLACKBOARD_URL}/api/authorization-administration/history",
+        "http_method": "GET",
+        "content_type": "application/json",
+        "body_field": null,
+        "auth": {
+          "auth_type": "api_key",
+          "api_key": "Bearer ${BLACKBOARD_TOKEN}",
+          "var_name": "Authorization",
+          "location": "header"
+        }
+      }
     }
   ]
 }

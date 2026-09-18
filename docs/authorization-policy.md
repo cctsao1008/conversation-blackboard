@@ -111,7 +111,7 @@ Representative reason classes include:
 
 ## Policy observation boundaries
 
-Authorization policy now exposes four deliberately separate concerns:
+Authorization policy now exposes five deliberately separate concerns:
 
 ```text
 authorization policy snapshot
@@ -125,6 +125,9 @@ authorization decision / explain
 
 authorization administration
     = creation, reactivation, deactivation, or other mutation of authority
+
+authorization administration history
+    = immutable provenance of effective committed policy mutations
 ```
 
 The policy snapshot is a privileged observational surface, not a grant-administration surface. The canonical reader is `authorization::read_authorization_policy_snapshot(conn)`. REST `GET /api/authorization-policy`, MCP `blackboard_authorization_policy`, OpenAPI, and UTCP project that same domain result instead of enumerating grant tables in adapters.
@@ -172,7 +175,18 @@ Administration provenance contains only non-secret actor and policy metadata: ad
 
 Schema ownership is explicit. `db init` owns administration-schema creation/migration. Mutation services require a current writable schema and fail with migration-required semantics rather than repairing storage themselves. Read-side commands likewise remain observational: `grant list`, `grant durable list`, `grant explain`, `grant verify`, and `grant history` open/read current state without calling grant-schema migration.
 
-`authorization_admin::read_administration_events(conn, ...)` is the canonical local provenance reader. `conversation-blackboard grant history` is its operator projection. Phase-1 REST exposes durable/delegated create and deactivation as thin authenticated projections over authorized `authorization_admin` entry points; durable create also preserves exact-scope existing/reactivation semantics. The REST adapter contains no grant lifecycle SQL and never performs schema repair. MCP grant-administration tools remain a non-goal. Source regressions prevent REST/MCP adapters from calling raw lifecycle entry points or mutating grant tables directly.
+`authorization_admin::read_administration_events(conn, ...)` is the canonical provenance reader. `conversation-blackboard grant history`, REST `GET /api/authorization-administration/history`, and MCP `blackboard_authorization_administration_history` are read-only projections over that same reader. REST/OpenAPI and UTCP expose an optional participant filter; the filter changes only returned rows and is not an authorization scope. All remote history reads use read-only database access, refuse stale administration schema without migration or repair, and contain no adapter-local event-table enumeration SQL.
+
+History visibility has a dedicated capability and global resource:
+
+```text
+capability = read_authorization_administration_history
+resource   = authorization-administration-history
+```
+
+Only Human Web admin self receives implicit history visibility. Ordinary Human Web self, participant-HMAC self, GitHub owner compatibility authority, and OIDC/Bearer identity do not. External principals require an explicit matching Blackboard grant. `manage_authorization_policy` does not imply history visibility, and history visibility does not imply mutation authority. Modern HTTP MCP may authenticate a history reader with OIDC Bearer at the transport boundary; legacy HTTP and stdio retain participant-HMAC body proof. No MCP grant-mutation tool is introduced.
+
+Phase-1 REST mutation still exposes durable/delegated create and deactivation as thin authenticated projections over authorized `authorization_admin` entry points; durable create also preserves exact-scope existing/reactivation semantics. The REST adapter contains no grant lifecycle SQL and never performs schema repair. MCP grant administration remains a non-goal. Source regressions prevent REST/MCP adapters from calling raw lifecycle entry points or mutating grant tables directly.
 
 ## Verification boundary
 

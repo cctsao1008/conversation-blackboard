@@ -434,6 +434,50 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/authorization-administration/history:
+    get:
+      operationId: blackboardAuthorizationAdministrationHistory
+      summary: Read immutable authorization-administration provenance.
+      description: |
+        Privileged read-only projection of the canonical authorization administration history.
+        The dedicated read_authorization_administration_history capability is independent from
+        manage_authorization_policy. The optional participant_id query filters returned events;
+        it does not narrow or widen reader authority. The endpoint uses read-only storage and
+        never migrates, repairs, consumes, creates, reactivates, or deactivates authorization state.
+      security:
+        - bearerAuth: []
+        - webSessionAuth: []
+      parameters:
+        - name: participant_id
+          in: query
+          required: false
+          description: Optional returned-history filter; not an authorization scope.
+          schema:
+            $ref: '#/components/schemas/ParticipantId'
+      responses:
+        '200':
+          description: Canonical committed authorization-administration history in event-id order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationAdministrationHistoryEnvelope'
+        '400':
+          description: Invalid participant history filter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Authorization administration schema is not current or storage is unavailable. The read does not repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/authorization-grants/durable:
     post:
       operationId: blackboardCreateDurableAuthorizationGrant
@@ -1091,6 +1135,82 @@ components:
       properties:
         sweep:
           $ref: '#/components/schemas/ExecutionAuditSweepReport'
+
+    AuthorizationAdministrationEvent:
+      type: object
+      additionalProperties: false
+      required: [id, grant_store, grant_id, operation, actor_surface, actor_provider, actor_subject, actor_participant_id, target_principal_provider, target_principal_subject, participant_id, capability, resource, intent_id, expires_at, one_shot, before_status, after_status, created_at]
+      description: Immutable non-secret authorization-administration provenance for one effective policy mutation.
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        grant_store:
+          type: string
+          enum: [durable, delegated]
+        grant_id:
+          type: integer
+          minimum: 1
+        operation:
+          type: string
+          enum: [create, reactivate, deactivate]
+        actor_surface:
+          type: string
+        actor_provider:
+          type: [string, 'null']
+        actor_subject:
+          type: [string, 'null']
+        actor_participant_id:
+          anyOf:
+            - $ref: '#/components/schemas/ParticipantId'
+            - type: 'null'
+        target_principal_provider:
+          type: string
+        target_principal_subject:
+          type: string
+        participant_id:
+          $ref: '#/components/schemas/ParticipantId'
+        capability:
+          type: string
+        resource:
+          type: [string, 'null']
+        intent_id:
+          anyOf:
+            - $ref: '#/components/schemas/IntentId'
+            - type: 'null'
+        expires_at:
+          type: [integer, 'null']
+        one_shot:
+          type: boolean
+        before_status:
+          anyOf:
+            - type: string
+              enum: [active, inactive]
+            - type: 'null'
+        after_status:
+          type: string
+          enum: [active, inactive]
+        created_at:
+          type: integer
+
+    AuthorizationAdministrationHistory:
+      type: object
+      additionalProperties: false
+      required: [events]
+      description: Canonical read-only committed authorization-administration history.
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthorizationAdministrationEvent'
+
+    AuthorizationAdministrationHistoryEnvelope:
+      type: object
+      additionalProperties: false
+      required: [history]
+      properties:
+        history:
+          $ref: '#/components/schemas/AuthorizationAdministrationHistory'
 
     DurableAuthorizationGrantCreateRequest:
       type: object
