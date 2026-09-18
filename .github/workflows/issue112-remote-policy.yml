@@ -7,6 +7,7 @@ on:
       - '.github/scripts/issue112_remote_policy_patch.py'
       - '.github/scripts/issue112_remote_policy_tests.py'
       - '.github/scripts/issue112_snapshot_test_only.py'
+      - '.github/scripts/issue112_retire_snapshot_contract.py'
       - '.github/workflows/issue112-remote-policy.yml'
 
 permissions:
@@ -31,6 +32,8 @@ jobs:
           if [ -f .github/scripts/issue112_remote_policy_tests.py ]; then
             python .github/scripts/issue112_remote_policy_tests.py
           fi
+      - name: Retire legacy policy snapshot wire schema
+        run: python .github/scripts/issue112_retire_snapshot_contract.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -55,6 +58,7 @@ jobs:
         run: |
           git rm .github/scripts/issue112_remote_policy_patch.py
           git rm .github/scripts/issue112_snapshot_test_only.py
+          git rm .github/scripts/issue112_retire_snapshot_contract.py
           if [ -f .github/scripts/issue112_remote_policy_tests.py ]; then
             git rm .github/scripts/issue112_remote_policy_tests.py
           fi
