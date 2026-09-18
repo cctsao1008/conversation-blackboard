@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# This helper intentionally remains a narrow source-guard migration. Re-run from
+# current main after the prior all-green workflow lost its final push race.
 path = Path('src/contract_parity_tests.rs')
 text = path.read_text()
 old = '            source.contains("read_administration_events"),\n            "{name} adapter must reuse the canonical administration history reader"\n'
