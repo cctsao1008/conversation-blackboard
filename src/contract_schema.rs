@@ -422,23 +422,26 @@ pub fn delegated_grant_snapshot_schema() -> Value {
     })
 }
 
-pub fn authorization_policy_snapshot_schema() -> Value {
+pub fn authorization_policy_window_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "store": {"type": "string", "enum": ["durable", "delegated"]},
             "durable_grants": {"type": "array", "items": durable_grant_snapshot_schema()},
-            "delegated_grants": {"type": "array", "items": delegated_grant_snapshot_schema()}
+            "delegated_grants": {"type": "array", "items": delegated_grant_snapshot_schema()},
+            "order": {"type": "string", "enum": ["desc", "asc"]},
+            "has_more": {"type": "boolean"}
         },
-        "required": ["durable_grants", "delegated_grants"],
+        "required": ["store", "durable_grants", "delegated_grants", "order", "has_more"],
         "additionalProperties": false,
-        "description": "Canonical privileged read-only inventory of explicit Blackboard authorization objects."
+        "description": "Canonical bounded privileged read-only window over one explicit Blackboard authorization grant store."
     })
 }
 
 pub fn authorization_policy_envelope_schema() -> Value {
     json!({
         "type": "object",
-        "properties": {"policy": authorization_policy_snapshot_schema()},
+        "properties": {"policy": authorization_policy_window_schema()},
         "required": ["policy"],
         "additionalProperties": false
     })

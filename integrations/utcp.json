@@ -766,11 +766,53 @@
     },
     {
       "name": "authorization_policy",
-      "description": "Read the privileged canonical inventory of explicit durable and delegated Blackboard authorization objects. Blackboard authorization remains authoritative and the read never creates, repairs, normalizes, or consumes authority.",
+      "description": "Read one bounded selected-store window of explicit Blackboard authorization objects. Blackboard authorization remains authoritative; pagination changes only observation selection.",
       "inputs": {
         "type": "object",
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "store": {
+            "type": "string",
+            "enum": [
+              "durable",
+              "delegated"
+            ],
+            "description": "Select the independent durable or delegated grant ID domain."
+          },
+          "before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Exclusive grant-id upper cursor used only with order=desc."
+          },
+          "after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Exclusive grant-id lower cursor used only with order=asc."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "default": "desc"
+          }
+        },
+        "required": [
+          "store"
+        ]
       },
       "outputs": {
         "type": "object",
@@ -783,8 +825,11 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
+              "store",
               "durable_grants",
-              "delegated_grants"
+              "delegated_grants",
+              "order",
+              "has_more"
             ],
             "properties": {
               "durable_grants": {
@@ -932,6 +977,23 @@
                     }
                   }
                 }
+              },
+              "store": {
+                "type": "string",
+                "enum": [
+                  "durable",
+                  "delegated"
+                ]
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "desc",
+                  "asc"
+                ]
+              },
+              "has_more": {
+                "type": "boolean"
               }
             }
           }

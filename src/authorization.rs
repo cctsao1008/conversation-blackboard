@@ -206,6 +206,7 @@ pub struct DelegatedGrantSnapshot {
     pub status: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AuthorizationPolicySnapshot {
     pub durable_grants: Vec<DurableGrantSnapshot>,
@@ -380,6 +381,7 @@ pub fn authorization_policy_snapshot_schema_current(conn: &Connection) -> rusqli
     )?)
 }
 
+#[cfg(test)]
 pub fn read_authorization_policy_snapshot(
     conn: &Connection,
 ) -> rusqlite::Result<AuthorizationPolicySnapshot> {

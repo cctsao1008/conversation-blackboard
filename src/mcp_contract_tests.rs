@@ -783,7 +783,7 @@ async fn mcp_policy_integrity_tool_uses_canonical_read_only_schema() {
 }
 
 #[tokio::test]
-async fn mcp_policy_snapshot_tool_uses_canonical_read_only_schema() {
+async fn mcp_policy_window_tool_uses_canonical_read_only_schema() {
     let fixture = fixture();
     let response = request(
         &fixture.router,
@@ -802,21 +802,30 @@ async fn mcp_policy_snapshot_tool_uses_canonical_read_only_schema() {
         .unwrap()
         .iter()
         .find(|tool| tool["name"] == "blackboard_authorization_policy")
-        .expect("policy snapshot tool must be advertised");
+        .expect("policy window tool must be advertised");
     assert_eq!(
         tool["outputSchema"],
         contract_schema::authorization_policy_envelope_schema()
     );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    let required = tool["inputSchema"]["required"].as_array().unwrap();
+    assert!(required.iter().any(|field| field == "participant_id"));
+    assert!(required.iter().any(|field| field == "store"));
+    assert!(required.iter().any(|field| field == "auth"));
+    for field in ["before", "after", "limit", "order"] {
+        assert!(tool["inputSchema"]["properties"].get(field).is_some());
+    }
+    assert_eq!(
+        tool["outputSchema"]["properties"]["policy"]["properties"]["store"]["enum"][0],
+        "durable"
+    );
+    assert!(tool["outputSchema"]["properties"]["policy"]["properties"]
+        .get("has_more")
+        .is_some());
     let delegated_properties = &tool["outputSchema"]["properties"]["policy"]["properties"]
         ["delegated_grants"]["items"]["properties"];
     assert!(delegated_properties.get("created_at").is_none());
     assert!(delegated_properties.get("updated_at").is_none());
-    assert!(tool["inputSchema"]["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|field| field == "auth"));
 }
 
 #[tokio::test]
@@ -874,7 +883,7 @@ fn sweep_arguments(secret: &str, participant_id: &str) -> Value {
     })
 }
 
-fn policy_snapshot_arguments(secret: &str, participant_id: &str) -> Value {
+fn policy_window_arguments(secret: &str, participant_id: &str, store: &str) -> Value {
     let proof = participant_auth::compute_capability_proof(
         secret,
         participant_id,
@@ -884,6 +893,7 @@ fn policy_snapshot_arguments(secret: &str, participant_id: &str) -> Value {
     .unwrap();
     json!({
         "participant_id": participant_id,
+        "store": store,
         "auth": {"scheme": participant_auth::AUTH_SCHEME, "proof": proof}
     })
 }
@@ -1309,14 +1319,14 @@ async fn mcp_audit_sweep_is_privileged_and_projects_canonical_report() {
 }
 
 #[tokio::test]
-async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migrates_schema() {
+async fn mcp_policy_window_requires_its_own_explicit_hmac_grant_and_never_migrates_schema() {
     let fixture = fixture();
 
     let denied = call_tool(
         &fixture.router,
         123,
         "blackboard_authorization_policy",
-        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+        policy_window_arguments(&fixture.single_secret, "single-main", "durable"),
     )
     .await;
     assert_eq!(tool_error_code(&denied), "forbidden");
@@ -1337,7 +1347,7 @@ async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migr
         &fixture.router,
         124,
         "blackboard_authorization_policy",
-        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+        policy_window_arguments(&fixture.single_secret, "single-main", "durable"),
     )
     .await;
     assert_eq!(tool_error_code(&wrong_capability), "forbidden");
@@ -1356,35 +1366,104 @@ async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migr
             (principal_provider, principal_subject, participant_id, capability, resource,
              intent_id, expires_at, one_shot, status)
          VALUES ('oidc:https://issuer.example', 'expired-agent', 'single-main', 'post_message',
-                 'alpha', 'snapshot-expired-001', unixepoch() - 60, 0, 'active')",
+                 'alpha', 'window-expired-001', unixepoch() - 60, 0, 'active')",
         [],
     )
     .unwrap();
     drop(conn);
 
-    let allowed = call_tool(
+    let durable = call_tool(
         &fixture.router,
         125,
         "blackboard_authorization_policy",
-        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+        policy_window_arguments(&fixture.single_secret, "single-main", "durable"),
     )
     .await;
-    assert_eq!(allowed["result"]["isError"], false);
-    let durable = allowed["result"]["structuredContent"]["policy"]["durable_grants"]
-        .as_array()
-        .unwrap();
-    assert!(durable.iter().any(|entry| {
-        entry["capability"] == authorization::READ_AUTHORIZATION_POLICY
-            && entry["resource"] == authorization::AUTHORIZATION_POLICY_RESOURCE
-    }));
-    let delegated = allowed["result"]["structuredContent"]["policy"]["delegated_grants"]
-        .as_array()
-        .unwrap();
-    assert!(delegated.iter().any(|entry| {
-        entry["intent_id"] == "snapshot-expired-001" && entry["expires_at"].is_number()
-    }));
+    assert_eq!(durable["result"]["isError"], false);
+    assert_eq!(
+        durable["result"]["structuredContent"]["policy"]["store"],
+        "durable"
+    );
+    assert!(
+        durable["result"]["structuredContent"]["policy"]["delegated_grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        durable["result"]["structuredContent"]["policy"]["durable_grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["capability"] == authorization::READ_AUTHORIZATION_POLICY
+                    && entry["resource"] == authorization::AUTHORIZATION_POLICY_RESOURCE
+            })
+    );
 
-    // Snapshot authority alone does not imply policy-integrity authority.
+    let delegated = call_tool(
+        &fixture.router,
+        1251,
+        "blackboard_authorization_policy",
+        policy_window_arguments(&fixture.single_secret, "single-main", "delegated"),
+    )
+    .await;
+    assert_eq!(delegated["result"]["isError"], false);
+    assert_eq!(
+        delegated["result"]["structuredContent"]["policy"]["store"],
+        "delegated"
+    );
+    assert!(
+        delegated["result"]["structuredContent"]["policy"]["durable_grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        delegated["result"]["structuredContent"]["policy"]["delegated_grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["intent_id"] == "window-expired-001" && entry["expires_at"].is_number()
+            })
+    );
+
+    let mut first_args = policy_window_arguments(&fixture.single_secret, "single-main", "durable");
+    first_args["limit"] = json!(1);
+    let first = call_tool(
+        &fixture.router,
+        1252,
+        "blackboard_authorization_policy",
+        first_args,
+    )
+    .await;
+    assert_eq!(first["result"]["isError"], false);
+    assert_eq!(
+        first["result"]["structuredContent"]["policy"]["has_more"],
+        true
+    );
+    let first_id = first["result"]["structuredContent"]["policy"]["durable_grants"][0]["id"]
+        .as_i64()
+        .unwrap();
+    let mut second_args = policy_window_arguments(&fixture.single_secret, "single-main", "durable");
+    second_args["limit"] = json!(1);
+    second_args["before"] = json!(first_id);
+    let second = call_tool(
+        &fixture.router,
+        1253,
+        "blackboard_authorization_policy",
+        second_args,
+    )
+    .await;
+    assert_eq!(second["result"]["isError"], false);
+    let second_id = second["result"]["structuredContent"]["policy"]["durable_grants"][0]["id"]
+        .as_i64()
+        .unwrap();
+    assert!(second_id < first_id);
+    assert_ne!(second_id, first_id);
+
+    // Policy-window authority alone does not imply policy-integrity authority.
     let conn = db::connect(&fixture.db_path).unwrap();
     conn.execute(
         "UPDATE principal_grants SET status = 'inactive'
@@ -1413,7 +1492,7 @@ async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migr
         &fixture.router,
         127,
         "blackboard_authorization_policy",
-        policy_snapshot_arguments(&fixture.single_secret, "single-main"),
+        policy_window_arguments(&fixture.single_secret, "single-main", "durable"),
     )
     .await;
     assert_eq!(tool_error_code(&legacy), "authorization_schema_not_current");
@@ -1427,12 +1506,12 @@ async fn mcp_policy_snapshot_requires_its_own_explicit_hmac_grant_and_never_migr
         .unwrap();
     assert_eq!(
         table_count, 0,
-        "MCP snapshot read recreated authorization schema"
+        "MCP policy window read recreated authorization schema"
     );
 }
 
 #[tokio::test]
-async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
+async fn bearer_policy_window_requires_explicit_blackboard_grant() {
     let fixture = fixture();
     let (verifier, token) = bearer_verifier_and_token("policy-reader");
     let router = mcp::app_with_oidc(
@@ -1452,7 +1531,7 @@ async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
             "method": "tools/call",
             "params": {
                 "name": "blackboard_authorization_policy",
-                "arguments": {"participant_id": "single-main"}
+                "arguments": {"participant_id": "single-main", "store": "durable"}
             }
         }),
         &authorization_header,
@@ -1482,7 +1561,7 @@ async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
             "method": "tools/call",
             "params": {
                 "name": "blackboard_authorization_policy",
-                "arguments": {"participant_id": "single-main"}
+                "arguments": {"participant_id": "single-main", "store": "durable"}
             }
         }),
         &authorization_header,
@@ -1491,12 +1570,22 @@ async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
     let (status, allowed_value) = response_json(allowed).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(allowed_value["result"]["isError"], false);
+    assert_eq!(
+        allowed_value["result"]["structuredContent"]["policy"]["store"],
+        "durable"
+    );
     assert!(
         allowed_value["result"]["structuredContent"]["policy"]["durable_grants"]
             .as_array()
             .unwrap()
             .iter()
             .any(|entry| entry["principal_subject"] == "policy-reader")
+    );
+    assert!(
+        allowed_value["result"]["structuredContent"]["policy"]["delegated_grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 
     // A verified Bearer must not make a stale authorization schema writable.
@@ -1511,7 +1600,7 @@ async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
             "method": "tools/call",
             "params": {
                 "name": "blackboard_authorization_policy",
-                "arguments": {"participant_id": "single-main"}
+                "arguments": {"participant_id": "single-main", "store": "durable"}
             }
         }),
         &authorization_header,
@@ -1533,7 +1622,7 @@ async fn bearer_policy_snapshot_requires_explicit_blackboard_grant() {
         .unwrap();
     assert_eq!(
         table_count, 0,
-        "Bearer snapshot read recreated authorization schema"
+        "Bearer policy window read recreated authorization schema"
     );
 }
 

@@ -888,15 +888,20 @@ fn tools_list_result() -> Value {
             },
             {
                 "name": "blackboard_authorization_policy",
-                "title": "Read Blackboard Authorization Policy",
-                "description": "Read the privileged canonical inventory of explicit durable and delegated authorization objects without modifying, normalizing, repairing, or consuming authority.",
+                "title": "Read Blackboard Authorization Policy Window",
+                "description": "Read one bounded selected-store window of explicit Blackboard authorization objects without modifying, normalizing, repairing, or consuming authority.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "participant_id": contract_schema::participant_id_schema(),
+                        "store": {"type": "string", "enum": ["durable", "delegated"]},
+                        "before": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+                        "after": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": authorization::MAX_AUTHORIZATION_POLICY_WINDOW_SIZE, "default": authorization::DEFAULT_AUTHORIZATION_POLICY_WINDOW_SIZE},
+                        "order": {"type": "string", "enum": ["desc", "asc"], "default": "desc"},
                         "auth": auth_schema()
                     },
-                    "required": ["participant_id", "auth"],
+                    "required": ["participant_id", "store", "auth"],
                     "additionalProperties": false
                 },
                 "outputSchema": contract_schema::authorization_policy_envelope_schema(),
@@ -1743,7 +1748,18 @@ async fn blackboard_authorization_policy(
     arguments: &Map<String, Value>,
     transport_principal: Option<&execution::Principal>,
 ) -> Value {
-    if !only_keys(arguments, &["participant_id", "auth"]) {
+    if !only_keys(
+        arguments,
+        &[
+            "participant_id",
+            "store",
+            "before",
+            "after",
+            "limit",
+            "order",
+            "auth",
+        ],
+    ) {
         return tool_error("invalid_arguments");
     }
     let participant_id = match arguments.get("participant_id").and_then(Value::as_str) {
@@ -1753,10 +1769,71 @@ async fn blackboard_authorization_policy(
         },
         None => return tool_error("invalid_participant_id"),
     };
+    let store = match arguments.get("store").and_then(Value::as_str) {
+        Some(value) if authorization::AuthorizationPolicyStore::parse(value).is_some() => {
+            value.to_owned()
+        }
+        _ => return tool_error("invalid_policy_window"),
+    };
+    let before = match arguments.get("before") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(value)) => value.as_i64().filter(|value| *value > 0),
+        Some(_) => return tool_error("invalid_policy_window"),
+    };
+    if arguments.contains_key("before")
+        && !arguments
+            .get("before")
+            .is_some_and(|value| value.is_null() || before.is_some())
+    {
+        return tool_error("invalid_policy_window");
+    }
+    let after = match arguments.get("after") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(value)) => value.as_i64().filter(|value| *value > 0),
+        Some(_) => return tool_error("invalid_policy_window"),
+    };
+    if arguments.contains_key("after")
+        && !arguments
+            .get("after")
+            .is_some_and(|value| value.is_null() || after.is_some())
+    {
+        return tool_error("invalid_policy_window");
+    }
+    let limit = match arguments.get("limit") {
+        None => None,
+        Some(Value::Number(value)) => {
+            match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value)
+                    if (1..=authorization::MAX_AUTHORIZATION_POLICY_WINDOW_SIZE)
+                        .contains(&value) =>
+                {
+                    Some(value)
+                }
+                _ => return tool_error("invalid_policy_window"),
+            }
+        }
+        Some(_) => return tool_error("invalid_policy_window"),
+    };
+    let order = match arguments.get("order") {
+        None => None,
+        Some(Value::String(value))
+            if authorization::AuthorizationPolicyWindowOrder::parse(Some(value)).is_some() =>
+        {
+            Some(value.clone())
+        }
+        Some(_) => return tool_error("invalid_policy_window"),
+    };
+    let parsed_order = authorization::AuthorizationPolicyWindowOrder::parse(order.as_deref())
+        .expect("validated policy window order");
+    if before.is_some() && after.is_some()
+        || (parsed_order == authorization::AuthorizationPolicyWindowOrder::Desc && after.is_some())
+        || (parsed_order == authorization::AuthorizationPolicyWindowOrder::Asc && before.is_some())
+    {
+        return tool_error("invalid_policy_window");
+    }
 
-    // Authenticate first without evaluating policy. This keeps stale-schema
-    // requests observationally read-only even though the shared authorization
-    // evaluator has a compatibility ensure path.
+    // Authenticate first without evaluating policy. A verified Bearer principal
+    // has precedence; otherwise preserve participant-HMAC capability proof.
     let principal = if let Some(principal) = transport_principal {
         principal.clone()
     } else {
@@ -1779,25 +1856,36 @@ async fn blackboard_authorization_policy(
 
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
-    let (schema_current, allowed, snapshot) = match with_db(state, move |conn| {
+    let window_order = order.clone();
+    let (schema_current, allowed, window) = match with_db_read_only(state, move |conn| {
         let schema_current = authorization::authorization_policy_snapshot_schema_current(conn)?;
         if !schema_current {
             return Ok((false, false, None));
         }
-        let allowed = authorization::authorize(
+        let decision = authorization::explain_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_AUTHORIZATION_POLICY,
             Some(authorization::AUTHORIZATION_POLICY_RESOURCE),
+            None,
         )?;
-        if !allowed {
+        if !decision.allowed {
             return Ok((true, false, None));
         }
         Ok((
             true,
             true,
-            Some(authorization::read_authorization_policy_snapshot(conn)?),
+            Some(authorization::read_authorization_policy_window(
+                conn,
+                authorization::AuthorizationPolicyWindowRequest {
+                    store: &store,
+                    before,
+                    after,
+                    limit,
+                    order: window_order.as_deref(),
+                },
+            )?),
         ))
     })
     .await
@@ -1811,8 +1899,9 @@ async fn blackboard_authorization_policy(
     if !allowed {
         return tool_error("forbidden");
     }
-    let snapshot = snapshot.expect("authorized current-schema policy read must produce snapshot");
-    tool_success(json!({"policy": snapshot}))
+    tool_success(json!({
+        "policy": window.expect("authorized current-schema policy read must produce a window")
+    }))
 }
 
 async fn blackboard_authorization_policy_integrity(

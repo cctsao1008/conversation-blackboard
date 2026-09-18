@@ -768,18 +768,61 @@ paths:
   /api/authorization-policy:
     get:
       operationId: blackboardAuthorizationPolicy
-      summary: Read the explicit Blackboard authorization policy inventory.
-      description: Privileged projection of the canonical read-only authorization policy snapshot. The response includes durable and delegated grant lifecycle state without creating, repairing, normalizing, reactivating, deactivating, or consuming authority. Legacy authorization schemas fail without migration.
+      summary: Read one bounded explicit Blackboard authorization policy window.
+      description: Privileged projection of the canonical selected-store authorization policy window. Exactly one of the durable or delegated grant arrays is populated. Pagination changes observation selection only; read_authorization_policy authority remains global and unchanged. The read never creates, repairs, normalizes, reactivates, deactivates, or consumes authority, and legacy authorization schemas fail without migration.
       security:
         - bearerAuth: []
         - webSessionAuth: []
+      parameters:
+        - name: store
+          in: query
+          required: true
+          description: Select the independent durable or delegated grant ID domain to traverse.
+          schema:
+            type: string
+            enum: [durable, delegated]
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [desc, asc]
+            default: desc
+        - name: before
+          in: query
+          required: false
+          description: Exclusive grant-id upper cursor used only with order=desc within the selected store.
+          schema:
+            type: integer
+            minimum: 1
+        - name: after
+          in: query
+          required: false
+          description: Exclusive grant-id lower cursor used only with order=asc within the selected store.
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
       responses:
         '200':
-          description: Canonical explicit authorization policy snapshot.
+          description: Canonical bounded selected-store authorization policy window.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthorizationPolicyEnvelope'
+        '400':
+          description: Missing or invalid store, order, cursor, or window limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1399,12 +1442,15 @@ components:
           type: string
           enum: [active, inactive]
 
-    AuthorizationPolicySnapshot:
+    AuthorizationPolicyWindow:
       type: object
       additionalProperties: false
-      required: [durable_grants, delegated_grants]
-      description: Canonical privileged read-only inventory of explicit Blackboard authorization objects.
+      required: [store, durable_grants, delegated_grants, order, has_more]
+      description: Canonical bounded privileged read-only window over one explicit Blackboard authorization grant store.
       properties:
+        store:
+          type: string
+          enum: [durable, delegated]
         durable_grants:
           type: array
           items:
@@ -1413,6 +1459,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DelegatedGrantSnapshot'
+        order:
+          type: string
+          enum: [desc, asc]
+        has_more:
+          type: boolean
+          description: Whether another page exists in the selected store and traversal direction.
 
     AuthorizationPolicyEnvelope:
       type: object
@@ -1420,7 +1472,7 @@ components:
       required: [policy]
       properties:
         policy:
-          $ref: '#/components/schemas/AuthorizationPolicySnapshot'
+          $ref: '#/components/schemas/AuthorizationPolicyWindow'
 
     AuthorizationDecisionExplanation:
       type: object

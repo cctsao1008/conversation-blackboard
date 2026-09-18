@@ -338,9 +338,14 @@ fn authorization_policy_integrity_contracts_match_canonical_rust_shape() {
 }
 
 #[test]
-fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
+fn authorization_policy_window_contracts_match_canonical_rust_shape() {
     let api = yaml_json();
-    assert!(api["paths"].get("/api/authorization-policy").is_some());
+    let operation = &api["paths"]["/api/authorization-policy"]["get"];
+    assert!(operation.is_object());
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/AuthorizationPolicyEnvelope"
+    );
     assert_eq!(
         names(&api, "/components/schemas/DurableGrantSnapshot/properties"),
         names(
@@ -361,13 +366,33 @@ fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
     assert_eq!(
         names(
             &api,
-            "/components/schemas/AuthorizationPolicySnapshot/properties"
+            "/components/schemas/AuthorizationPolicyWindow/properties"
         ),
         names(
-            &contract_schema::authorization_policy_snapshot_schema(),
+            &contract_schema::authorization_policy_window_schema(),
             "/properties"
         )
     );
+    let parameter_names = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        parameter_names,
+        ["store", "order", "before", "after", "limit"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+    let store = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|parameter| parameter["name"] == "store")
+        .unwrap();
+    assert_eq!(store["required"], true);
     assert!(
         api["components"]["schemas"]["DelegatedGrantSnapshot"]["properties"]
             .get("created_at")
@@ -385,13 +410,23 @@ fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
         .unwrap()
         .iter()
         .find(|tool| tool["name"] == "authorization_policy")
-        .expect("UTCP authorization policy snapshot projection must exist");
+        .expect("UTCP authorization policy window projection must exist");
     assert_eq!(
         names(policy, "/outputs/properties/policy/properties"),
         names(
-            &contract_schema::authorization_policy_snapshot_schema(),
+            &contract_schema::authorization_policy_window_schema(),
             "/properties"
         )
+    );
+    let required_inputs = policy["inputs"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        required_inputs,
+        ["store"].into_iter().map(str::to_owned).collect()
     );
     assert_eq!(
         names(
@@ -423,6 +458,7 @@ fn authorization_policy_snapshot_contracts_match_canonical_rust_shape() {
         policy["tool_call_template"]["url"],
         "${BLACKBOARD_URL}/api/authorization-policy"
     );
+    assert_eq!(policy["tool_call_template"]["http_method"], "GET");
 }
 
 #[test]
@@ -521,15 +557,19 @@ fn authorization_administration_openapi_matches_rest_only_phase1_contract() {
 }
 
 #[test]
-fn authorization_policy_snapshot_adapters_reuse_canonical_reader_without_grant_sql() {
+fn authorization_policy_window_adapters_reuse_canonical_reader_without_grant_sql() {
     let adapters = [
         ("http", include_str!("access_api.rs")),
         ("mcp", include_str!("mcp.rs")),
     ];
     for (name, source) in adapters {
         assert!(
-            source.contains("read_authorization_policy_snapshot"),
-            "{name} adapter must reuse the canonical authorization snapshot reader"
+            source.contains("read_authorization_policy_window"),
+            "{name} adapter must reuse the canonical bounded authorization policy reader"
+        );
+        assert!(
+            !source.contains("read_authorization_policy_snapshot"),
+            "{name} adapter must not reach the full authorization policy snapshot helper"
         );
         for forbidden in [
             "FROM principal_grants",

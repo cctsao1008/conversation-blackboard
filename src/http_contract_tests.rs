@@ -1521,8 +1521,8 @@ async fn authorization_admin_rest_delegated_deactivate_is_privileged_idempotent_
 }
 
 #[tokio::test]
-async fn authorization_policy_http_is_privileged_canonical_and_observationally_read_only() {
-    let fixture = fixture("policy-snapshot");
+async fn authorization_policy_http_is_privileged_bounded_and_observationally_read_only() {
+    let fixture = fixture("policy-window");
     let router = fixture
         .router
         .clone()
@@ -1530,22 +1530,16 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
             db_path: fixture.db_path.clone(),
             registration_key: None,
         }));
+    let durable_uri = "/api/authorization-policy?store=durable&limit=200";
 
-    let unauthenticated = request(
-        &router,
-        Method::GET,
-        "/api/authorization-policy",
-        None,
-        None,
-    )
-    .await;
+    let unauthenticated = request(&router, Method::GET, durable_uri, None, None).await;
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
     let session = web_auth::issue_web_session(&fixture.participant_id);
     let ordinary = request(
         &router,
         Method::GET,
-        "/api/authorization-policy",
+        durable_uri,
         Some(&session.token),
         None,
     )
@@ -1567,14 +1561,14 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
     let wrong_capability = request(
         &router,
         Method::GET,
-        "/api/authorization-policy",
+        durable_uri,
         Some(&session.token),
         None,
     )
     .await;
     assert_eq!(wrong_capability.status(), StatusCode::FORBIDDEN);
 
-    // Seed inventory state that must be projected without filtering or repair.
+    // Seed lifecycle state that must remain visible inside its selected store.
     let conn = db::connect(&fixture.db_path).unwrap();
     conn.execute(
         "INSERT INTO principal_grants
@@ -1621,14 +1615,20 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
     let response = request(
         &router,
         Method::GET,
-        "/api/authorization-policy",
+        durable_uri,
         Some(&session.token),
         None,
     )
     .await;
-    let (status, body) = response_json(response).await;
+    let (status, durable_body) = response_json(response).await;
     assert_eq!(status, StatusCode::OK);
-    let durable = body["policy"]["durable_grants"].as_array().unwrap();
+    assert_eq!(durable_body["policy"]["store"], "durable");
+    assert_eq!(durable_body["policy"]["order"], "desc");
+    assert!(durable_body["policy"]["delegated_grants"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let durable = durable_body["policy"]["durable_grants"].as_array().unwrap();
     assert!(durable.iter().any(|entry| {
         entry["principal_subject"] == "active-agent" && entry["status"] == "active"
     }));
@@ -1639,7 +1639,25 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
         .iter()
         .all(|entry| entry.get("created_at").is_some() && entry.get("updated_at").is_some()));
 
-    let delegated = body["policy"]["delegated_grants"].as_array().unwrap();
+    let delegated_response = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy?store=delegated&order=asc&limit=200",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, delegated_body) = response_json(delegated_response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(delegated_body["policy"]["store"], "delegated");
+    assert_eq!(delegated_body["policy"]["order"], "asc");
+    assert!(delegated_body["policy"]["durable_grants"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let delegated = delegated_body["policy"]["delegated_grants"]
+        .as_array()
+        .unwrap();
     assert!(delegated.iter().any(|entry| {
         entry["intent_id"] == "expired-http-intent" && entry["expires_at"].is_number()
     }));
@@ -1653,7 +1671,58 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
     assert!(delegated
         .iter()
         .all(|entry| entry.get("created_at").is_none() && entry.get("updated_at").is_none()));
-    let serialized = body.to_string();
+
+    // A one-row window must expose another page, and the exclusive cursor must not overlap.
+    let first = request(
+        &router,
+        Method::GET,
+        "/api/authorization-policy?store=durable&limit=1",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, first_body) = response_json(first).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first_body["policy"]["has_more"], true);
+    let first_id = first_body["policy"]["durable_grants"][0]["id"]
+        .as_i64()
+        .unwrap();
+    let second_uri = format!("/api/authorization-policy?store=durable&limit=1&before={first_id}");
+    let second = request(
+        &router,
+        Method::GET,
+        &second_uri,
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, second_body) = response_json(second).await;
+    assert_eq!(status, StatusCode::OK);
+    let second_id = second_body["policy"]["durable_grants"][0]["id"]
+        .as_i64()
+        .unwrap();
+    assert!(second_id < first_id);
+    assert_ne!(second_id, first_id);
+
+    for invalid_uri in [
+        "/api/authorization-policy",
+        "/api/authorization-policy?store=bogus",
+        "/api/authorization-policy?store=durable&before=2&after=1",
+        "/api/authorization-policy?store=durable&order=asc&before=2",
+        "/api/authorization-policy?store=durable&limit=201",
+    ] {
+        let invalid = request(
+            &router,
+            Method::GET,
+            invalid_uri,
+            Some(&session.token),
+            None,
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "{invalid_uri}");
+    }
+
+    let serialized = format!("{durable_body}{delegated_body}");
     assert!(!serialized.contains(&fixture.signing_private));
 
     // Legacy schema must fail before authorize() compatibility logic can mutate it.
@@ -1663,7 +1732,7 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
     let legacy = request(
         &router,
         Method::GET,
-        "/api/authorization-policy",
+        "/api/authorization-policy?store=durable",
         Some(&session.token),
         None,
     )
@@ -1679,7 +1748,7 @@ async fn authorization_policy_http_is_privileged_canonical_and_observationally_r
         .unwrap();
     assert_eq!(
         after, 0,
-        "read-only policy GET recreated authorization schema"
+        "read-only policy window recreated authorization schema"
     );
 }
 

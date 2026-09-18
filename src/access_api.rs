@@ -629,35 +629,83 @@ async fn authorization_decision_explain(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthorizationPolicyQuery {
+    store: Option<String>,
+    before: Option<i64>,
+    after: Option<i64>,
+    limit: Option<usize>,
+    order: Option<String>,
+}
+
 async fn authorization_policy(
     State(state): State<AppState>,
     headers: HeaderMap,
     uri: Uri,
+    Query(query): Query<AuthorizationPolicyQuery>,
 ) -> Result<Response, AccessApiError> {
+    // Authentication deliberately sees the complete path+query so participant-HMAC
+    // callers bind store/cursor/window selection to the request target.
     let resolved = require_identity_for_target(&state, &headers, "GET", &uri).await?;
     let principal = principal_for_headers(&headers, &resolved);
     let participant_id = resolved.instance.clone();
+
+    let store = query
+        .store
+        .filter(|value| authorization::AuthorizationPolicyStore::parse(value).is_some())
+        .ok_or_else(|| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_policy_window"))?;
+    let order = authorization::AuthorizationPolicyWindowOrder::parse(query.order.as_deref())
+        .ok_or_else(|| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_policy_window"))?;
+    if query.before.is_some_and(|value| value <= 0)
+        || query.after.is_some_and(|value| value <= 0)
+        || (query.before.is_some() && query.after.is_some())
+        || (order == authorization::AuthorizationPolicyWindowOrder::Desc && query.after.is_some())
+        || (order == authorization::AuthorizationPolicyWindowOrder::Asc && query.before.is_some())
+        || query.limit.is_some_and(|limit| {
+            !(1..=authorization::MAX_AUTHORIZATION_POLICY_WINDOW_SIZE).contains(&limit)
+        })
+    {
+        return Err(AccessApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_policy_window",
+        ));
+    }
+    let before = query.before;
+    let after = query.after;
+    let limit = query.limit;
+    let order_name = query.order.clone();
+
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
-    let (allowed, schema_current, snapshot) = with_db(&state, move |conn| {
+    let (allowed, schema_current, window) = with_db_read_only(&state, move |conn| {
         let schema_current = authorization::authorization_policy_snapshot_schema_current(conn)?;
         if !schema_current {
             return Ok((false, false, None));
         }
-        let allowed = authorization::authorize(
+        let decision = authorization::explain_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_AUTHORIZATION_POLICY,
             Some(authorization::AUTHORIZATION_POLICY_RESOURCE),
+            None,
         )?;
-        if !allowed {
+        if !decision.allowed {
             return Ok((false, true, None));
         }
         Ok((
             true,
             true,
-            Some(authorization::read_authorization_policy_snapshot(conn)?),
+            Some(authorization::read_authorization_policy_window(
+                conn,
+                authorization::AuthorizationPolicyWindowRequest {
+                    store: &store,
+                    before,
+                    after,
+                    limit,
+                    order: order_name.as_deref(),
+                },
+            )?),
         ))
     })
     .await?;
@@ -670,8 +718,10 @@ async fn authorization_policy(
     if !allowed {
         return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
-    let snapshot = snapshot.expect("authorized current-schema policy read must produce snapshot");
-    Ok(json_response(StatusCode::OK, json!({"policy": snapshot})))
+    Ok(json_response(
+        StatusCode::OK,
+        json!({"policy": window.expect("authorized current-schema policy read must produce a window")}),
+    ))
 }
 
 async fn authorization_policy_integrity(
