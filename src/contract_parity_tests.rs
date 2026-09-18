@@ -654,8 +654,8 @@ fn authorization_administration_history_contracts_match_canonical_rust_shape() {
         ("mcp", include_str!("mcp.rs")),
     ] {
         assert!(
-            source.contains("read_administration_events"),
-            "{name} adapter must reuse the canonical administration history reader"
+            source.contains("read_administration_event_window"),
+            "{name} adapter must reuse the canonical bounded administration history reader"
         );
         assert!(
             !source.contains("FROM authorization_admin_events"),

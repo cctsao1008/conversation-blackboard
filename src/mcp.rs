@@ -911,6 +911,10 @@ fn tools_list_result() -> Value {
                     "properties": {
                         "participant_id": contract_schema::participant_id_schema(),
                         "filter_participant_id": {"anyOf": [contract_schema::participant_id_schema(), {"type": "null"}]},
+                        "before": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+                        "after": {"anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": authorization_admin::MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE, "default": authorization_admin::DEFAULT_ADMINISTRATION_HISTORY_WINDOW_SIZE},
+                        "order": {"type": "string", "enum": ["desc", "asc"], "default": "desc"},
                         "auth": auth_schema()
                     },
                     "required": ["participant_id", "auth"],
@@ -1580,7 +1584,15 @@ async fn blackboard_authorization_administration_history(
 ) -> Value {
     if !only_keys(
         arguments,
-        &["participant_id", "filter_participant_id", "auth"],
+        &[
+            "participant_id",
+            "filter_participant_id",
+            "before",
+            "after",
+            "limit",
+            "order",
+            "auth",
+        ],
     ) {
         return tool_error("invalid_arguments");
     }
@@ -1599,6 +1611,64 @@ async fn blackboard_authorization_administration_history(
         },
         Some(_) => return tool_error("invalid_filter_participant_id"),
     };
+    let before = match arguments.get("before") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(value)) => value.as_i64().filter(|value| *value > 0),
+        Some(_) => return tool_error("invalid_history_window"),
+    };
+    if arguments.contains_key("before")
+        && !arguments
+            .get("before")
+            .is_some_and(|value| value.is_null() || before.is_some())
+    {
+        return tool_error("invalid_history_window");
+    }
+    let after = match arguments.get("after") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(value)) => value.as_i64().filter(|value| *value > 0),
+        Some(_) => return tool_error("invalid_history_window"),
+    };
+    if arguments.contains_key("after")
+        && !arguments
+            .get("after")
+            .is_some_and(|value| value.is_null() || after.is_some())
+    {
+        return tool_error("invalid_history_window");
+    }
+    let limit = match arguments.get("limit") {
+        None => None,
+        Some(Value::Number(value)) => {
+            match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+                Some(value)
+                    if (1..=authorization_admin::MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE)
+                        .contains(&value) =>
+                {
+                    Some(value)
+                }
+                _ => return tool_error("invalid_history_window"),
+            }
+        }
+        Some(_) => return tool_error("invalid_history_window"),
+    };
+    let order = match arguments.get("order") {
+        None => None,
+        Some(Value::String(value))
+            if authorization_admin::AdministrationHistoryOrder::parse(Some(value)).is_some() =>
+        {
+            Some(value.clone())
+        }
+        Some(_) => return tool_error("invalid_history_window"),
+    };
+    let parsed_order = authorization_admin::AdministrationHistoryOrder::parse(order.as_deref())
+        .expect("validated history order");
+    if before.is_some() && after.is_some()
+        || (parsed_order == authorization_admin::AdministrationHistoryOrder::Desc
+            && after.is_some())
+        || (parsed_order == authorization_admin::AdministrationHistoryOrder::Asc
+            && before.is_some())
+    {
+        return tool_error("invalid_history_window");
+    }
 
     let caller_principal = if let Some(principal) = transport_principal {
         principal.clone()
@@ -1623,9 +1693,10 @@ async fn blackboard_authorization_administration_history(
     let policy_principal = caller_principal.clone();
     let caller_participant = participant_id.clone();
     let filter = filter_participant_id.clone();
-    let (schema_current, allowed, events) = match with_db_read_only(state, move |conn| {
+    let window_order = order.clone();
+    let (schema_current, allowed, window) = match with_db_read_only(state, move |conn| {
         if !authorization_admin::schema_current(conn)? {
-            return Ok((false, false, Vec::new()));
+            return Ok((false, false, None));
         }
         let decision = authorization::explain_authorization(
             conn,
@@ -1636,12 +1707,21 @@ async fn blackboard_authorization_administration_history(
             None,
         )?;
         if !decision.allowed {
-            return Ok((true, false, Vec::new()));
+            return Ok((true, false, None));
         }
         Ok((
             true,
             true,
-            authorization_admin::read_administration_events(conn, filter.as_deref())?,
+            Some(authorization_admin::read_administration_event_window(
+                conn,
+                authorization_admin::AuthorizationAdministrationHistoryWindowRequest {
+                    participant_id: filter.as_deref(),
+                    before,
+                    after,
+                    limit,
+                    order: window_order.as_deref(),
+                },
+            )?),
         ))
     })
     .await
@@ -1655,7 +1735,7 @@ async fn blackboard_authorization_administration_history(
     if !allowed {
         return tool_error("forbidden");
     }
-    tool_success(json!({"history": {"events": events}}))
+    tool_success(json!({"history": window.expect("authorized history read must produce a window")}))
 }
 
 async fn blackboard_authorization_policy(

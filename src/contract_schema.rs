@@ -285,11 +285,13 @@ pub fn authorization_administration_history_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "events": {"type": "array", "items": authorization_administration_event_schema()}
+            "events": {"type": "array", "items": authorization_administration_event_schema()},
+            "order": {"type": "string", "enum": ["desc", "asc"]},
+            "has_more": {"type": "boolean"}
         },
-        "required": ["events"],
+        "required": ["events", "order", "has_more"],
         "additionalProperties": false,
-        "description": "Canonical read-only committed authorization-administration history."
+        "description": "Canonical bounded read-only committed authorization-administration history window."
     })
 }
 

@@ -299,61 +299,6 @@ fn table_has_columns(conn: &Connection, table: &str, required: &[&str]) -> rusql
         .all(|required| columns.iter().any(|column| column == required)))
 }
 
-pub fn read_administration_events(
-    conn: &Connection,
-    participant_id: Option<&str>,
-) -> rusqlite::Result<Vec<AuthorizationAdministrationEvent>> {
-    if !schema_current(conn)? {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
-    let participant_id = participant_id
-        .map(|value| identity::validate_participant_id(value).ok_or(rusqlite::Error::InvalidQuery))
-        .transpose()?;
-    let mut query = String::from(
-        "SELECT id, grant_store, grant_id, operation, actor_surface, actor_provider, actor_subject,
-                actor_participant_id, target_principal_provider, target_principal_subject,
-                participant_id, capability, resource, intent_id, expires_at, one_shot,
-                before_status, after_status, created_at
-         FROM authorization_admin_events",
-    );
-    if participant_id.is_some() {
-        query.push_str(" WHERE participant_id = ?1");
-    }
-    query.push_str(" ORDER BY id");
-
-    let mut stmt = conn.prepare(&query)?;
-    let map_row = |row: &rusqlite::Row<'_>| {
-        Ok(AuthorizationAdministrationEvent {
-            id: row.get(0)?,
-            grant_store: row.get(1)?,
-            grant_id: row.get(2)?,
-            operation: row.get(3)?,
-            actor_surface: row.get(4)?,
-            actor_provider: row.get(5)?,
-            actor_subject: row.get(6)?,
-            actor_participant_id: row.get(7)?,
-            target_principal_provider: row.get(8)?,
-            target_principal_subject: row.get(9)?,
-            participant_id: row.get(10)?,
-            capability: row.get(11)?,
-            resource: row.get(12)?,
-            intent_id: row.get(13)?,
-            expires_at: row.get(14)?,
-            one_shot: row.get::<_, i64>(15)? != 0,
-            before_status: row.get(16)?,
-            after_status: row.get(17)?,
-            created_at: row.get(18)?,
-        })
-    };
-    if let Some(participant_id) = participant_id.as_deref() {
-        stmt.query_map([participant_id], map_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-    } else {
-        stmt.query_map([], map_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-    }
-}
-
 pub fn read_administration_event_window(
     conn: &Connection,
     request: AuthorizationAdministrationHistoryWindowRequest<'_>,
@@ -1798,7 +1743,20 @@ mod tests {
         create_durable_grant(&conn, &actor, &request).unwrap();
         deactivate_durable_grant(&conn, &actor, created.id).unwrap();
 
-        let events = read_administration_events(&conn, Some("maker-main")).unwrap();
+        let window = read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: Some("maker-main"),
+                before: None,
+                after: None,
+                limit: Some(20),
+                order: Some("asc"),
+            },
+        )
+        .unwrap();
+        let events = window.events;
+        assert_eq!(window.order, "asc");
+        assert!(!window.has_more);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].operation, "create");
         assert_eq!(events[1].operation, "deactivate");
@@ -1830,7 +1788,17 @@ mod tests {
             )
             .unwrap();
         assert!(!schema_current(&conn).unwrap());
-        assert!(read_administration_events(&conn, None).is_err());
+        assert!(read_administration_event_window(
+            &conn,
+            AuthorizationAdministrationHistoryWindowRequest {
+                participant_id: None,
+                before: None,
+                after: None,
+                limit: None,
+                order: None,
+            },
+        )
+        .is_err());
         let after: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table', 'index')",

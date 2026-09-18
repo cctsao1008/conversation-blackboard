@@ -58,6 +58,10 @@ pub fn app(state: AppState) -> Router {
 #[derive(Debug, Deserialize)]
 struct AuthorizationAdministrationHistoryQuery {
     participant_id: Option<String>,
+    before: Option<i64>,
+    after: Option<i64>,
+    limit: Option<usize>,
+    order: Option<String>,
 }
 
 async fn authorization_administration_history(
@@ -77,10 +81,30 @@ async fn authorization_administration_history(
             })
         })
         .transpose()?;
+    let order = authorization_admin::AdministrationHistoryOrder::parse(query.order.as_deref())
+        .ok_or_else(|| AccessApiError::new(StatusCode::BAD_REQUEST, "invalid_history_window"))?;
+    if query.before.is_some_and(|value| value <= 0)
+        || query.after.is_some_and(|value| value <= 0)
+        || (query.before.is_some() && query.after.is_some())
+        || (order == authorization_admin::AdministrationHistoryOrder::Desc && query.after.is_some())
+        || (order == authorization_admin::AdministrationHistoryOrder::Asc && query.before.is_some())
+        || query.limit.is_some_and(|limit| {
+            !(1..=authorization_admin::MAX_ADMINISTRATION_HISTORY_WINDOW_SIZE).contains(&limit)
+        })
+    {
+        return Err(AccessApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_history_window",
+        ));
+    }
+    let before = query.before;
+    let after = query.after;
+    let limit = query.limit;
+    let order_name = query.order.clone();
 
-    let (schema_current, allowed, events) = with_db_read_only(&state, move |conn| {
+    let (schema_current, allowed, window) = with_db_read_only(&state, move |conn| {
         if !authorization_admin::schema_current(conn)? {
-            return Ok((false, false, Vec::new()));
+            return Ok((false, false, None));
         }
         let decision = authorization::explain_authorization(
             conn,
@@ -90,12 +114,21 @@ async fn authorization_administration_history(
             Some(authorization::AUTHORIZATION_ADMINISTRATION_HISTORY_RESOURCE),
             None,
         )?;
-        let events = if decision.allowed {
-            authorization_admin::read_administration_events(conn, participant_filter.as_deref())?
+        let window = if decision.allowed {
+            Some(authorization_admin::read_administration_event_window(
+                conn,
+                authorization_admin::AuthorizationAdministrationHistoryWindowRequest {
+                    participant_id: participant_filter.as_deref(),
+                    before,
+                    after,
+                    limit,
+                    order: order_name.as_deref(),
+                },
+            )?)
         } else {
-            Vec::new()
+            None
         };
-        Ok((true, decision.allowed, events))
+        Ok((true, decision.allowed, window))
     })
     .await?;
 
@@ -111,7 +144,7 @@ async fn authorization_administration_history(
 
     Ok(json_response(
         StatusCode::OK,
-        json!({"history": {"events": events}}),
+        json!({"history": window.expect("authorized history read must produce a window")}),
     ))
 }
 

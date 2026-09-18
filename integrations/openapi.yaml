@@ -454,15 +454,44 @@ paths:
           description: Optional returned-history filter; not an authorization scope.
           schema:
             $ref: '#/components/schemas/ParticipantId'
+        - name: order
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [desc, asc]
+            default: desc
+        - name: before
+          in: query
+          required: false
+          description: Exclusive event-id upper cursor used only with order=desc.
+          schema:
+            type: integer
+            minimum: 1
+        - name: after
+          in: query
+          required: false
+          description: Exclusive event-id lower cursor used only with order=asc.
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
       responses:
         '200':
-          description: Canonical committed authorization-administration history in event-id order.
+          description: Canonical bounded authorization-administration history window in requested event-id order.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthorizationAdministrationHistoryEnvelope'
         '400':
-          description: Invalid participant history filter.
+          description: Invalid participant filter, order, cursor, or window limit.
           content:
             application/json:
               schema:
@@ -1196,13 +1225,19 @@ components:
     AuthorizationAdministrationHistory:
       type: object
       additionalProperties: false
-      required: [events]
-      description: Canonical read-only committed authorization-administration history.
+      required: [events, order, has_more]
+      description: Canonical bounded read-only committed authorization-administration history window.
       properties:
         events:
           type: array
           items:
             $ref: '#/components/schemas/AuthorizationAdministrationEvent'
+        order:
+          type: string
+          enum: [desc, asc]
+        has_more:
+          type: boolean
+          description: Whether another page exists in the selected traversal direction.
 
     AuthorizationAdministrationHistoryEnvelope:
       type: object

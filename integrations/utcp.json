@@ -1062,7 +1062,7 @@
     },
     {
       "name": "authorization_administration_history",
-      "description": "Read immutable privileged authorization-administration provenance through the canonical read-only history surface. The optional participant_id is only a returned-history filter; history-read authority remains independent from policy mutation authority.",
+      "description": "Read a bounded immutable privileged authorization-administration provenance window through the canonical read-only history surface. participant_id only filters returned history; cursors select observation windows and never alter reader authority.",
       "inputs": {
         "type": "object",
         "additionalProperties": false,
@@ -1072,6 +1072,36 @@
             "minLength": 1,
             "maxLength": 64,
             "description": "Optional returned-history filter; not an authorization scope."
+          },
+          "before": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Exclusive event-id upper cursor used only with order=desc."
+          },
+          "after": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Exclusive event-id lower cursor used only with order=asc."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 20
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "default": "desc"
           }
         }
       },
@@ -1086,7 +1116,9 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "events"
+              "events",
+              "order",
+              "has_more"
             ],
             "properties": {
               "events": {
@@ -1220,6 +1252,16 @@
                     }
                   }
                 }
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "desc",
+                  "asc"
+                ]
+              },
+              "has_more": {
+                "type": "boolean"
               }
             }
           }
