@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/issue111_remote_window_patch.py'
       - '.github/scripts/issue111_retire_full_reader.py'
+      - '.github/scripts/issue111_history_parity_fix.py'
       - '.github/workflows/issue111-remote-window.yml'
 
 permissions:
@@ -25,6 +26,8 @@ jobs:
         run: python .github/scripts/issue111_remote_window_patch.py
       - name: Retire unbounded history reader
         run: python .github/scripts/issue111_retire_full_reader.py
+      - name: Update bounded history parity guard
+        run: python .github/scripts/issue111_history_parity_fix.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -43,12 +46,13 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/authorization_admin.rs src/access_api.rs src/mcp.rs src/contract_schema.rs integrations/openapi.yaml integrations/utcp.json
+          git add src/authorization_admin.rs src/access_api.rs src/mcp.rs src/contract_schema.rs src/contract_parity_tests.rs integrations/openapi.yaml integrations/utcp.json
           git commit -m '#111 Project bounded administration history over REST and MCP'
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue111_remote_window_patch.py
           git rm .github/scripts/issue111_retire_full_reader.py
+          git rm .github/scripts/issue111_history_parity_fix.py
           git rm .github/workflows/issue111-remote-window.yml
           git commit -m '#111 Remove bounded remote history migration helpers'
       - name: Push main
