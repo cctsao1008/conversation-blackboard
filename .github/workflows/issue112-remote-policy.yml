@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/issue112_remote_policy_patch.py'
       - '.github/scripts/issue112_remote_policy_tests.py'
+      - '.github/scripts/issue112_snapshot_test_only.py'
       - '.github/workflows/issue112-remote-policy.yml'
 
 permissions:
@@ -23,6 +24,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply bounded remote policy patch
         run: python .github/scripts/issue112_remote_policy_patch.py
+      - name: Retire production full policy snapshot helper
+        run: python .github/scripts/issue112_snapshot_test_only.py
       - name: Apply bounded remote policy test migration when present
         run: |
           if [ -f .github/scripts/issue112_remote_policy_tests.py ]; then
@@ -46,11 +49,12 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/access_api.rs src/mcp.rs src/contract_schema.rs src/contract_parity_tests.rs src/http_contract_tests.rs src/mcp_contract_tests.rs integrations/openapi.yaml integrations/utcp.json
+          git add src/authorization.rs src/access_api.rs src/mcp.rs src/contract_schema.rs src/contract_parity_tests.rs src/http_contract_tests.rs src/mcp_contract_tests.rs integrations/openapi.yaml integrations/utcp.json
           git commit -m '#112 Project bounded authorization policy over REST and MCP'
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue112_remote_policy_patch.py
+          git rm .github/scripts/issue112_snapshot_test_only.py
           if [ -f .github/scripts/issue112_remote_policy_tests.py ]; then
             git rm .github/scripts/issue112_remote_policy_tests.py
           fi
