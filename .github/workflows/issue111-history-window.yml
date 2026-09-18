@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue111_history_window_patch.py'
+      - '.github/scripts/issue111_history_window_anchor_fix.py'
       - '.github/workflows/issue111-history-window.yml'
 
 permissions:
@@ -20,6 +21,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Repair exact patch anchors
+        run: python .github/scripts/issue111_history_window_anchor_fix.py
       - name: Apply bounded history patch
         run: python .github/scripts/issue111_history_window_patch.py
       - name: Format Rust
@@ -39,6 +42,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue111_history_window_patch.py
+          git rm .github/scripts/issue111_history_window_anchor_fix.py
           git rm .github/workflows/issue111-history-window.yml
           git commit -m '#111 Remove bounded history migration helpers'
       - name: Push main
