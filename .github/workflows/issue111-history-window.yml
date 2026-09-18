@@ -41,7 +41,7 @@ jobs:
           git commit -m '#111 Add canonical bounded administration history window'
       - name: Remove temporary helpers
         run: |
-          git rm .github/scripts/issue111_history_window_patch.py
+          git rm -f .github/scripts/issue111_history_window_patch.py
           git rm .github/scripts/issue111_history_window_anchor_fix.py
           git rm .github/workflows/issue111-history-window.yml
           git commit -m '#111 Remove bounded history migration helpers'
