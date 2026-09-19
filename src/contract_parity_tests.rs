@@ -703,3 +703,41 @@ fn authorization_administration_history_contracts_match_canonical_rust_shape() {
         );
     }
 }
+
+#[test]
+fn channel_directory_openapi_projects_bounded_public_and_admin_windows() {
+    let api = yaml_json();
+    for path in ["/api/channels", "/api/admin/channels"] {
+        let get = &api["paths"][path]["get"];
+        let parameters = get["parameters"]
+            .as_array()
+            .expect("channel directory parameters");
+        let parameter_names = parameters
+            .iter()
+            .filter_map(|parameter| parameter["name"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            parameter_names.contains("after_name"),
+            "{path} must expose the stable name cursor"
+        );
+        assert!(
+            parameter_names.contains("limit"),
+            "{path} must expose the bounded limit"
+        );
+        assert_eq!(
+            get["responses"]["200"]["content"]["application/json"]["schema"]["required"],
+            serde_json::json!(["channels", "has_more"]),
+            "{path} must advertise the bounded directory envelope"
+        );
+        assert_eq!(
+            get["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+                ["has_more"]["type"],
+            "boolean",
+            "{path} must project has_more"
+        );
+        assert!(
+            get["responses"].get("400").is_some(),
+            "{path} must document invalid cursor/limit rejection"
+        );
+    }
+}

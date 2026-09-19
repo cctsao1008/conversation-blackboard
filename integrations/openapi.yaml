@@ -886,22 +886,45 @@ paths:
   /api/admin/channels:
     get:
       operationId: blackboardAdminListChannels
-      summary: List all channel metadata for the Human Web Control Panel.
+      summary: List a bounded window of channel metadata for the Human Web Control Panel.
       security:
         - webSessionAuth: []
+      parameters:
+        - name: after_name
+          in: query
+          required: false
+          description: Exclusive channel-name cursor for stable ascending directory traversal.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
       responses:
         '200':
-          description: All channel summaries.
+          description: Bounded channel directory window ordered by stable channel name.
           content:
             application/json:
               schema:
                 type: object
-                required: [channels]
+                required: [channels, has_more]
                 properties:
                   channels:
                     type: array
                     items:
                       $ref: '#/components/schemas/ChannelSummary'
+                  has_more:
+                    type: boolean
+        '400':
+          description: Invalid channel cursor or window limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
