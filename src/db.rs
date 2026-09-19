@@ -166,30 +166,6 @@ pub fn health(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn list_channels(conn: &Connection) -> Result<Vec<ChannelSummary>> {
-    let mut channels = collect_channel_directory(conn, false)?;
-    channels.sort_by(|left, right| {
-        let left_status = if left.status == "active" { 0 } else { 1 };
-        let right_status = if right.status == "active" { 0 } else { 1 };
-        left_status
-            .cmp(&right_status)
-            .then_with(|| right.last_id.cmp(&left.last_id))
-            .then_with(|| left.channel.cmp(&right.channel))
-    });
-    Ok(channels)
-}
-
-pub fn list_public_channels(conn: &Connection) -> Result<Vec<ChannelSummary>> {
-    let mut channels = collect_channel_directory(conn, true)?;
-    channels.sort_by(|left, right| {
-        right
-            .last_id
-            .cmp(&left.last_id)
-            .then_with(|| left.channel.cmp(&right.channel))
-    });
-    Ok(channels)
-}
-
 pub const DEFAULT_CHANNEL_DIRECTORY_WINDOW_SIZE: usize = 20;
 pub const MAX_CHANNEL_DIRECTORY_WINDOW_SIZE: usize = 200;
 
@@ -287,30 +263,6 @@ fn channel_summary_row(row: &rusqlite::Row<'_>) -> Result<ChannelSummary> {
         updated_at: row.get(6)?,
         created_by: row.get(7)?,
     })
-}
-
-fn collect_channel_directory(conn: &Connection, public_only: bool) -> Result<Vec<ChannelSummary>> {
-    let mut channels = Vec::new();
-    let mut after_name: Option<String> = None;
-    loop {
-        let window = read_channel_directory_window(
-            conn,
-            ChannelDirectoryWindowRequest {
-                after_name: after_name.as_deref(),
-                limit: Some(MAX_CHANNEL_DIRECTORY_WINDOW_SIZE),
-                public_only,
-            },
-        )?;
-        after_name = window
-            .channels
-            .last()
-            .map(|channel| channel.channel.clone());
-        channels.extend(window.channels);
-        if !window.has_more {
-            break;
-        }
-    }
-    Ok(channels)
 }
 
 pub fn channel_metadata(conn: &Connection, channel: &str) -> Result<Option<ChannelMetadata>> {
@@ -643,9 +595,18 @@ mod tests {
             "private"
         );
         assert!(channel_is_public_active(&conn, "blackboard-lounge").unwrap());
-        let guest = list_public_channels(&conn).unwrap();
-        assert_eq!(guest.len(), 1);
-        assert_eq!(guest[0].channel, "blackboard-lounge");
+        let guest = read_channel_directory_window(
+            &conn,
+            ChannelDirectoryWindowRequest {
+                after_name: None,
+                limit: None,
+                public_only: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(guest.channels.len(), 1);
+        assert_eq!(guest.channels[0].channel, "blackboard-lounge");
+        assert!(!guest.has_more);
     }
 
     #[test]

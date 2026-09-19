@@ -468,25 +468,65 @@ async fn messages(
     Ok(json_response(StatusCode::OK, json!({"messages": rows})))
 }
 
-async fn channels(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let access = require_read_access_for_target(&state, &headers, "GET", "/api/channels").await?;
-    let rows = match access {
-        ReadAccess::Guest => with_db(&state, db::list_public_channels).await?,
-        ReadAccess::Participant(identity) => {
-            let _ = identity.instance;
-            with_db(&state, db::list_channels).await?
-        }
-    };
-    Ok(json_response(StatusCode::OK, json!({"channels": rows})))
+async fn channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, ApiError> {
+    let request_target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or_else(|| uri.path())
+        .to_owned();
+    let access = require_read_access_for_target(&state, &headers, "GET", &request_target).await?;
+    let params = first_query_values(&uri);
+    let after_name = parse_channel_after_name(&params)?;
+    let limit = parse_channel_directory_limit(&params)?;
+    let public_only = matches!(access, ReadAccess::Guest);
+    if let ReadAccess::Participant(identity) = access {
+        let _ = identity.instance;
+    }
+    let window = with_db(&state, move |conn| {
+        db::read_channel_directory_window(
+            conn,
+            db::ChannelDirectoryWindowRequest {
+                after_name: after_name.as_deref(),
+                limit: Some(limit),
+                public_only,
+            },
+        )
+    })
+    .await?;
+    Ok(json_response(
+        StatusCode::OK,
+        json!({"channels": window.channels, "has_more": window.has_more}),
+    ))
 }
 
 async fn admin_channels(
     State(state): State<AppState>,
     headers: HeaderMap,
+    uri: Uri,
 ) -> Result<Response, ApiError> {
     let _admin = require_human_admin(&state, &headers).await?;
-    let rows = with_db(&state, db::list_channels).await?;
-    Ok(json_response(StatusCode::OK, json!({"channels": rows})))
+    let params = first_query_values(&uri);
+    let after_name = parse_channel_after_name(&params)?;
+    let limit = parse_channel_directory_limit(&params)?;
+    let window = with_db(&state, move |conn| {
+        db::read_channel_directory_window(
+            conn,
+            db::ChannelDirectoryWindowRequest {
+                after_name: after_name.as_deref(),
+                limit: Some(limit),
+                public_only: false,
+            },
+        )
+    })
+    .await?;
+    Ok(json_response(
+        StatusCode::OK,
+        json!({"channels": window.channels, "has_more": window.has_more}),
+    ))
 }
 
 async fn admin_create_channel(
@@ -1051,6 +1091,27 @@ fn parse_limit(params: &HashMap<String, String>, default: usize) -> Result<usize
         .parse::<usize>()
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
     if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"));
+    }
+    Ok(limit)
+}
+
+fn parse_channel_after_name(params: &HashMap<String, String>) -> Result<Option<String>, ApiError> {
+    match params.get("after_name") {
+        None => Ok(None),
+        Some(value) if name_re().is_match(value) => Ok(Some(value.clone())),
+        Some(_) => Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query")),
+    }
+}
+
+fn parse_channel_directory_limit(params: &HashMap<String, String>) -> Result<usize, ApiError> {
+    let limit = params
+        .get("limit")
+        .map(String::as_str)
+        .unwrap_or("20")
+        .parse::<usize>()
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"))?;
+    if !(1..=db::MAX_CHANNEL_DIRECTORY_WINDOW_SIZE).contains(&limit) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid_query"));
     }
     Ok(limit)

@@ -277,6 +277,108 @@ async fn guest_session_reads_public_channels_only_and_cannot_write() {
 }
 
 #[tokio::test]
+async fn channel_directory_http_is_bounded_and_guest_cursor_stays_public() {
+    let fixture = fixture("channel-window");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    for index in 0..25 {
+        let channel = format!("public-{index:02}");
+        db::append_message(
+            &conn,
+            &fixture.identity,
+            &channel,
+            "message",
+            "public",
+            None,
+        )
+        .unwrap();
+        db::update_channel(&conn, &channel, Some("public"), None).unwrap();
+    }
+    db::append_message(
+        &conn,
+        &fixture.identity,
+        "private-hidden",
+        "message",
+        "private",
+        None,
+    )
+    .unwrap();
+    drop(conn);
+
+    let guest = request(&fixture.router, Method::POST, "/api/auth/guest", None, None).await;
+    let (_, guest_body) = response_json(guest).await;
+    let token = guest_body["session_token"].as_str().unwrap();
+
+    let first = request(
+        &fixture.router,
+        Method::GET,
+        "/api/channels?limit=20",
+        Some(token),
+        None,
+    )
+    .await;
+    let (status, first_body) = response_json(first).await;
+    assert_eq!(status, StatusCode::OK);
+    let first_rows = first_body["channels"].as_array().unwrap();
+    assert_eq!(first_rows.len(), 20);
+    assert_eq!(first_body["has_more"], true);
+    assert!(first_rows.iter().all(|row| row["visibility"] == "public"));
+    assert!(first_rows.iter().all(|row| row["status"] == "active"));
+    let cursor = first_rows.last().unwrap()["channel"].as_str().unwrap();
+
+    let second = request(
+        &fixture.router,
+        Method::GET,
+        &format!("/api/channels?after_name={cursor}&limit=20"),
+        Some(token),
+        None,
+    )
+    .await;
+    let (status, second_body) = response_json(second).await;
+    assert_eq!(status, StatusCode::OK);
+    let second_rows = second_body["channels"].as_array().unwrap();
+    assert_eq!(second_rows.len(), 5);
+    assert_eq!(second_body["has_more"], false);
+    assert!(second_rows
+        .iter()
+        .all(|row| row["channel"] != "private-hidden"));
+    let mut traversed = first_rows
+        .iter()
+        .chain(second_rows.iter())
+        .map(|row| row["channel"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    traversed.sort();
+    traversed.dedup();
+    assert_eq!(traversed.len(), 25);
+    assert_eq!(traversed.first().map(String::as_str), Some("public-00"));
+    assert_eq!(traversed.last().map(String::as_str), Some("public-24"));
+
+    assert_eq!(
+        request(
+            &fixture.router,
+            Method::GET,
+            "/api/channels?limit=0",
+            Some(token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &fixture.router,
+            Method::GET,
+            "/api/channels?after_name=%20bad",
+            Some(token),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
 async fn human_admin_can_manage_channels_while_normal_human_cannot() {
     let admin = fixture("cheng");
     let conn = db::connect(&admin.db_path).unwrap();
