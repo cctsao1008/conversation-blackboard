@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/scripts/issue113_http_window_patch.py'
       - '.github/scripts/issue113_retire_legacy_channel_readers.py'
+      - '.github/scripts/issue113_channel_test_migration.py'
       - '.github/workflows/issue113-http-window.yml'
 
 permissions:
@@ -25,6 +26,8 @@ jobs:
         run: python .github/scripts/issue113_http_window_patch.py
       - name: Retire legacy unbounded channel readers
         run: python .github/scripts/issue113_retire_legacy_channel_readers.py
+      - name: Migrate guest channel test to bounded reader
+        run: python .github/scripts/issue113_channel_test_migration.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -48,6 +51,7 @@ jobs:
         run: |
           git rm .github/scripts/issue113_http_window_patch.py
           git rm .github/scripts/issue113_retire_legacy_channel_readers.py
+          git rm .github/scripts/issue113_channel_test_migration.py
           git rm .github/workflows/issue113-http-window.yml
           git commit -m '#113 Remove channel HTTP migration helpers'
       - name: Push main
