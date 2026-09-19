@@ -2387,3 +2387,55 @@ async fn access_context_stale_authorization_schema_is_read_only() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn privileged_audit_rest_reads_refuse_stale_authorization_schema_without_repair() {
+    let fixture = fixture("privileged-read-purity");
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let conn = db::connect(&fixture.db_path).unwrap();
+    identity::set_web_participant_role(&conn, &fixture.participant_id, "admin").unwrap();
+    conn.execute("DROP TABLE principal_grants", []).unwrap();
+    let schema_version_before: i64 = conn
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .unwrap();
+    drop(conn);
+    let main_before = std::fs::read(&fixture.db_path).unwrap();
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+
+    for uri in [
+        "/api/executions/intent-read-purity/audit",
+        "/api/executions/intent-read-purity/audit/integrity",
+        "/api/execution-audit/sweep",
+        "/api/authorization-policy/integrity",
+    ] {
+        let response = request(&router, Method::GET, uri, Some(&session.token), None).await;
+        let (status, body) = response_json(response).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert_eq!(body["error"], "authorization_schema_not_current", "{uri}");
+    }
+
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let grant_table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'principal_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        grant_table_count, 0,
+        "privileged REST read repaired grant schema"
+    );
+    let schema_version_after: i64 = conn
+        .query_row("PRAGMA schema_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(schema_version_after, schema_version_before);
+    drop(conn);
+    assert_eq!(std::fs::read(&fixture.db_path).unwrap(), main_before);
+}

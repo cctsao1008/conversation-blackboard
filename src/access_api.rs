@@ -461,22 +461,31 @@ async fn execution_audit(
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
     let lookup_intent = intent_id.clone();
-    let (allowed, audit) = with_db(&state, move |conn| {
-        let allowed = authorization::authorize(
+    let (schema_current, allowed, audit) = with_db_read_only(&state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)? {
+            return Ok((false, false, None));
+        }
+        let decision = authorization::evaluate_read_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_EXECUTION_AUDIT,
             Some(&lookup_intent),
         )?;
-        let audit = if allowed {
+        let audit = if decision.allowed {
             execution::get_execution_audit_bundle(conn, &lookup_participant, &lookup_intent)?
         } else {
             None
         };
-        Ok((allowed, audit))
+        Ok((true, decision.allowed, audit))
     })
     .await?;
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
     if !allowed {
         return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
@@ -484,7 +493,6 @@ async fn execution_audit(
         audit.ok_or_else(|| AccessApiError::new(StatusCode::NOT_FOUND, "execution_not_found"))?;
     Ok(json_response(StatusCode::OK, json!({"audit": audit})))
 }
-
 async fn execution_audit_integrity(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -499,15 +507,18 @@ async fn execution_audit_integrity(
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
     let lookup_intent = intent_id.clone();
-    let (allowed, report) = with_db(&state, move |conn| {
-        let allowed = authorization::authorize(
+    let (schema_current, allowed, report) = with_db_read_only(&state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)? {
+            return Ok((false, false, None));
+        }
+        let decision = authorization::evaluate_read_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_EXECUTION_AUDIT,
             Some(&lookup_intent),
         )?;
-        let report = if allowed {
+        let report = if decision.allowed {
             Some(execution::verify_execution_audit_integrity(
                 conn,
                 &lookup_participant,
@@ -516,16 +527,21 @@ async fn execution_audit_integrity(
         } else {
             None
         };
-        Ok((allowed, report))
+        Ok((true, decision.allowed, report))
     })
     .await?;
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
     if !allowed {
         return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
     let report = report.expect("authorized integrity verification must produce a report");
     Ok(json_response(StatusCode::OK, json!({"integrity": report})))
 }
-
 async fn execution_audit_sweep(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -536,22 +552,31 @@ async fn execution_audit_sweep(
     let participant_id = resolved.instance.clone();
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
-    let (allowed, report) = with_db(&state, move |conn| {
-        let allowed = authorization::authorize(
+    let (schema_current, allowed, report) = with_db_read_only(&state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)? {
+            return Ok((false, false, None));
+        }
+        let decision = authorization::evaluate_read_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_EXECUTION_AUDIT_SWEEP,
             Some(authorization::EXECUTION_AUDIT_SWEEP_RESOURCE),
         )?;
-        let report = if allowed {
+        let report = if decision.allowed {
             Some(execution::sweep_execution_audit_integrity(conn)?)
         } else {
             None
         };
-        Ok((allowed, report))
+        Ok((true, decision.allowed, report))
     })
     .await?;
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
     if !allowed {
         return Err(AccessApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
@@ -568,7 +593,6 @@ struct AuthorizationDecisionExplainQuery {
     resource: Option<String>,
     intent_id: Option<String>,
 }
-
 async fn authorization_decision_explain(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -743,20 +767,21 @@ async fn authorization_policy_integrity(
     let participant_id = resolved.instance.clone();
     let policy_principal = principal.clone();
     let lookup_participant = participant_id.clone();
-    let (allowed, schema_current, report) = with_db(&state, move |conn| {
-        let schema_current = authorization::authorization_integrity_schema_current(conn)?;
-        if !schema_current {
+    let (schema_current, allowed, report) = with_db_read_only(&state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)?
+            || !authorization::authorization_integrity_schema_current(conn)?
+        {
             return Ok((false, false, None));
         }
-        let allowed = authorization::authorize(
+        let decision = authorization::evaluate_read_authorization(
             conn,
             &policy_principal,
             &lookup_participant,
             authorization::READ_AUTHORIZATION_POLICY_INTEGRITY,
             Some(authorization::AUTHORIZATION_POLICY_INTEGRITY_RESOURCE),
         )?;
-        if !allowed {
-            return Ok((false, true, None));
+        if !decision.allowed {
+            return Ok((true, false, None));
         }
         Ok((
             true,

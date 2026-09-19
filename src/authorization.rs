@@ -1345,6 +1345,29 @@ fn evaluate_authorization_current_schema(
     ))
 }
 
+pub fn evaluate_read_authorization(
+    conn: &Connection,
+    principal: &Principal,
+    participant_id: &str,
+    capability: &str,
+    resource: Option<&str>,
+) -> rusqlite::Result<AuthorizationDecision> {
+    // This is the schema-pure equivalent of the historical authorize() read path:
+    // intent_id is deliberately None, so delegated-grant / execution-receipt schema
+    // is not part of the authority decision. Preserve that boundary exactly.
+    if !effective_grants_schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    evaluate_authorization_current_schema(
+        conn,
+        principal,
+        participant_id,
+        capability,
+        resource,
+        None,
+    )
+}
+
 pub fn authorize(
     conn: &Connection,
     principal: &Principal,
