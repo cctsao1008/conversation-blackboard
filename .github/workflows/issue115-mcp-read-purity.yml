@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue115_mcp_read_purity_patch.py'
+      - '.github/scripts/issue115_mcp_read_purity_test_fix.py'
       - '.github/workflows/issue115-mcp-read-purity.yml'
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply MCP privileged read purity patch
         run: python .github/scripts/issue115_mcp_read_purity_patch.py
+      - name: Repair MCP stale-schema fixture
+        run: python .github/scripts/issue115_mcp_read_purity_test_fix.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -39,6 +42,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue115_mcp_read_purity_patch.py
+          git rm .github/scripts/issue115_mcp_read_purity_test_fix.py
           git rm .github/workflows/issue115-mcp-read-purity.yml
           git commit -m '#115 Remove MCP read-purity migration helpers'
       - name: Push main
