@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue113_browser_window_patch.py'
+      - '.github/scripts/issue113_browser_refresh_cleanup.py'
       - '.github/workflows/issue113-browser-window.yml'
 
 permissions:
@@ -20,6 +21,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Decouple manual refresh from directory reload
+        run: python .github/scripts/issue113_browser_refresh_cleanup.py
       - name: Apply bounded browser directory patch
         run: python .github/scripts/issue113_browser_window_patch.py
       - name: Validate browser JavaScript
@@ -41,6 +44,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue113_browser_window_patch.py
+          git rm .github/scripts/issue113_browser_refresh_cleanup.py
           git rm .github/workflows/issue113-browser-window.yml
           git commit -m '#113 Remove browser directory migration helpers'
       - name: Push main
