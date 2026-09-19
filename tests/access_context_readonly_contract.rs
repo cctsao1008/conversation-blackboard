@@ -25,7 +25,7 @@ fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
 #[test]
 fn effective_grants_cannot_reenter_schema_mutation_paths() {
     let source = include_str!("../src/authorization.rs");
-    let body = function_source(source, "pub fn effective_grants(\n");
+    let body = function_source(source, "pub fn effective_grants(");
 
     assert!(body.contains("effective_grants_schema_current(conn)?"));
     assert!(body.contains("evaluate_authorization_current_schema("));
@@ -37,11 +37,11 @@ fn effective_grants_cannot_reenter_schema_mutation_paths() {
 fn access_context_openapi_documents_stale_schema_without_repair() {
     let openapi = include_str!("../integrations/openapi.yaml");
     let start = openapi
-        .find("  /api/access-context:\n")
+        .find("  /api/access-context:")
         .expect("access-context OpenAPI path must exist");
     let tail = &openapi[start..];
     let end = tail
-        .find("\n  /api/executions/{intent_id}:\n")
+        .find("  /api/executions/{intent_id}:")
         .expect("next OpenAPI path must exist");
     let access_context = &tail[..end];
 
