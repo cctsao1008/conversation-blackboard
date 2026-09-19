@@ -52,3 +52,22 @@ fn channel_directory_browser_consumption_is_explicitly_bounded() {
     assert!(app.contains("applyCurrentChannelActivity(data.messages, insertedCount);"));
     assert!(app.contains("applyCurrentChannelActivity([data.message], 1);"));
 }
+
+#[test]
+fn channel_directory_remote_source_boundary_stays_bounded() {
+    let db = include_str!("../src/db.rs");
+    let http = include_str!("../src/http.rs");
+
+    // The retired full-corpus readers must not be reintroduced. Remote
+    // directory traversal has one canonical bounded DB primitive.
+    assert!(!db.contains("pub fn list_channels("));
+    assert!(!db.contains("pub fn list_public_channels("));
+    assert!(!db.contains("fn collect_channel_directory("));
+    assert!(db.contains("pub fn read_channel_directory_window("));
+
+    // HTTP is a projection only: it must call the canonical window reader and
+    // must not own channel/message aggregation SQL.
+    assert!(http.contains("db::read_channel_directory_window("));
+    assert!(!http.contains("FROM channels c"));
+    assert!(!http.contains("COUNT(m.id) AS message_count"));
+}
