@@ -1,0 +1,47 @@
+name: issue113-browser-window
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue113_browser_window_patch.py'
+      - '.github/workflows/issue113-browser-window.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply bounded browser directory patch
+        run: python .github/scripts/issue113_browser_window_patch.py
+      - name: Validate browser JavaScript
+        run: node --check web/app.js
+      - name: Format Rust
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Strict Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Full Rust tests
+        run: cargo test --all-targets --all-features
+      - name: Commit bounded browser directory consumption
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add web/app.js web/index.html tests/browser_navigation_contract.rs
+          git commit -m '#113 Consume channel directory windows explicitly in browser'
+      - name: Remove temporary helpers
+        run: |
+          git rm .github/scripts/issue113_browser_window_patch.py
+          git rm .github/workflows/issue113-browser-window.yml
+          git commit -m '#113 Remove browser directory migration helpers'
+      - name: Push main
+        run: git push origin HEAD:main
