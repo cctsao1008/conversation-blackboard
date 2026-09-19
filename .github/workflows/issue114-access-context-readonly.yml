@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue114_access_context_readonly.py'
+      - '.github/scripts/issue114_fix_source_guard.py'
       - '.github/workflows/issue114-access-context-readonly.yml'
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply access-context read-only hardening
         run: python .github/scripts/issue114_access_context_readonly.py
+      - name: Fix source guard slicing
+        run: python .github/scripts/issue114_fix_source_guard.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -39,6 +42,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue114_access_context_readonly.py
+          git rm .github/scripts/issue114_fix_source_guard.py
           git rm .github/workflows/issue114-access-context-readonly.yml
           git commit -m '#114 Remove access-context migration helpers'
       - name: Push main
