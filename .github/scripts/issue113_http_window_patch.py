@@ -80,9 +80,19 @@ async fn channel_directory_http_is_bounded_and_guest_cursor_stays_public() {
     let (status, second_body) = response_json(second).await;
     assert_eq!(status, StatusCode::OK);
     let second_rows = second_body["channels"].as_array().unwrap();
-    assert_eq!(second_rows.len(), 6);
+    assert_eq!(second_rows.len(), 5);
     assert_eq!(second_body["has_more"], false);
     assert!(second_rows.iter().all(|row| row["channel"] != "private-hidden"));
+    let mut traversed = first_rows
+        .iter()
+        .chain(second_rows.iter())
+        .map(|row| row["channel"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    traversed.sort();
+    traversed.dedup();
+    assert_eq!(traversed.len(), 25);
+    assert_eq!(traversed.first().map(String::as_str), Some("public-00"));
+    assert_eq!(traversed.last().map(String::as_str), Some("public-24"));
 
     assert_eq!(
         request(
