@@ -23,10 +23,7 @@ jobs:
       - name: Apply access-context contract parity patch
         run: python .github/scripts/issue114_access_context_contract_patch.py
       - name: Validate OpenAPI YAML
-        run: python - <<'PY'
-          import yaml
-          yaml.safe_load(open('integrations/openapi.yaml'))
-          PY
+        run: python -c "import yaml; yaml.safe_load(open('integrations/openapi.yaml'))"
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
