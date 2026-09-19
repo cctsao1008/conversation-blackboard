@@ -383,16 +383,25 @@ async fn access_context(
     let principal = principal_for_headers(&headers, &resolved);
     let lookup = resolved.instance.clone();
     let principal_for_grants = principal.clone();
-    let (role, grants) = with_db(&state, move |conn| {
+    let (schema_current, role, grants) = with_db_read_only(&state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)? {
+            return Ok((false, None, Vec::new()));
+        }
         let role = identity::get_web_participant_role(conn, &lookup)?;
         let grants = if role.is_some() {
             authorization::effective_grants(conn, &principal_for_grants, &lookup)?
         } else {
             Vec::new()
         };
-        Ok((role, grants))
+        Ok((true, role, grants))
     })
     .await?;
+    if !schema_current {
+        return Err(AccessApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization_schema_not_current",
+        ));
+    }
 
     let participant_id = role.as_ref().map(|_| resolved.instance.clone());
     let mut capabilities = grants

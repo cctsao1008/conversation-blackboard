@@ -2346,3 +2346,44 @@ async fn authorization_administration_history_rest_refuses_stale_schema_without_
         .unwrap();
     assert_eq!(table_count, 0, "history read repaired stale schema");
 }
+
+#[tokio::test]
+async fn access_context_stale_authorization_schema_is_read_only() {
+    let fixture = fixture("access-context-stale");
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute_batch("DROP TABLE principal_grants;").unwrap();
+    drop(conn);
+    let before = std::fs::read(&fixture.db_path).unwrap();
+
+    let router = fixture
+        .router
+        .clone()
+        .merge(crate::access_api::app(AppState {
+            db_path: fixture.db_path.clone(),
+            registration_key: None,
+        }));
+    let session = web_auth::issue_web_session(&fixture.participant_id);
+    let response = request(
+        &router,
+        Method::GET,
+        "/api/access-context",
+        Some(&session.token),
+        None,
+    )
+    .await;
+    let (status, body) = response_json(response).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "authorization_schema_not_current");
+
+    let after = std::fs::read(&fixture.db_path).unwrap();
+    assert_eq!(before, after);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'principal_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}

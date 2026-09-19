@@ -3188,3 +3188,38 @@ async fn mcp_administration_history_schema_preserves_legacy_and_bearer_auth_proj
         .any(|field| field == "auth"));
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
 }
+
+#[tokio::test]
+async fn mcp_access_context_stale_authorization_schema_is_read_only() {
+    let fixture = fixture();
+    let conn = db::connect(&fixture.db_path).unwrap();
+    conn.execute_batch("DROP TABLE principal_grants;").unwrap();
+    drop(conn);
+    let before = std::fs::read(&fixture.db_path).unwrap();
+
+    let value = call_tool(
+        &fixture.router,
+        1140,
+        "blackboard_access_context",
+        capability_arguments(
+            &fixture.single_secret,
+            "single-main",
+            "access_context",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(tool_error_code(&value), "authorization_schema_not_current");
+
+    let after = std::fs::read(&fixture.db_path).unwrap();
+    assert_eq!(before, after);
+    let conn = db::connect(&fixture.db_path).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'principal_grants'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}

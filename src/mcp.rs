@@ -1168,14 +1168,23 @@ async fn blackboard_access_context(
     };
     let principal_for_grants = principal.clone();
     let lookup = participant_id.clone();
-    let grants = match with_db(state, move |conn| {
-        authorization::effective_grants(conn, &principal_for_grants, &lookup)
+    let (schema_current, grants) = match with_db_read_only(state, move |conn| {
+        if !authorization::effective_grants_schema_current(conn)? {
+            return Ok((false, Vec::new()));
+        }
+        Ok((
+            true,
+            authorization::effective_grants(conn, &principal_for_grants, &lookup)?,
+        ))
     })
     .await
     {
-        Ok(grants) => grants,
+        Ok(result) => result,
         Err(()) => return tool_error("database_unavailable"),
     };
+    if !schema_current {
+        return tool_error("authorization_schema_not_current");
+    }
     if transport_principal.is_some() && grants.is_empty() {
         return tool_error("forbidden");
     }

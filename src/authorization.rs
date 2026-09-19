@@ -1378,12 +1378,40 @@ pub fn consume_delegated_grant_in_tx(
     Ok(())
 }
 
+pub fn effective_grants_schema_current(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(table_has_columns(
+        conn,
+        "principal_grants",
+        &[
+            "id",
+            "principal_provider",
+            "principal_subject",
+            "participant_id",
+            "capability",
+            "resource",
+            "status",
+        ],
+    )? && table_has_columns(
+        conn,
+        "web_participants",
+        &[
+            "participant_id",
+            "status",
+            "role",
+            "owner_provider",
+            "owner_subject",
+        ],
+    )?)
+}
+
 pub fn effective_grants(
     conn: &Connection,
     principal: &Principal,
     participant_id: &str,
 ) -> rusqlite::Result<Vec<EffectiveGrant>> {
-    ensure_grant_schema(conn)?;
+    if !effective_grants_schema_current(conn)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     let Some(participant) = participant_policy_row(conn, participant_id)? else {
         return Ok(Vec::new());
     };
@@ -1429,13 +1457,16 @@ pub fn effective_grants(
             }
             _ => None,
         };
-        if authorize(
+        if evaluate_authorization_current_schema(
             conn,
             principal,
             participant_id,
             capability,
             implicit_resource,
-        )? {
+            None,
+        )?
+        .allowed
+        {
             grants.push(EffectiveGrant {
                 capability: capability.to_owned(),
                 resource: implicit_resource.map(str::to_owned),
@@ -3134,5 +3165,50 @@ mod tests {
         .unwrap();
         assert!(decision.allowed);
         assert_eq!(decision.reason, "explicit_durable_grant_match");
+    }
+}
+
+#[cfg(test)]
+mod issue114_access_context_readonly_tests {
+    use super::*;
+
+    #[test]
+    fn effective_grants_rejects_stale_schema_without_repair() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE web_participants (
+                participant_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                label TEXT,
+                owner_provider TEXT,
+                owner_subject TEXT,
+                status TEXT NOT NULL,
+                role TEXT NOT NULL
+            );
+            INSERT INTO web_participants
+                (participant_id, source, owner_provider, owner_subject, status, role)
+            VALUES
+                ('single-main', 'single', NULL, NULL, 'active', 'user');",
+        )
+        .unwrap();
+        assert!(!effective_grants_schema_current(&conn).unwrap());
+
+        let principal = Principal {
+            provider: "participant-hmac".to_owned(),
+            subject: "single-main".to_owned(),
+        };
+        assert!(matches!(
+            effective_grants(&conn, &principal, "single-main"),
+            Err(rusqlite::Error::InvalidQuery)
+        ));
+
+        let grant_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'principal_grants'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(grant_table_count, 0);
     }
 }
