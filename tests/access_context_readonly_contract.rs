@@ -32,3 +32,20 @@ fn effective_grants_cannot_reenter_schema_mutation_paths() {
     assert!(!body.contains("ensure_grant_schema("));
     assert!(!body.contains("authorize("));
 }
+
+#[test]
+fn access_context_openapi_documents_stale_schema_without_repair() {
+    let openapi = include_str!("../integrations/openapi.yaml");
+    let start = openapi
+        .find("  /api/access-context:\n")
+        .expect("access-context OpenAPI path must exist");
+    let tail = &openapi[start..];
+    let end = tail
+        .find("\n  /api/executions/{intent_id}:\n")
+        .expect("next OpenAPI path must exist");
+    let access_context = &tail[..end];
+
+    assert!(access_context.contains("'503':"));
+    assert!(access_context.contains("#/components/schemas/Error"));
+    assert!(access_context.contains("does not migrate or repair schema"));
+}
