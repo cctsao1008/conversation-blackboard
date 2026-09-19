@@ -60,6 +60,26 @@ participant role == admin
 
 The admin API manages channel creation, public/private visibility, and active/archived status. A valid HMAC participant proof does not authorize these routes even if the Participant ID has `admin` role.
 
+## Bounded channel directory
+
+Remote channel discovery is a bounded window, not an unbounded activity-sorted inventory read.
+
+```text
+GET /api/channels?after_name=<channel>&limit=<n>
+GET /api/admin/channels?after_name=<channel>&limit=<n>
+
+canonical traversal order = channel name ASC
+cursor                    = exclusive immutable channel name
+limit                     = 1..200, default 20
+response                  = channels[] + has_more
+```
+
+Channel names are durable identities, so they provide a stable continuation boundary. Mutable activity fields such as `last_id`, `message_count`, and `updated_at` are projected data only and never participate in the directory cursor. New message activity therefore cannot move a previously traversed channel across the continuation boundary and cause duplicate/skip behavior.
+
+Guest directory windows remain restricted to public active channels. Authenticated participant and Human Web admin windows preserve their existing visibility and authority rules; pagination changes observation selection only.
+
+The browser consumes these windows explicitly. It loads one initial page and exposes `Load more channels` for further traversal instead of silently draining every page. Live message polling updates the already-loaded selected-channel summary in memory and does not periodically rescan the channel directory.
+
 ## Browser history and navigation
 
 The embedded browser uses bounded channel-history windows.
