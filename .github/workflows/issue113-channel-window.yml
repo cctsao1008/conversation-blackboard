@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/issue113_channel_window_patch.py'
+      - '.github/scripts/issue113_channel_window_use.py'
       - '.github/workflows/issue113-channel-window.yml'
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
           components: rustfmt, clippy
       - name: Apply canonical channel window patch
         run: python .github/scripts/issue113_channel_window_patch.py
+      - name: Route legacy readers through bounded primitive
+        run: python .github/scripts/issue113_channel_window_use.py
       - name: Format Rust
         run: cargo fmt --all
       - name: Verify formatting
@@ -39,6 +42,7 @@ jobs:
       - name: Remove temporary helpers
         run: |
           git rm .github/scripts/issue113_channel_window_patch.py
+          git rm .github/scripts/issue113_channel_window_use.py
           git rm .github/workflows/issue113-channel-window.yml
           git commit -m '#113 Remove channel window migration helpers'
       - name: Push main
