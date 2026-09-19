@@ -30,3 +30,25 @@ fn back_to_latest_is_contextual_and_refresh_preserves_history() {
     assert!(app.contains("state.order = \"desc\";"));
     assert!(app.contains("Use Back to latest to return to the live window."));
 }
+
+#[test]
+fn channel_directory_browser_consumption_is_explicitly_bounded() {
+    let app = include_str!("../web/app.js");
+    let html = include_str!("../web/index.html");
+
+    assert!(app.contains("const CHANNEL_DIRECTORY_PAGE_SIZE = 20;"));
+    assert!(app.contains("channelDirectoryHasMore: false"));
+    assert!(app.contains("adminChannelHasMore: false"));
+    assert!(app.contains("after_name=${encodeURIComponent(afterName)}"));
+    assert!(app.contains("async function loadMoreChannels()"));
+    assert!(app.contains("async function loadMoreAdminChannels()"));
+    assert!(html.contains("id=\"load-more-channels\""));
+    assert!(html.contains("id=\"load-more-admin-channels\""));
+
+    // Selecting a channel and live message polling must not turn the bounded
+    // directory endpoint back into a periodic full-directory refresh.
+    assert!(app.contains("async function selectChannel(channel)"));
+    assert!(!app.contains("refreshChannelCounts"));
+    assert!(app.contains("applyCurrentChannelActivity(data.messages, insertedCount);"));
+    assert!(app.contains("applyCurrentChannelActivity([data.message], 1);"));
+}

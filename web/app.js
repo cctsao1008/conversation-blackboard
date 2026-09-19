@@ -3,6 +3,7 @@
 
   const $ = (id) => document.getElementById(id);
   const HISTORY_PAGE_SIZE = 20;
+  const CHANNEL_DIRECTORY_PAGE_SIZE = 20;
   const THEME_KEY = "conversation-blackboard-theme";
   const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
@@ -14,6 +15,11 @@
     sessionType: "",
     channel: "",
     channels: [],
+    channelDirectoryAfterName: "",
+    channelDirectoryHasMore: false,
+    adminChannels: [],
+    adminChannelAfterName: "",
+    adminChannelHasMore: false,
     lastId: 0,
     oldestId: 0,
     hasOlder: false,
@@ -215,6 +221,11 @@
     state.sessionType = "";
     state.channel = "";
     state.channels = [];
+    state.channelDirectoryAfterName = "";
+    state.channelDirectoryHasMore = false;
+    state.adminChannels = [];
+    state.adminChannelAfterName = "";
+    state.adminChannelHasMore = false;
     state.replyTo = null;
     state.order = "desc";
     state.followLatest = true;
@@ -273,7 +284,7 @@
       : "";
   }
 
-  function renderChannels(channels) {
+  function renderChannels(channels = state.channels) {
     state.channels = channels;
     const publicChannels = channels.filter((channel) => channel.status === "active" && channel.visibility === "public");
     const privateChannels = channels.filter((channel) => channel.status === "active" && channel.visibility === "private");
@@ -284,14 +295,35 @@
       channelGroup("ARCHIVED", archivedChannels),
     ].filter(Boolean);
     $("channels").replaceChildren(...groups);
+    $("load-more-channels").classList.toggle("hidden", !state.channelDirectoryHasMore);
     updateChannelHeader();
     updateCapabilityUi();
   }
 
+  function mergeChannelRows(existing, incoming) {
+    const byName = new Map(existing.map((channel) => [channel.channel, channel]));
+    for (const channel of incoming) byName.set(channel.channel, channel);
+    return Array.from(byName.values());
+  }
+
+  async function fetchChannelDirectoryPage(afterName = "") {
+    const cursor = afterName ? `&after_name=${encodeURIComponent(afterName)}` : "";
+    return api(`/api/channels?limit=${CHANNEL_DIRECTORY_PAGE_SIZE}${cursor}`);
+  }
+
+  function acceptChannelDirectoryPage(data, append) {
+    const rows = data.channels || [];
+    state.channels = append ? mergeChannelRows(state.channels, rows) : rows;
+    if (rows.length) state.channelDirectoryAfterName = rows[rows.length - 1].channel;
+    else if (!append) state.channelDirectoryAfterName = "";
+    state.channelDirectoryHasMore = Boolean(data.has_more);
+    renderChannels();
+  }
+
   async function loadChannels() {
     try {
-      const data = await api("/api/channels");
-      renderChannels(data.channels || []);
+      const data = await fetchChannelDirectoryPage();
+      acceptChannelDirectoryPage(data, false);
 
       const selectedChannelExists = state.channels.some((channel) => channel.channel === state.channel);
       if (!selectedChannelExists) {
@@ -299,7 +331,7 @@
         state.channel = preferred ? preferred.channel : "";
       }
       if (state.channel) {
-        await selectChannel(state.channel, false);
+        await selectChannel(state.channel);
       } else {
         $("channel-name").textContent = "No channels available";
         resetHistory();
@@ -307,6 +339,21 @@
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
       else throw error;
+    }
+  }
+
+  async function loadMoreChannels() {
+    if (!state.channelDirectoryHasMore || !state.channelDirectoryAfterName) return;
+    const button = $("load-more-channels");
+    button.disabled = true;
+    try {
+      const data = await fetchChannelDirectoryPage(state.channelDirectoryAfterName);
+      acceptChannelDirectoryPage(data, true);
+    } catch (error) {
+      if (error.status === 401) disconnect("Session is no longer valid.");
+      else boardStatus(`Could not load more channels: ${error.message}`);
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -336,7 +383,7 @@
     updateNavigationState();
   }
 
-  async function selectChannel(channel, refreshChannels = true) {
+  async function selectChannel(channel) {
     state.channel = channel;
     state.followLatest = state.order === "desc";
     state.historyTargetId = null;
@@ -344,14 +391,7 @@
     $("channel-name").textContent = channel;
     resetHistory();
     updateReplyBar();
-
-    if (refreshChannels) {
-      const data = await api("/api/channels");
-      renderChannels(data.channels || []);
-    } else {
-      renderChannels(state.channels);
-    }
-
+    renderChannels();
     await loadLatestHistory();
   }
 
@@ -464,15 +504,40 @@
     }
   }
 
+  function applyCurrentChannelActivity(messages, insertedCount) {
+    if (!insertedCount || !state.channel) return;
+    const summary = currentChannelSummary();
+    const latestId = messages.reduce((value, message) => Math.max(value, message.id || 0), 0);
+    const latestCreatedAt = messages.reduce((value, message) => Math.max(value, message.created_at || 0), 0);
+    if (summary) {
+      summary.message_count += insertedCount;
+      summary.last_id = Math.max(summary.last_id || 0, latestId);
+      summary.updated_at = Math.max(summary.updated_at || 0, latestCreatedAt);
+    } else {
+      state.channels.push({
+        channel: state.channel,
+        visibility: "private",
+        status: "active",
+        message_count: insertedCount,
+        last_id: latestId,
+        updated_at: latestCreatedAt,
+      });
+    }
+    renderChannels();
+  }
+
   async function poll() {
     if (!state.sessionToken || !state.channel || !state.followLatest || state.order !== "desc") return;
     try {
       const data = await api(`/api/messages?channel=${encodeURIComponent(state.channel)}&after=${state.lastId}&limit=200`);
-      for (const message of data.messages) appendMessage(message, "prepend");
-      if (data.messages.length) {
+      let insertedCount = 0;
+      for (const message of data.messages) {
+        if (appendMessage(message, "prepend")) insertedCount += 1;
+      }
+      if (insertedCount) {
         updateEmpty();
         $("timeline").scrollTop = 0;
-        await refreshChannelCounts();
+        applyCurrentChannelActivity(data.messages, insertedCount);
       }
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
@@ -482,11 +547,6 @@
   function startPolling() {
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(poll, 4000);
-  }
-
-  async function refreshChannelCounts() {
-    const data = await api("/api/channels");
-    renderChannels(data.channels || []);
   }
 
   function appendMessage(message, placement = "append") {
@@ -647,7 +707,7 @@
       $("body").value = "";
       state.replyTo = null;
       updateReplyBar();
-      await refreshChannelCounts();
+      applyCurrentChannelActivity([data.message], 1);
       await loadLatestHistory();
       $("status").textContent = `Posted #${data.message.id}`;
     } catch (error) {
@@ -688,14 +748,44 @@
     $("board").classList.remove("hidden");
   }
 
+  async function fetchAdminChannelPage(afterName = "") {
+    const cursor = afterName ? `&after_name=${encodeURIComponent(afterName)}` : "";
+    return api(`/api/admin/channels?limit=${CHANNEL_DIRECTORY_PAGE_SIZE}${cursor}`);
+  }
+
+  function acceptAdminChannelPage(data, append) {
+    const rows = data.channels || [];
+    state.adminChannels = append ? mergeChannelRows(state.adminChannels, rows) : rows;
+    if (rows.length) state.adminChannelAfterName = rows[rows.length - 1].channel;
+    else if (!append) state.adminChannelAfterName = "";
+    state.adminChannelHasMore = Boolean(data.has_more);
+    renderAdminChannels(state.adminChannels);
+    $("load-more-admin-channels").classList.toggle("hidden", !state.adminChannelHasMore);
+  }
+
   async function loadAdminChannels() {
     $("admin-status").textContent = "";
     try {
-      const data = await api("/api/admin/channels");
-      renderAdminChannels(data.channels || []);
+      const data = await fetchAdminChannelPage();
+      acceptAdminChannelPage(data, false);
     } catch (error) {
       if (error.status === 401) disconnect("Session is no longer valid.");
       else $("admin-status").textContent = `Could not load channels: ${error.message}`;
+    }
+  }
+
+  async function loadMoreAdminChannels() {
+    if (!state.adminChannelHasMore || !state.adminChannelAfterName) return;
+    const button = $("load-more-admin-channels");
+    button.disabled = true;
+    try {
+      const data = await fetchAdminChannelPage(state.adminChannelAfterName);
+      acceptAdminChannelPage(data, true);
+    } catch (error) {
+      if (error.status === 401) disconnect("Session is no longer valid.");
+      else $("admin-status").textContent = `Could not load more channels: ${error.message}`;
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -751,7 +841,7 @@
         body: JSON.stringify({ name, visibility }),
       });
       $("create-channel-dialog").close();
-      await Promise.all([loadAdminChannels(), refreshChannelCounts()]);
+      await Promise.all([loadAdminChannels(), loadChannels()]);
       $("admin-status").textContent = `Created ${name}.`;
     } catch (error) {
       $("create-channel-error").textContent = error.status === 409
@@ -782,7 +872,7 @@
       const edited = state.editChannel;
       state.editChannel = "";
       $("edit-channel-dialog").close();
-      await Promise.all([loadAdminChannels(), refreshChannelCounts()]);
+      await Promise.all([loadAdminChannels(), loadChannels()]);
       updateCapabilityUi();
       $("admin-status").textContent = `Updated ${edited}.`;
     } catch (error) {
@@ -809,8 +899,8 @@
   });
   $("disconnect").addEventListener("click", () => disconnect());
   $("new-channel").addEventListener("click", createEphemeralChannel);
+  $("load-more-channels").addEventListener("click", loadMoreChannels);
   $("refresh").addEventListener("click", async () => {
-    await refreshChannelCounts();
     if (state.historyTargetId) {
       const target = state.historyTargetId;
       resetHistory();
@@ -839,6 +929,7 @@
   });
   $("control-panel-open").addEventListener("click", openControlPanel);
   $("control-panel-back").addEventListener("click", closeControlPanel);
+  $("load-more-admin-channels").addEventListener("click", loadMoreAdminChannels);
   $("create-channel").addEventListener("click", openCreateChannel);
   $("create-channel-form").addEventListener("submit", submitCreateChannel);
   $("create-channel-cancel").addEventListener("click", () => $("create-channel-dialog").close());
