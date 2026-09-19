@@ -1,0 +1,45 @@
+name: issue115-rest-read-purity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue115_rest_read_purity_patch.py'
+      - '.github/workflows/issue115-rest-read-purity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply REST privileged read purity patch
+        run: python .github/scripts/issue115_rest_read_purity_patch.py
+      - name: Format Rust
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Strict Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Full Rust tests
+        run: cargo test --all-targets --all-features
+      - name: Commit REST privileged read purity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/authorization.rs src/access_api.rs src/http_contract_tests.rs
+          git commit -m '#115 Make REST privileged audit reads schema-pure'
+      - name: Remove temporary helpers
+        run: |
+          git rm .github/scripts/issue115_rest_read_purity_patch.py
+          git rm .github/workflows/issue115-rest-read-purity.yml
+          git commit -m '#115 Remove REST read-purity migration helpers'
+      - name: Push main
+        run: git push origin HEAD:main
