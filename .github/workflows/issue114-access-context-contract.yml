@@ -1,0 +1,50 @@
+name: issue114-access-context-contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/issue114_access_context_contract_patch.py'
+      - '.github/workflows/issue114-access-context-contract.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply access-context contract parity patch
+        run: python .github/scripts/issue114_access_context_contract_patch.py
+      - name: Validate OpenAPI YAML
+        run: python - <<'PY'
+          import yaml
+          yaml.safe_load(open('integrations/openapi.yaml'))
+          PY
+      - name: Format Rust
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Strict Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Full Rust tests
+        run: cargo test --all-targets --all-features
+      - name: Commit access-context contract parity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add integrations/openapi.yaml src/contract_parity_tests.rs
+          git commit -m '#114 Document stale-schema access-context contract'
+      - name: Remove temporary helpers
+        run: |
+          git rm .github/scripts/issue114_access_context_contract_patch.py
+          git rm .github/workflows/issue114-access-context-contract.yml
+          git commit -m '#114 Remove access-context contract migration helpers'
+      - name: Push main
+        run: git push origin HEAD:main
