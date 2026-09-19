@@ -741,3 +741,31 @@ fn channel_directory_openapi_projects_bounded_public_and_admin_windows() {
         );
     }
 }
+
+#[test]
+fn access_context_openapi_declares_stale_schema_error_without_utcp_error_fork() {
+    let api = yaml_json();
+    let access_context = &api["paths"]["/api/access-context"]["get"];
+    assert!(access_context.is_object());
+    assert!(access_context["description"]
+        .as_str()
+        .unwrap()
+        .contains("never repairs"));
+    assert_eq!(
+        access_context["responses"]["503"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/Error"
+    );
+
+    let utcp = utcp_json();
+    let tool = utcp["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "access_context")
+        .expect("UTCP access_context projection must remain present");
+    assert_eq!(
+        tool["tool_call_template"]["url"],
+        "${BLACKBOARD_URL}/api/access-context"
+    );
+    assert!(tool.get("errors").is_none());
+}

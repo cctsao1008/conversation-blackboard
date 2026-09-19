@@ -317,7 +317,7 @@ paths:
     get:
       operationId: blackboardAccessContext
       summary: Read the authenticated caller's effective Blackboard access context.
-      description: HTTP projection of the shared authorization kernel.
+      description: HTTP projection of the shared authorization kernel. The read refuses stale authorization schema and never repairs it.
       security:
         - bearerAuth: []
         - webSessionAuth: []
@@ -330,6 +330,12 @@ paths:
                 $ref: '#/components/schemas/AccessContext'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Authorization schema is not current or storage is unavailable. The access-context read does not migrate or repair schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/executions/{intent_id}:
     get:
